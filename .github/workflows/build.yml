@@ -49,8 +49,6 @@ jobs:
           $release = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "GitHub-Actions" }
           $asset = $release.assets | Where-Object { $_.name -like "*windows-64.zip" -and $_.name -notlike "*arm64*" } | Select-Object -First 1
           if (-not $asset) {
-            Write-Host "可用资源列表："
-            $release.assets | ForEach-Object { Write-Host $_.name }
             throw "Xray windows-64.zip not found"
           }
           Write-Host "找到文件: $($asset.name)"
@@ -62,23 +60,45 @@ jobs:
           }
           Write-Host "Xray-core 准备就绪"
 
-      - name: Build with PyInstaller
+      - name: Build with PyInstaller (onedir)
         shell: cmd
         run: |
-          echo ===== 当前目录 =====
-          dir
-          echo ===== core 目录 =====
-          dir core
-          echo ===== 开始打包 =====
-          python -m PyInstaller --noconfirm --onefile --windowed --name Mobility --add-binary "core\xray.exe;core" main.py
-          echo ===== 打包完成 =====
-          dir dist
+          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility main.py
+
+      - name: Package final zip (含 Xray-core)
+        shell: pwsh
+        run: |
+          $distDir = "dist\Mobility"
+
+          # 确保 core 目录存在并把 xray.exe 放进去
+          $coreDir = Join-Path $distDir "core"
+          if (-not (Test-Path $coreDir)) {
+            New-Item -ItemType Directory -Path $coreDir -Force | Out-Null
+          }
+          Copy-Item -Path "core\xray.exe" -Destination "$coreDir\xray.exe" -Force
+          Write-Host "已复制 xray.exe 到 $coreDir"
+
+          # 检查是否复制成功
+          if (-not (Test-Path "$coreDir\xray.exe")) {
+            throw "复制 xray.exe 失败"
+          }
+
+          Write-Host "最终目录内容："
+          Get-ChildItem -Recurse $distDir | ForEach-Object { Write-Host $_.FullName }
+
+          # 打包成 zip
+          $zipPath = "dist\Mobility.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path "$distDir\*" -DestinationPath $zipPath -Force
+
+          $zipInfo = Get-Item $zipPath
+          Write-Host "打包完成: $($zipInfo.Name)  大小: $([math]::Round($zipInfo.Length / 1MB, 2)) MB"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mobility
-          path: dist/Mobility.exe
+          path: dist/Mobility.zip
           if-no-files-found: error
 
       - name: Determine version
@@ -114,7 +134,7 @@ jobs:
             
             ### ✨ 本版本亮点
             
-            - 🚀 单文件便携，下载即用，无需安装任何运行环境
+            - 📦 解压即用，无需安装任何运行环境
             - 📦 **已内置 Xray-core**，首次运行无需联网下载核心
             - 🔌 一键启动 / 停止本地代理
             - 🌐 自动设置与取消 Windows 系统代理
@@ -123,11 +143,15 @@ jobs:
             
             ### 📦 下载与使用
             
-            1. 下载下方的 **Mobility.exe**
-            2. 双击运行
-            3. 点击「启动代理」按钮
+            1. 下载下方的 **Mobility.zip**
+            2. 解压到任意目录
+            3. 双击运行 `Mobility.exe`
+            4. 点击「启动代理」按钮
             
-            > 提示：程序运行后会在同目录生成 `core` 文件夹。
+            > 解压后目录结构示例：  
+            > Mobility.exe  
+            > core/xray.exe  
+            > 其他依赖文件...
             
             ---
             
@@ -143,7 +167,7 @@ jobs:
             **Enjoy the freedom of the network.**
             
             </div>
-          files: dist/Mobility.exe
+          files: dist/Mobility.zip
           generate_release_notes: false
           draft: false
           prerelease: ${{ github.event.inputs.prerelease || false }}
