@@ -29,16 +29,9 @@ jobs:
           pip install nuitka ordered-set zstandard
 
       - name: Build with Nuitka (onefile)
+        shell: cmd
         run: |
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --windows-console-mode=disable ^
-            --enable-plugin=tk-inter ^
-            --assume-yes-for-downloads ^
-            --output-filename=Mobility.exe ^
-            --output-dir=dist ^
-            main.py
+          python -m nuitka --standalone --onefile --windows-console-mode=disable --enable-plugin=tk-inter --assume-yes-for-downloads --output-filename=Mobility.exe --output-dir=dist main.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
