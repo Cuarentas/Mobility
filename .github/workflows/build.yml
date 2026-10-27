@@ -1,4 +1,4 @@
-name: Build Portable
+name: Build Portable EXE
 
 on:
   workflow_dispatch:
