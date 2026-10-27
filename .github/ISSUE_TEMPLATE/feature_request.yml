@@ -1,0 +1,49 @@
+name: 功能建议
+description: 提出新功能或改进建议
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你为 Mobility 提出建议！请尽量描述清楚你的想法，方便我们理解和评估。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 痛点 / 需求背景
+      description: 你目前遇到了什么不便？或者希望解决什么问题？
+      placeholder: 例如：每次都要手动选择节点很麻烦，希望能自动选择延迟最低的节点
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的解决方案
+      description: 你希望程序如何实现这个功能
+      placeholder: 例如：增加一个「自动选择最优节点」的开关，开启后启动时自动测速并连接
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案（可选）
+      description: 你是否考虑过其他实现方式？
+      placeholder: 如果有其他思路也可以写在这里
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充信息
+      description: 其他你想说明的内容（例如参考软件、使用场景等）
+      placeholder: 可以在这里补充任何有帮助的信息
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过 Issues，确认这不是重复的建议
+          required: true

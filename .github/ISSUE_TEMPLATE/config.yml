@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用疑问 / 讨论
+    url: https://github.com/你的用户名/Mobility/discussions
+    about: 如果你只是想提问或讨论，而不是报告 Bug 或提功能，请到 Discussions 发帖

@@ -1,0 +1,31 @@
+name: 使用疑问
+description: 咨询软件使用方法或遇到的疑问（非 Bug）
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        如果你在使用过程中有疑问，可以在这里提问。  
+        如果是程序出错，请改用「Bug 报告」模板。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+      description: 请详细描述你想了解的内容
+      placeholder: 例如：如何导入订阅？启动后浏览器无法上网怎么办？
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Mobility 版本
+      placeholder: 例如：v1.0.0
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: 例如：Windows 11
