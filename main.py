@@ -8,6 +8,7 @@ import zipfile
 import io
 import winreg
 import ctypes
+import shutil
 from pathlib import Path
 from threading import Thread
 
@@ -37,22 +38,22 @@ class App(ctk.CTk):
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        # 启动时检查核心
+        self.after(300, self.check_core)
+
     def create_widgets(self):
-        # 标题
         title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
         title.pack(pady=(18, 5))
 
         subtitle = ctk.CTkLabel(self, text="基础启动 / 停止 + 系统代理", font=("Microsoft YaHei UI", 12))
         subtitle.pack(pady=(0, 15))
 
-        # 输入框（预留，后续阶段启用）
         self.entry_label = ctk.CTkLabel(self, text="订阅 / 节点链接：", font=("Microsoft YaHei UI", 13))
         self.entry_label.pack(anchor="w", padx=40)
 
         self.entry = ctk.CTkEntry(self, width=480, height=36, placeholder_text="当前版本仅测试启动功能，链接暂时无效")
         self.entry.pack(pady=6)
 
-        # 按钮区域
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=18)
 
@@ -71,32 +72,44 @@ class App(ctk.CTk):
         )
         self.stop_btn.pack(side="left", padx=12)
 
-        # 状态
         self.status_label = ctk.CTkLabel(
             self, text="状态：未运行",
             font=("Microsoft YaHei UI", 14)
         )
         self.status_label.pack(pady=8)
 
-        # 日志
         self.log_box = ctk.CTkTextbox(self, width=500, height=140, font=("Consolas", 12))
         self.log_box.pack(pady=8)
         self.log("欢迎使用 Mobility")
-        self.log("功能：自动下载 Xray-core + 启动本地代理 + 设置系统代理")
-        self.log("当前出站为直连（freedom），用于测试程序本身是否正常")
-        self.log("后续将加入真实节点解析和代理转发")
+        self.log("核心已内置，首次运行无需联网下载")
 
     def log(self, msg: str):
         self.log_box.insert("end", msg + "\n")
         self.log_box.see("end")
 
+    def check_core(self):
+        """检查并准备 Xray 核心（优先使用内置）"""
+        xray_exe = self.core_dir / "xray.exe"
+        if xray_exe.exists():
+            self.log("已检测到内置 Xray-core")
+            return
+
+        # 尝试从 Nuitka 打包的临时目录复制（onefile 模式）
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            bundled = Path(sys._MEIPASS) / "core" / "xray.exe"
+            if bundled.exists():
+                shutil.copy2(bundled, xray_exe)
+                self.log("已从程序内部提取 Xray-core")
+                return
+
+        self.log("未找到内置核心，尝试在线下载...")
+        Thread(target=self.download_xray, daemon=True).start()
+
     def download_xray(self) -> bool:
         xray_exe = self.core_dir / "xray.exe"
         if xray_exe.exists():
-            self.log("Xray-core 已存在，跳过下载")
             return True
 
-        self.log("正在获取 Xray-core 最新版本信息...")
         try:
             api_url = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
             resp = requests.get(api_url, timeout=20)
@@ -114,38 +127,33 @@ class App(ctk.CTk):
                 self.log("错误：未找到 Windows 64 位安装包")
                 return False
 
-            self.log("正在下载 Xray-core，请稍候...")
+            self.log("正在下载 Xray-core...")
             data = requests.get(download_url, timeout=120).content
 
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 zf.extractall(self.core_dir)
 
-            if not xray_exe.exists():
+            if xray_exe.exists():
+                self.log("Xray-core 下载完成")
+                return True
+            else:
                 self.log("错误：解压后未找到 xray.exe")
                 return False
-
-            self.log("Xray-core 下载并解压完成")
-            return True
 
         except Exception as e:
             self.log(f"下载失败：{e}")
             return False
 
     def create_config(self):
-        """生成最简单的本地配置（直连测试用）"""
         config = {
-            "log": {
-                "loglevel": "warning"
-            },
+            "log": {"loglevel": "warning"},
             "inbounds": [
                 {
                     "tag": "socks",
                     "port": 10808,
                     "listen": "127.0.0.1",
                     "protocol": "socks",
-                    "settings": {
-                        "udp": True
-                    }
+                    "settings": {"udp": True}
                 },
                 {
                     "tag": "http",
@@ -155,10 +163,7 @@ class App(ctk.CTk):
                 }
             ],
             "outbounds": [
-                {
-                    "tag": "direct",
-                    "protocol": "freedom"
-                }
+                {"tag": "direct", "protocol": "freedom"}
             ]
         }
 
@@ -168,7 +173,6 @@ class App(ctk.CTk):
         return config_path
 
     def set_system_proxy(self, enable: bool, port: int = 10809):
-        """设置或取消 Windows 系统代理"""
         try:
             internet_settings = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -184,7 +188,6 @@ class App(ctk.CTk):
 
             winreg.CloseKey(internet_settings)
 
-            # 通知系统代理已更改
             INTERNET_OPTION_SETTINGS_CHANGED = 39
             INTERNET_OPTION_REFRESH = 37
             internet_set_option = ctypes.windll.Wininet.InternetSetOptionW
@@ -205,15 +208,16 @@ class App(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.log("---------- 开始启动 ----------")
 
-        if not self.download_xray():
-            self.start_btn.configure(state="normal")
-            return
+        xray_exe = self.core_dir / "xray.exe"
+        if not xray_exe.exists():
+            self.log("核心文件不存在，正在尝试准备...")
+            if not self.download_xray():
+                self.start_btn.configure(state="normal")
+                return
 
         config_path = self.create_config()
-        xray_exe = self.core_dir / "xray.exe"
 
         try:
-            # 启动 Xray（隐藏窗口）
             self.xray_process = subprocess.Popen(
                 [str(xray_exe), "run", "-c", str(config_path)],
                 cwd=str(self.core_dir),
@@ -222,13 +226,11 @@ class App(ctk.CTk):
                 stderr=subprocess.DEVNULL
             )
 
-            # 设置系统代理
             if self.set_system_proxy(True, 10809):
                 self.is_running = True
                 self.status_label.configure(text="状态：运行中（当前为直连测试）", text_color="#27ae60")
                 self.log("Xray 已启动")
                 self.log("系统代理已设置为 127.0.0.1:10809")
-                self.log("当前为直连模式，仅用于验证程序功能正常")
             else:
                 self.xray_process.terminate()
                 self.xray_process = None
@@ -262,7 +264,6 @@ class App(ctk.CTk):
         self.destroy()
 
 if __name__ == "__main__":
-    # 高 DPI 支持
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
