@@ -28,10 +28,23 @@ jobs:
           pip install -r requirements.txt
           pip install nuitka ordered-set zstandard
 
-      - name: Build with Nuitka (onefile)
+      - name: Download Xray-core
+        shell: pwsh
+        run: |
+          $api = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+          $release = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "GitHub-Actions" }
+          $asset = $release.assets | Where-Object { $_.name -like "*windows-64.zip" -and $_.name -notlike "*arm64*" } | Select-Object -First 1
+          if (-not $asset) { throw "Xray windows-64.zip not found" }
+          Write-Host "Downloading $($asset.name) ..."
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "xray.zip"
+          Expand-Archive -Path "xray.zip" -DestinationPath "core" -Force
+          if (-not (Test-Path "core\xray.exe")) { throw "xray.exe not found after extract" }
+          Write-Host "Xray-core ready"
+
+      - name: Build with Nuitka (onefile + 内置核心)
         shell: cmd
         run: |
-          python -m nuitka --standalone --onefile --windows-console-mode=disable --enable-plugin=tk-inter --assume-yes-for-downloads --output-filename=Mobility.exe --output-dir=dist main.py
+          python -m nuitka --standalone --onefile --windows-console-mode=disable --enable-plugin=tk-inter --assume-yes-for-downloads --include-data-dir=core=core --output-filename=Mobility.exe --output-dir=dist main.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -58,7 +71,7 @@ jobs:
             ### ✨ 本版本亮点
             
             - 🚀 单文件便携，下载即用，无需安装任何运行环境
-            - 📥 首次启动自动下载最新 Xray-core
+            - 📦 **已内置 Xray-core**，首次运行无需联网下载核心
             - 🔌 一键启动 / 停止本地代理
             - 🌐 自动设置与取消 Windows 系统代理
             
@@ -70,7 +83,7 @@ jobs:
             2. 双击运行
             3. 点击「启动代理」按钮
             
-            > 提示：程序运行后会在同目录生成 `core` 文件夹存放核心文件。
+            > 提示：程序运行后会在同目录生成 `core` 文件夹。
             
             ---
             
