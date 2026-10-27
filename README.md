@@ -4,16 +4,19 @@ Windows 代理客户端
 
 ## 功能
 
-- 自动下载并内置 Xray-core
+- 已内置 Xray-core，首次运行无需联网下载
 - 一键启动 / 停止本地代理
 - 自动设置 / 取消 Windows 系统代理
-- 单文件便携版（无需安装 Python）
+- 绿色便携版，解压即用
 
 ## 使用方法
 
-1. 在 [Releases](../../releases) 下载 `Mobility.exe`
-2. 双击运行
-3. 点击「启动代理」
+1. 在 [Releases](../../releases) 下载 `Mobility.zip`
+2. 解压到任意目录
+3. 双击运行 `Mobility.exe`
+4. 点击「启动代理」
+
+> 解压后目录中会包含 `core/xray.exe` 等文件，请保持目录完整，不要单独移动 exe。
 
 ## 反馈与贡献
 
@@ -22,6 +25,6 @@ Windows 代理客户端
 
 ## 构建
 
-使用 GitHub Actions + Nuitka 自动打包。
+使用 GitHub Actions + PyInstaller 自动打包。
 
 Actions 页面点击 **Build Portable EXE** → **Run workflow**，填写版本号后即可自动构建并发布。
