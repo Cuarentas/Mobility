@@ -3,6 +3,9 @@ import subprocess
 import os
 import sys
 import json
+import base64
+import re
+import urllib.parse
 import requests
 import zipfile
 import io
@@ -17,21 +20,262 @@ ctk.set_default_color_theme("blue")
 
 
 def get_base_dir() -> Path:
-    """获取程序所在目录（兼容源码和打包后）"""
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent
     return Path(__file__).parent
 
 
 def get_resource_path(relative: str) -> Path:
-    """获取打包进 exe 的资源路径（PyInstaller / Nuitka 通用）"""
     if getattr(sys, 'frozen', False):
-        # PyInstaller
         if hasattr(sys, '_MEIPASS'):
             return Path(sys._MEIPASS) / relative
-        # Nuitka onefile
         return Path(sys.executable).parent / relative
     return Path(__file__).parent / relative
+
+
+def b64_decode(s: str) -> str:
+    """容错 base64 解码"""
+    s = s.strip().replace('-', '+').replace('_', '/')
+    pad = 4 - len(s) % 4
+    if pad != 4:
+        s += '=' * pad
+    return base64.b64decode(s).decode('utf-8', errors='ignore')
+
+
+def parse_vmess(link: str) -> dict | None:
+    """解析 vmess:// 链接"""
+    try:
+        raw = link[8:]  # 去掉 vmess://
+        data = json.loads(b64_decode(raw))
+        return {
+            "protocol": "vmess",
+            "name": data.get("ps") or data.get("remark") or "vmess",
+            "address": data.get("add") or data.get("address"),
+            "port": int(data.get("port", 443)),
+            "uuid": data.get("id"),
+            "alterId": int(data.get("aid", 0)),
+            "security": data.get("scy") or data.get("security") or "auto",
+            "network": data.get("net") or "tcp",
+            "type": data.get("type") or "none",
+            "host": data.get("host") or "",
+            "path": data.get("path") or "",
+            "tls": data.get("tls") or "",
+            "sni": data.get("sni") or data.get("host") or "",
+        }
+    except Exception:
+        return None
+
+
+def parse_vless(link: str) -> dict | None:
+    """解析 vless:// 链接"""
+    try:
+        # vless://uuid@host:port?params#name
+        parsed = urllib.parse.urlparse(link)
+        uuid = parsed.username
+        address = parsed.hostname
+        port = parsed.port or 443
+        name = urllib.parse.unquote(parsed.fragment) if parsed.fragment else "vless"
+        params = urllib.parse.parse_qs(parsed.query)
+
+        def get_param(key, default=""):
+            return params.get(key, [default])[0]
+
+        return {
+            "protocol": "vless",
+            "name": name,
+            "address": address,
+            "port": int(port),
+            "uuid": uuid,
+            "encryption": get_param("encryption", "none"),
+            "flow": get_param("flow", ""),
+            "network": get_param("type", "tcp"),
+            "security": get_param("security", "none"),  # tls / reality / none
+            "sni": get_param("sni") or get_param("host") or "",
+            "fp": get_param("fp", ""),
+            "pbk": get_param("pbk", ""),
+            "sid": get_param("sid", ""),
+            "spx": get_param("spx", ""),
+            "path": get_param("path", ""),
+            "host": get_param("host", ""),
+            "serviceName": get_param("serviceName", ""),
+            "mode": get_param("mode", ""),
+        }
+    except Exception:
+        return None
+
+
+def parse_trojan(link: str) -> dict | None:
+    """解析 trojan:// 链接"""
+    try:
+        # trojan://password@host:port?params#name
+        parsed = urllib.parse.urlparse(link)
+        password = urllib.parse.unquote(parsed.username or "")
+        address = parsed.hostname
+        port = parsed.port or 443
+        name = urllib.parse.unquote(parsed.fragment) if parsed.fragment else "trojan"
+        params = urllib.parse.parse_qs(parsed.query)
+
+        def get_param(key, default=""):
+            return params.get(key, [default])[0]
+
+        return {
+            "protocol": "trojan",
+            "name": name,
+            "address": address,
+            "port": int(port),
+            "password": password,
+            "network": get_param("type", "tcp"),
+            "security": get_param("security", "tls"),
+            "sni": get_param("sni") or get_param("peer") or "",
+            "path": get_param("path", ""),
+            "host": get_param("host", ""),
+            "fp": get_param("fp", ""),
+        }
+    except Exception:
+        return None
+
+
+def parse_link(link: str) -> dict | None:
+    """自动识别并解析节点链接"""
+    link = link.strip()
+    if not link:
+        return None
+    if link.startswith("vmess://"):
+        return parse_vmess(link)
+    if link.startswith("vless://"):
+        return parse_vless(link)
+    if link.startswith("trojan://"):
+        return parse_trojan(link)
+    return None
+
+
+def build_outbound(node: dict) -> dict:
+    """根据解析结果生成 Xray outbound"""
+    protocol = node["protocol"]
+
+    if protocol == "vmess":
+        user = {
+            "id": node["uuid"],
+            "alterId": node.get("alterId", 0),
+            "security": node.get("security", "auto"),
+        }
+        stream = {
+            "network": node.get("network", "tcp"),
+        }
+        if node.get("tls") in ("tls", "xtls"):
+            stream["security"] = "tls"
+            stream["tlsSettings"] = {
+                "serverName": node.get("sni") or node.get("host") or node["address"],
+                "allowInsecure": True,
+            }
+        if node.get("network") == "ws":
+            stream["wsSettings"] = {
+                "path": node.get("path") or "/",
+                "headers": {"Host": node.get("host") or node["address"]},
+            }
+        if node.get("network") == "grpc":
+            stream["grpcSettings"] = {
+                "serviceName": node.get("path") or "",
+            }
+
+        return {
+            "tag": "proxy",
+            "protocol": "vmess",
+            "settings": {
+                "vnext": [{
+                    "address": node["address"],
+                    "port": node["port"],
+                    "users": [user],
+                }]
+            },
+            "streamSettings": stream,
+        }
+
+    if protocol == "vless":
+        user = {
+            "id": node["uuid"],
+            "encryption": node.get("encryption", "none"),
+        }
+        if node.get("flow"):
+            user["flow"] = node["flow"]
+
+        stream = {
+            "network": node.get("network", "tcp"),
+        }
+
+        security = node.get("security", "none")
+        if security == "tls":
+            stream["security"] = "tls"
+            stream["tlsSettings"] = {
+                "serverName": node.get("sni") or node["address"],
+                "allowInsecure": True,
+                "fingerprint": node.get("fp") or "",
+            }
+        elif security == "reality":
+            stream["security"] = "reality"
+            stream["realitySettings"] = {
+                "serverName": node.get("sni") or node["address"],
+                "fingerprint": node.get("fp") or "chrome",
+                "publicKey": node.get("pbk") or "",
+                "shortId": node.get("sid") or "",
+                "spiderX": node.get("spx") or "",
+            }
+
+        if node.get("network") == "ws":
+            stream["wsSettings"] = {
+                "path": node.get("path") or "/",
+                "headers": {"Host": node.get("host") or node.get("sni") or node["address"]},
+            }
+        if node.get("network") == "grpc":
+            stream["grpcSettings"] = {
+                "serviceName": node.get("serviceName") or node.get("path") or "",
+            }
+
+        return {
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": node["address"],
+                    "port": node["port"],
+                    "users": [user],
+                }]
+            },
+            "streamSettings": stream,
+        }
+
+    if protocol == "trojan":
+        stream = {
+            "network": node.get("network", "tcp"),
+            "security": node.get("security") or "tls",
+            "tlsSettings": {
+                "serverName": node.get("sni") or node["address"],
+                "allowInsecure": True,
+            },
+        }
+        if node.get("fp"):
+            stream["tlsSettings"]["fingerprint"] = node["fp"]
+
+        if node.get("network") == "ws":
+            stream["wsSettings"] = {
+                "path": node.get("path") or "/",
+                "headers": {"Host": node.get("host") or node.get("sni") or node["address"]},
+            }
+
+        return {
+            "tag": "proxy",
+            "protocol": "trojan",
+            "settings": {
+                "servers": [{
+                    "address": node["address"],
+                    "port": node["port"],
+                    "password": node["password"],
+                }]
+            },
+            "streamSettings": stream,
+        }
+
+    return None
 
 
 class App(ctk.CTk):
@@ -39,7 +283,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("560x420")
+        self.geometry("560x480")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -48,28 +292,27 @@ class App(ctk.CTk):
 
         self.xray_process = None
         self.is_running = False
+        self.current_node = None
 
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-
-        # 启动时准备核心
         self.after(200, self.prepare_core)
 
     def create_widgets(self):
         title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
         title.pack(pady=(18, 5))
 
-        subtitle = ctk.CTkLabel(self, text="基础启动 / 停止 + 系统代理", font=("Microsoft YaHei UI", 12))
-        subtitle.pack(pady=(0, 15))
+        subtitle = ctk.CTkLabel(self, text="第二阶段：支持 vmess / vless / trojan 节点", font=("Microsoft YaHei UI", 12))
+        subtitle.pack(pady=(0, 12))
 
-        self.entry_label = ctk.CTkLabel(self, text="订阅 / 节点链接：", font=("Microsoft YaHei UI", 13))
+        self.entry_label = ctk.CTkLabel(self, text="节点链接（vmess / vless / trojan）：", font=("Microsoft YaHei UI", 13))
         self.entry_label.pack(anchor="w", padx=40)
 
-        self.entry = ctk.CTkEntry(self, width=480, height=36, placeholder_text="当前版本仅测试启动功能，链接暂时无效")
+        self.entry = ctk.CTkEntry(self, width=480, height=36, placeholder_text="粘贴节点链接，例如 vmess://... 或 vless://...")
         self.entry.pack(pady=6)
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=18)
+        btn_frame.pack(pady=14)
 
         self.start_btn = ctk.CTkButton(
             btn_frame, text="启动代理", width=150, height=42,
@@ -90,82 +333,54 @@ class App(ctk.CTk):
             self, text="状态：未运行",
             font=("Microsoft YaHei UI", 14)
         )
-        self.status_label.pack(pady=8)
+        self.status_label.pack(pady=6)
 
-        self.log_box = ctk.CTkTextbox(self, width=500, height=140, font=("Consolas", 12))
-        self.log_box.pack(pady=8)
-        self.log("欢迎使用 Mobility")
+        self.node_label = ctk.CTkLabel(
+            self, text="当前节点：无",
+            font=("Microsoft YaHei UI", 12),
+            text_color=("gray40", "gray60")
+        )
+        self.node_label.pack(pady=(0, 6))
+
+        self.log_box = ctk.CTkTextbox(self, width=500, height=160, font=("Consolas", 12))
+        self.log_box.pack(pady=6)
+        self.log("欢迎使用 Mobility 第二阶段")
+        self.log("支持协议：vmess / vless / trojan")
+        self.log("请粘贴节点链接后点击「启动代理」")
 
     def log(self, msg: str):
         self.log_box.insert("end", msg + "\n")
         self.log_box.see("end")
 
     def prepare_core(self):
-        """准备 Xray 核心：优先使用已存在的，其次从 exe 内部提取，最后尝试下载"""
         xray_exe = self.core_dir / "xray.exe"
-
-        # 1. 已经存在
         if xray_exe.exists():
             self.log("已检测到 Xray-core")
             return
 
-        # 2. 尝试从打包资源中提取
         try:
             bundled = get_resource_path("core/xray.exe")
-            self.log(f"尝试提取内置核心: {bundled}")
             if bundled.exists():
                 shutil.copy2(bundled, xray_exe)
-                self.log("已成功从程序内部提取 Xray-core")
+                self.log("已从程序内部提取 Xray-core")
                 return
-            else:
-                self.log("内置核心文件不存在")
         except Exception as e:
             self.log(f"提取内置核心失败: {e}")
 
-        # 3. 在线下载（备用）
-        self.log("未找到内置核心，尝试在线下载...")
-        Thread(target=self.download_xray, daemon=True).start()
+        # 也尝试从同级 core 目录（zip 解压后的结构）
+        local_core = self.base_dir / "core" / "xray.exe"
+        if local_core.exists() and local_core != xray_exe:
+            shutil.copy2(local_core, xray_exe)
+            self.log("已使用目录内 Xray-core")
+            return
 
-    def download_xray(self) -> bool:
-        xray_exe = self.core_dir / "xray.exe"
-        if xray_exe.exists():
-            return True
+        self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
 
-        try:
-            api_url = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-            resp = requests.get(api_url, timeout=20)
-            resp.raise_for_status()
-            assets = resp.json().get("assets", [])
+    def create_config(self, node: dict) -> Path:
+        outbound = build_outbound(node)
+        if not outbound:
+            raise ValueError("无法生成出站配置")
 
-            download_url = None
-            for asset in assets:
-                name = asset.get("name", "")
-                if "windows-64.zip" in name and "windows-arm64" not in name:
-                    download_url = asset["browser_download_url"]
-                    break
-
-            if not download_url:
-                self.log("错误：未找到 Windows 64 位安装包")
-                return False
-
-            self.log("正在下载 Xray-core...")
-            data = requests.get(download_url, timeout=120).content
-
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                zf.extractall(self.core_dir)
-
-            if xray_exe.exists():
-                self.log("Xray-core 下载完成")
-                return True
-            else:
-                self.log("错误：解压后未找到 xray.exe")
-                return False
-
-        except Exception as e:
-            self.log(f"下载失败：{e}")
-            return False
-
-    def create_config(self):
         config = {
             "log": {"loglevel": "warning"},
             "inbounds": [
@@ -174,18 +389,38 @@ class App(ctk.CTk):
                     "port": 10808,
                     "listen": "127.0.0.1",
                     "protocol": "socks",
-                    "settings": {"udp": True}
+                    "settings": {"udp": True},
+                    "sniffing": {
+                        "enabled": True,
+                        "destOverride": ["http", "tls"]
+                    }
                 },
                 {
                     "tag": "http",
                     "port": 10809,
                     "listen": "127.0.0.1",
-                    "protocol": "http"
+                    "protocol": "http",
+                    "sniffing": {
+                        "enabled": True,
+                        "destOverride": ["http", "tls"]
+                    }
                 }
             ],
             "outbounds": [
-                {"tag": "direct", "protocol": "freedom"}
-            ]
+                outbound,
+                {"tag": "direct", "protocol": "freedom"},
+                {"tag": "block", "protocol": "blackhole"}
+            ],
+            "routing": {
+                "domainStrategy": "AsIs",
+                "rules": [
+                    {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "ip": ["geoip:private"]
+                    }
+                ]
+            }
         }
 
         config_path = self.core_dir / "config.json"
@@ -200,13 +435,11 @@ class App(ctk.CTk):
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
                 0, winreg.KEY_WRITE
             )
-
             if enable:
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, f"127.0.0.1:{port}")
             else:
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-
             winreg.CloseKey(internet_settings)
 
             INTERNET_OPTION_SETTINGS_CHANGED = 39
@@ -221,7 +454,7 @@ class App(ctk.CTk):
 
     def start_proxy_thread(self):
         if self.is_running:
-            self.log("代理已在运行中")
+            self.log("代理已在运行中，请先停止")
             return
         Thread(target=self.start_proxy, daemon=True).start()
 
@@ -229,23 +462,37 @@ class App(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.log("---------- 开始启动 ----------")
 
-        xray_exe = self.core_dir / "xray.exe"
-        if not xray_exe.exists():
-            self.log("核心文件不存在，正在尝试准备...")
-            self.prepare_core()
-            # 等待一下提取/下载
-            import time
-            for _ in range(30):
-                if xray_exe.exists():
-                    break
-                time.sleep(0.5)
-
-        if not xray_exe.exists():
-            self.log("无法获取 Xray-core，启动失败")
+        link = self.entry.get().strip()
+        if not link:
+            self.log("错误：请先粘贴节点链接")
             self.start_btn.configure(state="normal")
             return
 
-        config_path = self.create_config()
+        node = parse_link(link)
+        if not node:
+            self.log("错误：无法识别的节点链接（仅支持 vmess / vless / trojan）")
+            self.start_btn.configure(state="normal")
+            return
+
+        self.current_node = node
+        self.log(f"解析成功：[{node['protocol']}] {node['name']}")
+        self.log(f"服务器：{node['address']}:{node['port']}")
+        self.node_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']}")
+
+        xray_exe = self.core_dir / "xray.exe"
+        if not xray_exe.exists():
+            self.prepare_core()
+            if not xray_exe.exists():
+                self.log("错误：找不到 Xray-core")
+                self.start_btn.configure(state="normal")
+                return
+
+        try:
+            config_path = self.create_config(node)
+        except Exception as e:
+            self.log(f"生成配置失败：{e}")
+            self.start_btn.configure(state="normal")
+            return
 
         try:
             self.xray_process = subprocess.Popen(
@@ -258,9 +505,10 @@ class App(ctk.CTk):
 
             if self.set_system_proxy(True, 10809):
                 self.is_running = True
-                self.status_label.configure(text="状态：运行中（当前为直连测试）", text_color="#27ae60")
+                self.status_label.configure(text="状态：运行中", text_color="#27ae60")
                 self.log("Xray 已启动")
                 self.log("系统代理已设置为 127.0.0.1:10809")
+                self.log("现在可以正常使用代理了")
             else:
                 self.xray_process.terminate()
                 self.xray_process = None
@@ -287,6 +535,7 @@ class App(ctk.CTk):
         self.set_system_proxy(False)
         self.is_running = False
         self.status_label.configure(text="状态：已停止", text_color=("gray10", "gray90"))
+        self.node_label.configure(text="当前节点：无")
         self.log("代理已停止，系统代理已关闭")
 
     def on_closing(self):
