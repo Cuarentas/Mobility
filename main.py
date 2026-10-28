@@ -4,11 +4,8 @@ import os
 import sys
 import json
 import base64
-import re
 import urllib.parse
-import requests
-import zipfile
-import io
+import time
 import winreg
 import ctypes
 import shutil
@@ -34,7 +31,6 @@ def get_resource_path(relative: str) -> Path:
 
 
 def b64_decode(s: str) -> str:
-    """容错 base64 解码"""
     s = s.strip().replace('-', '+').replace('_', '/')
     pad = 4 - len(s) % 4
     if pad != 4:
@@ -43,9 +39,8 @@ def b64_decode(s: str) -> str:
 
 
 def parse_vmess(link: str) -> dict | None:
-    """解析 vmess:// 链接"""
     try:
-        raw = link[8:]  # 去掉 vmess://
+        raw = link[8:]
         data = json.loads(b64_decode(raw))
         return {
             "protocol": "vmess",
@@ -67,9 +62,7 @@ def parse_vmess(link: str) -> dict | None:
 
 
 def parse_vless(link: str) -> dict | None:
-    """解析 vless:// 链接"""
     try:
-        # vless://uuid@host:port?params#name
         parsed = urllib.parse.urlparse(link)
         uuid = parsed.username
         address = parsed.hostname
@@ -89,7 +82,7 @@ def parse_vless(link: str) -> dict | None:
             "encryption": get_param("encryption", "none"),
             "flow": get_param("flow", ""),
             "network": get_param("type", "tcp"),
-            "security": get_param("security", "none"),  # tls / reality / none
+            "security": get_param("security", "none"),
             "sni": get_param("sni") or get_param("host") or "",
             "fp": get_param("fp", ""),
             "pbk": get_param("pbk", ""),
@@ -98,16 +91,13 @@ def parse_vless(link: str) -> dict | None:
             "path": get_param("path", ""),
             "host": get_param("host", ""),
             "serviceName": get_param("serviceName", ""),
-            "mode": get_param("mode", ""),
         }
     except Exception:
         return None
 
 
 def parse_trojan(link: str) -> dict | None:
-    """解析 trojan:// 链接"""
     try:
-        # trojan://password@host:port?params#name
         parsed = urllib.parse.urlparse(link)
         password = urllib.parse.unquote(parsed.username or "")
         address = parsed.hostname
@@ -136,7 +126,6 @@ def parse_trojan(link: str) -> dict | None:
 
 
 def parse_link(link: str) -> dict | None:
-    """自动识别并解析节点链接"""
     link = link.strip()
     if not link:
         return None
@@ -150,7 +139,6 @@ def parse_link(link: str) -> dict | None:
 
 
 def build_outbound(node: dict) -> dict:
-    """根据解析结果生成 Xray outbound"""
     protocol = node["protocol"]
 
     if protocol == "vmess":
@@ -159,9 +147,7 @@ def build_outbound(node: dict) -> dict:
             "alterId": node.get("alterId", 0),
             "security": node.get("security", "auto"),
         }
-        stream = {
-            "network": node.get("network", "tcp"),
-        }
+        stream = {"network": node.get("network", "tcp")}
         if node.get("tls") in ("tls", "xtls"):
             stream["security"] = "tls"
             stream["tlsSettings"] = {
@@ -174,9 +160,7 @@ def build_outbound(node: dict) -> dict:
                 "headers": {"Host": node.get("host") or node["address"]},
             }
         if node.get("network") == "grpc":
-            stream["grpcSettings"] = {
-                "serviceName": node.get("path") or "",
-            }
+            stream["grpcSettings"] = {"serviceName": node.get("path") or ""}
 
         return {
             "tag": "proxy",
@@ -199,18 +183,17 @@ def build_outbound(node: dict) -> dict:
         if node.get("flow"):
             user["flow"] = node["flow"]
 
-        stream = {
-            "network": node.get("network", "tcp"),
-        }
-
+        stream = {"network": node.get("network", "tcp")}
         security = node.get("security", "none")
         if security == "tls":
             stream["security"] = "tls"
-            stream["tlsSettings"] = {
+            tls = {
                 "serverName": node.get("sni") or node["address"],
                 "allowInsecure": True,
-                "fingerprint": node.get("fp") or "",
             }
+            if node.get("fp"):
+                tls["fingerprint"] = node["fp"]
+            stream["tlsSettings"] = tls
         elif security == "reality":
             stream["security"] = "reality"
             stream["realitySettings"] = {
@@ -255,7 +238,6 @@ def build_outbound(node: dict) -> dict:
         }
         if node.get("fp"):
             stream["tlsSettings"]["fingerprint"] = node["fp"]
-
         if node.get("network") == "ws":
             stream["wsSettings"] = {
                 "path": node.get("path") or "/",
@@ -283,12 +265,13 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("560x480")
+        self.geometry("560x500")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
         self.core_dir = self.base_dir / "core"
         self.core_dir.mkdir(exist_ok=True)
+        self.log_file = self.core_dir / "xray.log"
 
         self.xray_process = None
         self.is_running = False
@@ -329,10 +312,7 @@ class App(ctk.CTk):
         )
         self.stop_btn.pack(side="left", padx=12)
 
-        self.status_label = ctk.CTkLabel(
-            self, text="状态：未运行",
-            font=("Microsoft YaHei UI", 14)
-        )
+        self.status_label = ctk.CTkLabel(self, text="状态：未运行", font=("Microsoft YaHei UI", 14))
         self.status_label.pack(pady=6)
 
         self.node_label = ctk.CTkLabel(
@@ -342,7 +322,7 @@ class App(ctk.CTk):
         )
         self.node_label.pack(pady=(0, 6))
 
-        self.log_box = ctk.CTkTextbox(self, width=500, height=160, font=("Consolas", 12))
+        self.log_box = ctk.CTkTextbox(self, width=500, height=180, font=("Consolas", 12))
         self.log_box.pack(pady=6)
         self.log("欢迎使用 Mobility 第二阶段")
         self.log("支持协议：vmess / vless / trojan")
@@ -367,7 +347,6 @@ class App(ctk.CTk):
         except Exception as e:
             self.log(f"提取内置核心失败: {e}")
 
-        # 也尝试从同级 core 目录（zip 解压后的结构）
         local_core = self.base_dir / "core" / "xray.exe"
         if local_core.exists() and local_core != xray_exe:
             shutil.copy2(local_core, xray_exe)
@@ -382,7 +361,11 @@ class App(ctk.CTk):
             raise ValueError("无法生成出站配置")
 
         config = {
-            "log": {"loglevel": "warning"},
+            "log": {
+                "loglevel": "warning",
+                "access": str(self.core_dir / "access.log"),
+                "error": str(self.core_dir / "error.log"),
+            },
             "inbounds": [
                 {
                     "tag": "socks",
@@ -452,6 +435,17 @@ class App(ctk.CTk):
             self.log(f"设置系统代理失败：{e}")
             return False
 
+    def read_xray_error(self) -> str:
+        """读取 Xray 错误日志最后几行"""
+        err_file = self.core_dir / "error.log"
+        if not err_file.exists():
+            return ""
+        try:
+            lines = err_file.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+            return "\n".join(lines[-8:]) if lines else ""
+        except Exception:
+            return ""
+
     def start_proxy_thread(self):
         if self.is_running:
             self.log("代理已在运行中，请先停止")
@@ -474,6 +468,11 @@ class App(ctk.CTk):
             self.start_btn.configure(state="normal")
             return
 
+        if not node.get("address") or not node.get("port"):
+            self.log("错误：节点地址或端口无效")
+            self.start_btn.configure(state="normal")
+            return
+
         self.current_node = node
         self.log(f"解析成功：[{node['protocol']}] {node['name']}")
         self.log(f"服务器：{node['address']}:{node['port']}")
@@ -487,28 +486,65 @@ class App(ctk.CTk):
                 self.start_btn.configure(state="normal")
                 return
 
+        # 清理旧日志
+        for f in ("error.log", "access.log"):
+            p = self.core_dir / f
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
         try:
             config_path = self.create_config(node)
+            self.log("配置文件已生成")
         except Exception as e:
             self.log(f"生成配置失败：{e}")
             self.start_btn.configure(state="normal")
             return
 
         try:
+            # 把 Xray 的输出写到日志文件，方便排查
+            log_handle = open(self.log_file, "w", encoding="utf-8")
             self.xray_process = subprocess.Popen(
                 [str(xray_exe), "run", "-c", str(config_path)],
                 cwd=str(self.core_dir),
                 creationflags=subprocess.CREATE_NO_WINDOW,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=log_handle,
+                stderr=log_handle
             )
+
+            # 等待一小段时间，检查进程是否还活着
+            time.sleep(1.2)
+            ret = self.xray_process.poll()
+            if ret is not None:
+                self.log(f"Xray 启动失败，退出码：{ret}")
+                err = self.read_xray_error()
+                if err:
+                    self.log("错误日志：")
+                    for line in err.splitlines():
+                        self.log("  " + line)
+                else:
+                    # 读我们自己重定向的日志
+                    try:
+                        log_handle.close()
+                        txt = self.log_file.read_text(encoding="utf-8", errors="ignore").strip()
+                        if txt:
+                            self.log("Xray 输出：")
+                            for line in txt.splitlines()[-10:]:
+                                self.log("  " + line)
+                    except Exception:
+                        pass
+                self.xray_process = None
+                self.start_btn.configure(state="normal")
+                return
 
             if self.set_system_proxy(True, 10809):
                 self.is_running = True
                 self.status_label.configure(text="状态：运行中", text_color="#27ae60")
-                self.log("Xray 已启动")
+                self.log("Xray 已启动（进程正常）")
                 self.log("系统代理已设置为 127.0.0.1:10809")
-                self.log("现在可以正常使用代理了")
+                self.log("请用浏览器访问网站测试")
             else:
                 self.xray_process.terminate()
                 self.xray_process = None
