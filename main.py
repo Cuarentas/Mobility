@@ -152,7 +152,6 @@ def build_outbound(node: dict) -> dict:
             stream["security"] = "tls"
             stream["tlsSettings"] = {
                 "serverName": node.get("sni") or node.get("host") or node["address"],
-                "allowInsecure": True,
             }
         if node.get("network") == "ws":
             stream["wsSettings"] = {
@@ -189,7 +188,6 @@ def build_outbound(node: dict) -> dict:
             stream["security"] = "tls"
             tls = {
                 "serverName": node.get("sni") or node["address"],
-                "allowInsecure": True,
             }
             if node.get("fp"):
                 tls["fingerprint"] = node["fp"]
@@ -233,7 +231,6 @@ def build_outbound(node: dict) -> dict:
             "security": node.get("security") or "tls",
             "tlsSettings": {
                 "serverName": node.get("sni") or node["address"],
-                "allowInsecure": True,
             },
         }
         if node.get("fp"):
