@@ -1,4 +1,4 @@
-name: Build Portable EXE
+name: Build Portable
 
 on:
   workflow_dispatch:
@@ -120,9 +120,8 @@ jobs:
 
           使用 GitHub Actions + PyInstaller 自动打包。
 
-          Actions 页面点击 **Build Portable EXE** → **Run workflow**，填写版本号后即可自动构建并发布。
+          Actions 页面点击 **Build Portable** → **Run workflow**，填写版本号后即可自动构建并发布。
           "@
-          # 去掉 here-string 每行开头的缩进
           $readme = ($readme -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
           $readme = $readme.Trim() + "`n"
 
