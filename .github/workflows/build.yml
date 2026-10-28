@@ -43,31 +43,37 @@ jobs:
           pip install pyinstaller
           python -m PyInstaller --version
 
-      - name: Download Xray-core
+      - name: Download Xray-core and geo data
         shell: pwsh
         run: |
           Write-Host "开始下载 Xray-core..."
           $api = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
           $release = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "GitHub-Actions" }
           $asset = $release.assets | Where-Object { $_.name -like "*windows-64.zip" -and $_.name -notlike "*arm64*" } | Select-Object -First 1
-          if (-not $asset) {
-            throw "Xray windows-64.zip not found"
-          }
+          if (-not $asset) { throw "Xray windows-64.zip not found" }
           Write-Host "找到文件: $($asset.name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "xray.zip"
           if (Test-Path "core") { Remove-Item -Recurse -Force "core" }
           Expand-Archive -Path "xray.zip" -DestinationPath "core" -Force
-          if (-not (Test-Path "core\xray.exe")) {
-            throw "xray.exe not found after extract"
-          }
+          if (-not (Test-Path "core\xray.exe")) { throw "xray.exe not found after extract" }
           Write-Host "Xray-core 准备就绪"
+
+          Write-Host "下载 geoip.dat / geosite.dat (v2fly 官方)..."
+          # geoip: https://github.com/v2fly/geoip
+          Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile "core\geoip.dat"
+          # geosite: https://github.com/v2fly/domain-list-community
+          Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile "core\geosite.dat"
+          if (-not (Test-Path "core\geoip.dat")) { throw "geoip.dat download failed" }
+          if (-not (Test-Path "core\geosite.dat")) { throw "geosite.dat download failed" }
+          Write-Host "geo 数据文件准备就绪"
+          Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
       - name: Build with PyInstaller (onedir)
         shell: cmd
         run: |
           python -m PyInstaller --noconfirm --onedir --windowed --name Mobility main.py
 
-      - name: Package final zip (含 Xray-core)
+      - name: Package final zip (含 Xray-core 与 geo 数据)
         shell: pwsh
         run: |
           $distDir = "dist\Mobility"
@@ -75,11 +81,16 @@ jobs:
           if (-not (Test-Path $coreDir)) {
             New-Item -ItemType Directory -Path $coreDir -Force | Out-Null
           }
+
+          # 复制核心与 geo 数据
           Copy-Item -Path "core\xray.exe" -Destination "$coreDir\xray.exe" -Force
-          if (-not (Test-Path "$coreDir\xray.exe")) {
-            throw "复制 xray.exe 失败"
+          Copy-Item -Path "core\geoip.dat" -Destination "$coreDir\geoip.dat" -Force
+          Copy-Item -Path "core\geosite.dat" -Destination "$coreDir\geosite.dat" -Force
+
+          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat")) {
+            if (-not (Test-Path "$coreDir\$f")) { throw "缺少文件: $f" }
           }
-          Write-Host "已复制 xray.exe"
+          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat"
 
           $zipPath = "dist\Mobility.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -97,7 +108,8 @@ jobs:
 
           ## 功能
 
-          - 已内置 Xray-core，首次运行无需联网下载
+          - 已内置 Xray-core 与 geoip/geosite 数据
+          - 支持 vmess / vless / trojan 节点
           - 一键启动 / 停止本地代理
           - 自动设置 / 取消 Windows 系统代理
           - 绿色便携版，解压即用
@@ -107,9 +119,9 @@ jobs:
           1. 在 [Releases](../../releases) 下载 ``Mobility.zip``
           2. 解压到任意目录
           3. 双击运行 ``Mobility.exe``
-          4. 点击「启动代理」
+          4. 粘贴节点链接后点击「启动代理」
 
-          > 解压后目录中会包含 ``core/xray.exe`` 等文件，请保持目录完整，不要单独移动 exe。
+          > 解压后请保持目录完整（包含 core 文件夹），不要单独移动 exe。
 
           ## 反馈与贡献
 
@@ -132,10 +144,10 @@ jobs:
 
           if ($current -ne $readme) {
             Set-Content -Path "README.md" -Value $readme -Encoding utf8
-            Write-Host "README.md 已更新为与当前 zip 包一致"
+            Write-Host "README.md 已更新"
             echo "readme_changed=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "README.md 内容已是最新，无需修改"
+            Write-Host "README.md 无需修改"
             echo "readme_changed=false" >> $env:GITHUB_OUTPUT
           }
         id: readme
@@ -147,7 +159,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
-          git commit -m "docs: 同步 README 与当前发布包 (zip)"
+          git commit -m "docs: 同步 README 与当前发布包"
           git push
         continue-on-error: true
 
@@ -192,8 +204,8 @@ jobs:
             ### ✨ 本版本亮点
             
             - 📦 解压即用，无需安装任何运行环境
-            - 📦 **已内置 Xray-core**，首次运行无需联网下载核心
-            - 🔌 一键启动 / 停止本地代理
+            - 📦 **已内置 Xray-core + geoip.dat + geosite.dat**
+            - 🔌 支持 vmess / vless / trojan
             - 🌐 自动设置与取消 Windows 系统代理
             
             ---
@@ -203,19 +215,15 @@ jobs:
             1. 下载下方的 **Mobility.zip**
             2. 解压到任意目录
             3. 双击运行 `Mobility.exe`
-            4. 点击「启动代理」按钮
+            4. 粘贴节点链接后点击「启动代理」
             
-            > 解压后目录结构示例：  
-            > Mobility.exe  
-            > core/xray.exe  
-            > 其他依赖文件...
+            > 请保持解压后的目录完整（含 core 文件夹）。
             
             ---
             
             ### 🛠️ 系统要求
             
             - Windows 10 / 11（64 位）
-            - 无需安装 Python 或其他依赖
             
             ---
             
