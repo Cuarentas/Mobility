@@ -27,4 +27,5 @@ Windows 代理客户端
 
 使用 GitHub Actions + PyInstaller 自动打包。
 
-Actions 页面点击 **Build Portable EXE** → **Run workflow**，填写版本号后即可自动构建并发布。
+Actions 页面点击 **Build Portable** → **Run workflow**，填写版本号后即可自动构建并发布。
+
