@@ -5,12 +5,13 @@ import json
 import base64
 import urllib.parse
 import time
+import socket
 import winreg
 import ctypes
 import shutil
 import requests
 from pathlib import Path
-from threading import Thread
+from threading import Thread, Lock
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -57,6 +58,7 @@ def parse_vmess(link: str) -> dict | None:
             "tls": data.get("tls") or "",
             "sni": data.get("sni") or data.get("host") or "",
             "raw": link,
+            "latency": None,
         }
     except Exception:
         return None
@@ -93,6 +95,7 @@ def parse_vless(link: str) -> dict | None:
             "host": get_param("host", ""),
             "serviceName": get_param("serviceName", ""),
             "raw": link,
+            "latency": None,
         }
     except Exception:
         return None
@@ -123,6 +126,7 @@ def parse_trojan(link: str) -> dict | None:
             "host": get_param("host", ""),
             "fp": get_param("fp", ""),
             "raw": link,
+            "latency": None,
         }
     except Exception:
         return None
@@ -142,11 +146,8 @@ def parse_link(link: str) -> dict | None:
 
 
 def parse_subscription_content(content: str) -> list[dict]:
-    """解析订阅内容，返回节点列表"""
     content = content.strip()
     nodes = []
-
-    # 常见：整段 base64
     try:
         decoded = b64_decode(content)
         if "://" in decoded:
@@ -158,7 +159,6 @@ def parse_subscription_content(content: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        # 单行也可能再套一层 base64
         if not line.startswith(("vmess://", "vless://", "trojan://")):
             try:
                 inner = b64_decode(line).strip()
@@ -170,6 +170,25 @@ def parse_subscription_content(content: str) -> list[dict]:
         if node and node.get("address"):
             nodes.append(node)
     return nodes
+
+
+def tcp_ping(host: str, port: int, timeout: float = 2.5) -> int | None:
+    """TCP 连接耗时（毫秒），失败返回 None"""
+    try:
+        # 解析域名
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        if not infos:
+            return None
+        family, socktype, proto, _, sockaddr = infos[0]
+        s = socket.socket(family, socktype, proto)
+        s.settimeout(timeout)
+        t0 = time.perf_counter()
+        s.connect(sockaddr)
+        ms = int((time.perf_counter() - t0) * 1000)
+        s.close()
+        return ms
+    except Exception:
+        return None
 
 
 def build_outbound(node: dict) -> dict:
@@ -289,12 +308,23 @@ def build_outbound(node: dict) -> dict:
     return None
 
 
+def node_label(node: dict) -> str:
+    lat = node.get("latency")
+    if lat is None:
+        lat_s = "未测速"
+    elif lat < 0:
+        lat_s = "超时"
+    else:
+        lat_s = f"{lat}ms"
+    return f"[{node['protocol']}] {node['name']}  ({lat_s})  {node['address']}:{node['port']}"
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("600x560")
+        self.geometry("640x600")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -304,8 +334,10 @@ class App(ctk.CTk):
 
         self.xray_process = None
         self.is_running = False
+        self.is_testing = False
         self.nodes: list[dict] = []
         self.current_node = None
+        self._lock = Lock()
 
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -313,13 +345,13 @@ class App(ctk.CTk):
 
     def create_widgets(self):
         title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
-        title.pack(pady=(16, 4))
+        title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第三阶段：订阅解析 + 节点选择",
+            self, text="第四阶段：节点延迟测试与优选",
             font=("Microsoft YaHei UI", 12)
         )
-        subtitle.pack(pady=(0, 10))
+        subtitle.pack(pady=(0, 8))
 
         self.entry_label = ctk.CTkLabel(
             self, text="订阅链接 或 单条节点链接：",
@@ -328,7 +360,7 @@ class App(ctk.CTk):
         self.entry_label.pack(anchor="w", padx=40)
 
         self.entry = ctk.CTkEntry(
-            self, width=520, height=34,
+            self, width=560, height=34,
             placeholder_text="https://... 订阅地址，或 vmess:// / vless:// / trojan://"
         )
         self.entry.pack(pady=6)
@@ -337,17 +369,33 @@ class App(ctk.CTk):
         mid_btn.pack(pady=6)
 
         self.load_btn = ctk.CTkButton(
-            mid_btn, text="加载订阅 / 解析节点", width=160, height=34,
+            mid_btn, text="加载订阅", width=110, height=34,
             font=("Microsoft YaHei UI", 13),
             command=self.load_nodes_thread
         )
-        self.load_btn.pack(side="left", padx=8)
+        self.load_btn.pack(side="left", padx=6)
+
+        self.test_btn = ctk.CTkButton(
+            mid_btn, text="测速全部", width=110, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#8e44ad", hover_color="#6c3483",
+            command=self.test_all_thread
+        )
+        self.test_btn.pack(side="left", padx=6)
+
+        self.best_btn = ctk.CTkButton(
+            mid_btn, text="选择最低延迟", width=120, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#16a085", hover_color="#117a65",
+            command=self.select_best
+        )
+        self.best_btn.pack(side="left", padx=6)
 
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
         self.node_combo = ctk.CTkComboBox(
-            self, width=520, height=34,
+            self, width=560, height=34,
             values=["（请先加载订阅或节点）"],
             state="readonly",
             font=("Microsoft YaHei UI", 12)
@@ -356,7 +404,7 @@ class App(ctk.CTk):
         self.node_combo.pack(pady=6)
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=12)
+        btn_frame.pack(pady=10)
 
         self.start_btn = ctk.CTkButton(
             btn_frame, text="启动代理", width=150, height=40,
@@ -383,11 +431,11 @@ class App(ctk.CTk):
         )
         self.current_label.pack(pady=(0, 4))
 
-        self.log_box = ctk.CTkTextbox(self, width=540, height=170, font=("Consolas", 12))
+        self.log_box = ctk.CTkTextbox(self, width=580, height=180, font=("Consolas", 12))
         self.log_box.pack(pady=6)
-        self.log("欢迎使用 Mobility 第三阶段")
-        self.log("支持：订阅链接 / 单条 vmess·vless·trojan 节点")
-        self.log("先点击「加载订阅 / 解析节点」，再选择节点并启动")
+        self.log("欢迎使用 Mobility 第四阶段")
+        self.log("流程：加载订阅 → 测速全部 → 选择最低延迟 → 启动代理")
+        self.log("测速方式：TCP 连接延迟（到节点地址:端口）")
 
     def log(self, msg: str):
         self.log_box.insert("end", msg + "\n")
@@ -413,6 +461,36 @@ class App(ctk.CTk):
             return
         self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
 
+    def refresh_combo(self, keep_selection: bool = True):
+        if not self.nodes:
+            self.node_combo.configure(values=["（无可用节点）"])
+            self.node_combo.set("（无可用节点）")
+            return
+
+        # 按延迟排序：有数值的在前，超时/未测在后
+        def sort_key(n):
+            lat = n.get("latency")
+            if lat is None:
+                return (2, 999999)
+            if lat < 0:
+                return (1, 999999)
+            return (0, lat)
+
+        self.nodes.sort(key=sort_key)
+        labels = []
+        for i, n in enumerate(self.nodes):
+            label = node_label(n)
+            n["_label"] = label
+            n["_index"] = i
+            labels.append(label)
+
+        prev = self.node_combo.get() if keep_selection else None
+        self.node_combo.configure(values=labels)
+        if prev and prev in labels:
+            self.node_combo.set(prev)
+        else:
+            self.node_combo.set(labels[0])
+
     def load_nodes_thread(self):
         Thread(target=self.load_nodes, daemon=True).start()
 
@@ -431,14 +509,12 @@ class App(ctk.CTk):
                 resp = requests.get(
                     text,
                     timeout=20,
-                    headers={"User-Agent": "Mozilla/5.0 Mobility/0.3"}
+                    headers={"User-Agent": "Mozilla/5.0 Mobility/0.4"}
                 )
                 resp.raise_for_status()
-                content = resp.text
-                self.nodes = parse_subscription_content(content)
+                self.nodes = parse_subscription_content(resp.text)
                 self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
             else:
-                # 单条或多条（换行分隔）节点
                 if "://" in text and "\n" not in text:
                     node = parse_link(text)
                     if node:
@@ -452,24 +528,70 @@ class App(ctk.CTk):
             return
 
         if not self.nodes:
-            self.log("未解析到有效节点，请检查链接")
-            self.node_combo.configure(values=["（无可用节点）"])
-            self.node_combo.set("（无可用节点）")
+            self.log("未解析到有效节点")
+            self.refresh_combo()
             self.load_btn.configure(state="normal")
             return
 
-        labels = []
-        for i, n in enumerate(self.nodes):
-            label = f"[{n['protocol']}] {n['name']}  ({n['address']}:{n['port']})"
-            labels.append(label)
-            # 避免重名显示问题，内部用索引
-            n["_label"] = label
-            n["_index"] = i
-
-        self.node_combo.configure(values=labels)
-        self.node_combo.set(labels[0])
-        self.log(f"已载入，默认选择第 1 个节点")
+        self.refresh_combo(keep_selection=False)
+        self.log("已载入节点，可点击「测速全部」")
         self.load_btn.configure(state="normal")
+
+    def test_all_thread(self):
+        if self.is_testing:
+            self.log("正在测速中，请稍候...")
+            return
+        if not self.nodes:
+            self.log("请先加载节点")
+            return
+        Thread(target=self.test_all, daemon=True).start()
+
+    def test_all(self):
+        self.is_testing = True
+        self.test_btn.configure(state="disabled")
+        self.load_btn.configure(state="disabled")
+        total = len(self.nodes)
+        self.log(f"开始测速，共 {total} 个节点...")
+        ok = 0
+        for i, node in enumerate(self.nodes):
+            host = node["address"]
+            port = int(node["port"])
+            ms = tcp_ping(host, port, timeout=2.5)
+            if ms is None:
+                node["latency"] = -1
+                self.log(f"  [{i+1}/{total}] {node['name']} → 超时")
+            else:
+                node["latency"] = ms
+                ok += 1
+                self.log(f"  [{i+1}/{total}] {node['name']} → {ms}ms")
+            # 边测边刷新列表
+            if (i + 1) % 3 == 0 or i == total - 1:
+                self.refresh_combo(keep_selection=True)
+
+        self.log(f"测速完成：成功 {ok}/{total}")
+        self.refresh_combo(keep_selection=False)
+        # 自动选中最低延迟
+        self.select_best()
+        self.is_testing = False
+        self.test_btn.configure(state="normal")
+        self.load_btn.configure(state="normal")
+
+    def select_best(self):
+        if not self.nodes:
+            self.log("没有节点可选")
+            return
+        best = None
+        for n in self.nodes:
+            lat = n.get("latency")
+            if lat is not None and lat >= 0:
+                if best is None or lat < best["latency"]:
+                    best = n
+        if best is None:
+            self.log("没有测速成功的节点，请先点「测速全部」")
+            return
+        self.refresh_combo(keep_selection=False)
+        self.node_combo.set(best["_label"])
+        self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
 
     def get_selected_node(self) -> dict | None:
         if not self.nodes:
@@ -576,7 +698,6 @@ class App(ctk.CTk):
 
         node = self.get_selected_node()
         if not node:
-            # 兼容：输入框里直接是单节点且未点加载
             text = self.entry.get().strip()
             if text and not text.startswith(("http://", "https://")):
                 node = parse_link(text)
@@ -591,9 +712,11 @@ class App(ctk.CTk):
             return
 
         self.current_node = node
-        self.log(f"使用节点：[{node['protocol']}] {node['name']}")
+        lat = node.get("latency")
+        lat_s = f"{lat}ms" if isinstance(lat, int) and lat >= 0 else "未测速"
+        self.log(f"使用节点：[{node['protocol']}] {node['name']} ({lat_s})")
         self.log(f"服务器：{node['address']}:{node['port']}")
-        self.current_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']}")
+        self.current_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']} ({lat_s})")
 
         xray_exe = self.core_dir / "xray.exe"
         if not xray_exe.exists():
