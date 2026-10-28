@@ -1,4 +1,4 @@
-name: Build Portable
+name: Build Portable EXE
 
 on:
   workflow_dispatch:
@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -69,30 +71,86 @@ jobs:
         shell: pwsh
         run: |
           $distDir = "dist\Mobility"
-
-          # 确保 core 目录存在并把 xray.exe 放进去
           $coreDir = Join-Path $distDir "core"
           if (-not (Test-Path $coreDir)) {
             New-Item -ItemType Directory -Path $coreDir -Force | Out-Null
           }
           Copy-Item -Path "core\xray.exe" -Destination "$coreDir\xray.exe" -Force
-          Write-Host "已复制 xray.exe 到 $coreDir"
-
-          # 检查是否复制成功
           if (-not (Test-Path "$coreDir\xray.exe")) {
             throw "复制 xray.exe 失败"
           }
+          Write-Host "已复制 xray.exe"
 
-          Write-Host "最终目录内容："
-          Get-ChildItem -Recurse $distDir | ForEach-Object { Write-Host $_.FullName }
-
-          # 打包成 zip
           $zipPath = "dist\Mobility.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           Compress-Archive -Path "$distDir\*" -DestinationPath $zipPath -Force
-
           $zipInfo = Get-Item $zipPath
           Write-Host "打包完成: $($zipInfo.Name)  大小: $([math]::Round($zipInfo.Length / 1MB, 2)) MB"
+
+      - name: Update README to match current package
+        shell: pwsh
+        run: |
+          $readme = @"
+          # Mobility
+
+          Windows 代理客户端
+
+          ## 功能
+
+          - 已内置 Xray-core，首次运行无需联网下载
+          - 一键启动 / 停止本地代理
+          - 自动设置 / 取消 Windows 系统代理
+          - 绿色便携版，解压即用
+
+          ## 使用方法
+
+          1. 在 [Releases](../../releases) 下载 ``Mobility.zip``
+          2. 解压到任意目录
+          3. 双击运行 ``Mobility.exe``
+          4. 点击「启动代理」
+
+          > 解压后目录中会包含 ``core/xray.exe`` 等文件，请保持目录完整，不要单独移动 exe。
+
+          ## 反馈与贡献
+
+          - **提交 Bug 或功能建议**：请到 [Issues](../../issues/new/choose) 页面选择对应模板提交
+          - **参与开发**：欢迎提交 Pull Request，请先阅读 [贡献指南](CONTRIBUTING.md)
+
+          ## 构建
+
+          使用 GitHub Actions + PyInstaller 自动打包。
+
+          Actions 页面点击 **Build Portable EXE** → **Run workflow**，填写版本号后即可自动构建并发布。
+          "@
+          # 去掉 here-string 每行开头的缩进
+          $readme = ($readme -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
+          $readme = $readme.Trim() + "`n"
+
+          $current = ""
+          if (Test-Path "README.md") {
+            $current = Get-Content "README.md" -Raw
+          }
+
+          if ($current -ne $readme) {
+            Set-Content -Path "README.md" -Value $readme -Encoding utf8
+            Write-Host "README.md 已更新为与当前 zip 包一致"
+            echo "readme_changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "README.md 内容已是最新，无需修改"
+            echo "readme_changed=false" >> $env:GITHUB_OUTPUT
+          }
+        id: readme
+
+      - name: Commit updated README
+        if: steps.readme.outputs.readme_changed == 'true'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: 同步 README 与当前发布包 (zip)"
+          git push
+        continue-on-error: true
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
