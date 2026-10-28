@@ -1,6 +1,5 @@
 import customtkinter as ctk
 import subprocess
-import os
 import sys
 import json
 import base64
@@ -9,6 +8,7 @@ import time
 import winreg
 import ctypes
 import shutil
+import requests
 from pathlib import Path
 from threading import Thread
 
@@ -56,6 +56,7 @@ def parse_vmess(link: str) -> dict | None:
             "path": data.get("path") or "",
             "tls": data.get("tls") or "",
             "sni": data.get("sni") or data.get("host") or "",
+            "raw": link,
         }
     except Exception:
         return None
@@ -91,6 +92,7 @@ def parse_vless(link: str) -> dict | None:
             "path": get_param("path", ""),
             "host": get_param("host", ""),
             "serviceName": get_param("serviceName", ""),
+            "raw": link,
         }
     except Exception:
         return None
@@ -120,6 +122,7 @@ def parse_trojan(link: str) -> dict | None:
             "path": get_param("path", ""),
             "host": get_param("host", ""),
             "fp": get_param("fp", ""),
+            "raw": link,
         }
     except Exception:
         return None
@@ -136,6 +139,37 @@ def parse_link(link: str) -> dict | None:
     if link.startswith("trojan://"):
         return parse_trojan(link)
     return None
+
+
+def parse_subscription_content(content: str) -> list[dict]:
+    """解析订阅内容，返回节点列表"""
+    content = content.strip()
+    nodes = []
+
+    # 常见：整段 base64
+    try:
+        decoded = b64_decode(content)
+        if "://" in decoded:
+            content = decoded
+    except Exception:
+        pass
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # 单行也可能再套一层 base64
+        if not line.startswith(("vmess://", "vless://", "trojan://")):
+            try:
+                inner = b64_decode(line).strip()
+                if inner.startswith(("vmess://", "vless://", "trojan://")):
+                    line = inner
+            except Exception:
+                continue
+        node = parse_link(line)
+        if node and node.get("address"):
+            nodes.append(node)
+    return nodes
 
 
 def build_outbound(node: dict) -> dict:
@@ -186,9 +220,7 @@ def build_outbound(node: dict) -> dict:
         security = node.get("security", "none")
         if security == "tls":
             stream["security"] = "tls"
-            tls = {
-                "serverName": node.get("sni") or node["address"],
-            }
+            tls = {"serverName": node.get("sni") or node["address"]}
             if node.get("fp"):
                 tls["fingerprint"] = node["fp"]
             stream["tlsSettings"] = tls
@@ -262,7 +294,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("560x500")
+        self.geometry("600x560")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -272,6 +304,7 @@ class App(ctk.CTk):
 
         self.xray_process = None
         self.is_running = False
+        self.nodes: list[dict] = []
         self.current_node = None
 
         self.create_widgets()
@@ -280,29 +313,60 @@ class App(ctk.CTk):
 
     def create_widgets(self):
         title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
-        title.pack(pady=(18, 5))
+        title.pack(pady=(16, 4))
 
-        subtitle = ctk.CTkLabel(self, text="第二阶段：支持 vmess / vless / trojan 节点", font=("Microsoft YaHei UI", 12))
-        subtitle.pack(pady=(0, 12))
+        subtitle = ctk.CTkLabel(
+            self, text="第三阶段：订阅解析 + 节点选择",
+            font=("Microsoft YaHei UI", 12)
+        )
+        subtitle.pack(pady=(0, 10))
 
-        self.entry_label = ctk.CTkLabel(self, text="节点链接（vmess / vless / trojan）：", font=("Microsoft YaHei UI", 13))
+        self.entry_label = ctk.CTkLabel(
+            self, text="订阅链接 或 单条节点链接：",
+            font=("Microsoft YaHei UI", 13)
+        )
         self.entry_label.pack(anchor="w", padx=40)
 
-        self.entry = ctk.CTkEntry(self, width=480, height=36, placeholder_text="粘贴节点链接，例如 vmess://... 或 vless://...")
+        self.entry = ctk.CTkEntry(
+            self, width=520, height=34,
+            placeholder_text="https://... 订阅地址，或 vmess:// / vless:// / trojan://"
+        )
         self.entry.pack(pady=6)
 
+        mid_btn = ctk.CTkFrame(self, fg_color="transparent")
+        mid_btn.pack(pady=6)
+
+        self.load_btn = ctk.CTkButton(
+            mid_btn, text="加载订阅 / 解析节点", width=160, height=34,
+            font=("Microsoft YaHei UI", 13),
+            command=self.load_nodes_thread
+        )
+        self.load_btn.pack(side="left", padx=8)
+
+        self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
+        self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
+
+        self.node_combo = ctk.CTkComboBox(
+            self, width=520, height=34,
+            values=["（请先加载订阅或节点）"],
+            state="readonly",
+            font=("Microsoft YaHei UI", 12)
+        )
+        self.node_combo.set("（请先加载订阅或节点）")
+        self.node_combo.pack(pady=6)
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=14)
+        btn_frame.pack(pady=12)
 
         self.start_btn = ctk.CTkButton(
-            btn_frame, text="启动代理", width=150, height=42,
+            btn_frame, text="启动代理", width=150, height=40,
             font=("Microsoft YaHei UI", 14),
             command=self.start_proxy_thread
         )
         self.start_btn.pack(side="left", padx=12)
 
         self.stop_btn = ctk.CTkButton(
-            btn_frame, text="停止代理", width=150, height=42,
+            btn_frame, text="停止代理", width=150, height=40,
             font=("Microsoft YaHei UI", 14),
             fg_color="#c0392b", hover_color="#922b21",
             command=self.stop_proxy
@@ -310,20 +374,20 @@ class App(ctk.CTk):
         self.stop_btn.pack(side="left", padx=12)
 
         self.status_label = ctk.CTkLabel(self, text="状态：未运行", font=("Microsoft YaHei UI", 14))
-        self.status_label.pack(pady=6)
+        self.status_label.pack(pady=4)
 
-        self.node_label = ctk.CTkLabel(
+        self.current_label = ctk.CTkLabel(
             self, text="当前节点：无",
             font=("Microsoft YaHei UI", 12),
             text_color=("gray40", "gray60")
         )
-        self.node_label.pack(pady=(0, 6))
+        self.current_label.pack(pady=(0, 4))
 
-        self.log_box = ctk.CTkTextbox(self, width=500, height=180, font=("Consolas", 12))
+        self.log_box = ctk.CTkTextbox(self, width=540, height=170, font=("Consolas", 12))
         self.log_box.pack(pady=6)
-        self.log("欢迎使用 Mobility 第二阶段")
-        self.log("支持协议：vmess / vless / trojan")
-        self.log("请粘贴节点链接后点击「启动代理」")
+        self.log("欢迎使用 Mobility 第三阶段")
+        self.log("支持：订阅链接 / 单条 vmess·vless·trojan 节点")
+        self.log("先点击「加载订阅 / 解析节点」，再选择节点并启动")
 
     def log(self, msg: str):
         self.log_box.insert("end", msg + "\n")
@@ -334,7 +398,6 @@ class App(ctk.CTk):
         if xray_exe.exists():
             self.log("已检测到 Xray-core")
             return
-
         try:
             bundled = get_resource_path("core/xray.exe")
             if bundled.exists():
@@ -343,14 +406,79 @@ class App(ctk.CTk):
                 return
         except Exception as e:
             self.log(f"提取内置核心失败: {e}")
-
         local_core = self.base_dir / "core" / "xray.exe"
         if local_core.exists() and local_core != xray_exe:
             shutil.copy2(local_core, xray_exe)
             self.log("已使用目录内 Xray-core")
             return
-
         self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
+
+    def load_nodes_thread(self):
+        Thread(target=self.load_nodes, daemon=True).start()
+
+    def load_nodes(self):
+        self.load_btn.configure(state="disabled")
+        text = self.entry.get().strip()
+        if not text:
+            self.log("错误：请输入订阅链接或节点链接")
+            self.load_btn.configure(state="normal")
+            return
+
+        self.nodes = []
+        try:
+            if text.startswith(("http://", "https://")):
+                self.log("正在拉取订阅...")
+                resp = requests.get(
+                    text,
+                    timeout=20,
+                    headers={"User-Agent": "Mozilla/5.0 Mobility/0.3"}
+                )
+                resp.raise_for_status()
+                content = resp.text
+                self.nodes = parse_subscription_content(content)
+                self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
+            else:
+                # 单条或多条（换行分隔）节点
+                if "://" in text and "\n" not in text:
+                    node = parse_link(text)
+                    if node:
+                        self.nodes = [node]
+                else:
+                    self.nodes = parse_subscription_content(text)
+                self.log(f"解析完成，共 {len(self.nodes)} 个节点")
+        except Exception as e:
+            self.log(f"加载失败：{e}")
+            self.load_btn.configure(state="normal")
+            return
+
+        if not self.nodes:
+            self.log("未解析到有效节点，请检查链接")
+            self.node_combo.configure(values=["（无可用节点）"])
+            self.node_combo.set("（无可用节点）")
+            self.load_btn.configure(state="normal")
+            return
+
+        labels = []
+        for i, n in enumerate(self.nodes):
+            label = f"[{n['protocol']}] {n['name']}  ({n['address']}:{n['port']})"
+            labels.append(label)
+            # 避免重名显示问题，内部用索引
+            n["_label"] = label
+            n["_index"] = i
+
+        self.node_combo.configure(values=labels)
+        self.node_combo.set(labels[0])
+        self.log(f"已载入，默认选择第 1 个节点")
+        self.load_btn.configure(state="normal")
+
+    def get_selected_node(self) -> dict | None:
+        if not self.nodes:
+            return None
+        current = self.node_combo.get()
+        for n in self.nodes:
+            if n.get("_label") == current:
+                return n
+        return self.nodes[0]
 
     def create_config(self, node: dict) -> Path:
         outbound = build_outbound(node)
@@ -370,26 +498,20 @@ class App(ctk.CTk):
                     "listen": "127.0.0.1",
                     "protocol": "socks",
                     "settings": {"udp": True},
-                    "sniffing": {
-                        "enabled": True,
-                        "destOverride": ["http", "tls"]
-                    }
+                    "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 },
                 {
                     "tag": "http",
                     "port": 10809,
                     "listen": "127.0.0.1",
                     "protocol": "http",
-                    "sniffing": {
-                        "enabled": True,
-                        "destOverride": ["http", "tls"]
-                    }
-                }
+                    "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
+                },
             ],
             "outbounds": [
                 outbound,
                 {"tag": "direct", "protocol": "freedom"},
-                {"tag": "block", "protocol": "blackhole"}
+                {"tag": "block", "protocol": "blackhole"},
             ],
             "routing": {
                 "domainStrategy": "AsIs",
@@ -397,10 +519,10 @@ class App(ctk.CTk):
                     {
                         "type": "field",
                         "outboundTag": "direct",
-                        "ip": ["geoip:private"]
+                        "ip": ["geoip:private"],
                     }
-                ]
-            }
+                ],
+            },
         }
 
         config_path = self.core_dir / "config.json"
@@ -433,7 +555,6 @@ class App(ctk.CTk):
             return False
 
     def read_xray_error(self) -> str:
-        """读取 Xray 错误日志最后几行"""
         err_file = self.core_dir / "error.log"
         if not err_file.exists():
             return ""
@@ -453,17 +574,16 @@ class App(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.log("---------- 开始启动 ----------")
 
-        link = self.entry.get().strip()
-        if not link:
-            self.log("错误：请先粘贴节点链接")
-            self.start_btn.configure(state="normal")
-            return
-
-        node = parse_link(link)
+        node = self.get_selected_node()
         if not node:
-            self.log("错误：无法识别的节点链接（仅支持 vmess / vless / trojan）")
-            self.start_btn.configure(state="normal")
-            return
+            # 兼容：输入框里直接是单节点且未点加载
+            text = self.entry.get().strip()
+            if text and not text.startswith(("http://", "https://")):
+                node = parse_link(text)
+            if not node:
+                self.log("错误：请先加载订阅并选择节点")
+                self.start_btn.configure(state="normal")
+                return
 
         if not node.get("address") or not node.get("port"):
             self.log("错误：节点地址或端口无效")
@@ -471,9 +591,9 @@ class App(ctk.CTk):
             return
 
         self.current_node = node
-        self.log(f"解析成功：[{node['protocol']}] {node['name']}")
+        self.log(f"使用节点：[{node['protocol']}] {node['name']}")
         self.log(f"服务器：{node['address']}:{node['port']}")
-        self.node_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']}")
+        self.current_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']}")
 
         xray_exe = self.core_dir / "xray.exe"
         if not xray_exe.exists():
@@ -483,7 +603,6 @@ class App(ctk.CTk):
                 self.start_btn.configure(state="normal")
                 return
 
-        # 清理旧日志
         for f in ("error.log", "access.log"):
             p = self.core_dir / f
             if p.exists():
@@ -501,17 +620,15 @@ class App(ctk.CTk):
             return
 
         try:
-            # 把 Xray 的输出写到日志文件，方便排查
             log_handle = open(self.log_file, "w", encoding="utf-8")
             self.xray_process = subprocess.Popen(
                 [str(xray_exe), "run", "-c", str(config_path)],
                 cwd=str(self.core_dir),
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 stdout=log_handle,
-                stderr=log_handle
+                stderr=log_handle,
             )
 
-            # 等待一小段时间，检查进程是否还活着
             time.sleep(1.2)
             ret = self.xray_process.poll()
             if ret is not None:
@@ -522,7 +639,6 @@ class App(ctk.CTk):
                     for line in err.splitlines():
                         self.log("  " + line)
                 else:
-                    # 读我们自己重定向的日志
                     try:
                         log_handle.close()
                         txt = self.log_file.read_text(encoding="utf-8", errors="ignore").strip()
@@ -539,9 +655,8 @@ class App(ctk.CTk):
             if self.set_system_proxy(True, 10809):
                 self.is_running = True
                 self.status_label.configure(text="状态：运行中", text_color="#27ae60")
-                self.log("Xray 已启动（进程正常）")
+                self.log("Xray 已启动")
                 self.log("系统代理已设置为 127.0.0.1:10809")
-                self.log("请用浏览器访问网站测试")
             else:
                 self.xray_process.terminate()
                 self.xray_process = None
@@ -568,7 +683,7 @@ class App(ctk.CTk):
         self.set_system_proxy(False)
         self.is_running = False
         self.status_label.configure(text="状态：已停止", text_color=("gray10", "gray90"))
-        self.node_label.configure(text="当前节点：无")
+        self.current_label.configure(text="当前节点：无")
         self.log("代理已停止，系统代理已关闭")
 
     def on_closing(self):
