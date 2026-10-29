@@ -32,6 +32,8 @@ PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
 PROXY_MODE_DEFAULT = "规则模式"
 REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时"]
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
+THEME_OPTIONS = ["跟随系统", "浅色", "深色"]
+THEME_MAP = {"跟随系统": "System", "浅色": "Light", "深色": "Dark"}
 
 
 def get_base_dir() -> Path:
@@ -339,7 +341,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("660x760")
+        self.geometry("660x800")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -362,6 +364,8 @@ class App(ctk.CTk):
         self.http_port = 10809
         self.refresh_label = "不自动更新"
         self._refresh_after_id = None
+        self.start_minimized = False
+        self.theme_label = "跟随系统"
         self.tray_icon = None
         self._lock = Lock()
 
@@ -374,7 +378,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第八阶段：剪贴板导入 + 定时更新订阅",
+            self, text="第九阶段：连通性测试 + 主题 + 启动最小化",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -484,6 +488,26 @@ class App(ctk.CTk):
         )
         self.autoconnect_check.pack(side="left", padx=8)
 
+        self.minimized_check = ctk.CTkCheckBox(
+            opt_row, text="启动后最小化",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_minimized_option
+        )
+        self.minimized_check.pack(side="left", padx=8)
+
+        theme_row = ctk.CTkFrame(self, fg_color="transparent")
+        theme_row.pack(pady=(4, 0))
+        ctk.CTkLabel(theme_row, text="主题：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.theme_combo = ctk.CTkComboBox(
+            theme_row, width=110, height=30,
+            values=THEME_OPTIONS,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_theme_change
+        )
+        self.theme_combo.set("跟随系统")
+        self.theme_combo.pack(side="left", padx=6)
+
         port_row = ctk.CTkFrame(self, fg_color="transparent")
         port_row.pack(pady=(6, 0))
 
@@ -533,19 +557,27 @@ class App(ctk.CTk):
         btn_frame.pack(pady=10)
 
         self.start_btn = ctk.CTkButton(
-            btn_frame, text="启动代理", width=150, height=40,
+            btn_frame, text="启动代理", width=120, height=40,
             font=("Microsoft YaHei UI", 14),
             command=self.start_proxy_thread
         )
         self.start_btn.pack(side="left", padx=12)
 
         self.stop_btn = ctk.CTkButton(
-            btn_frame, text="停止代理", width=150, height=40,
+            btn_frame, text="停止代理", width=120, height=40,
             font=("Microsoft YaHei UI", 14),
             fg_color="#c0392b", hover_color="#922b21",
             command=self.stop_proxy
         )
-        self.stop_btn.pack(side="left", padx=12)
+        self.stop_btn.pack(side="left", padx=8)
+
+        self.ping_btn = ctk.CTkButton(
+            btn_frame, text="连通性测试", width=120, height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#d35400", hover_color="#a04000",
+            command=self.connectivity_test_thread
+        )
+        self.ping_btn.pack(side="left", padx=8)
 
         self.status_label = ctk.CTkLabel(self, text="状态：未运行", font=("Microsoft YaHei UI", 14))
         self.status_label.pack(pady=4)
@@ -565,6 +597,7 @@ class App(ctk.CTk):
         self.log("支持关闭到系统托盘、开机自启、启动自动连接")
         self.log("可自定义本地 SOCKS / HTTP 端口")
         self.log("支持剪贴板导入、复制节点、订阅定时更新")
+        self.log("支持连通性测试、主题切换、启动后最小化")
         self.log("数据保存到 Subscribe.json")
 
     def log(self, msg: str):
@@ -583,6 +616,10 @@ class App(ctk.CTk):
             self.log("系统托盘不可用（缺少 pystray）")
         # 订阅定时更新
         self.schedule_subscription_refresh()
+        # 启动后最小化到托盘
+        if self.start_minimized and TRAY_AVAILABLE:
+            self.after(300, self.withdraw)
+            self.log("已按设置启动后最小化到托盘")
         # 启动时自动连接
         if self.auto_connect and self.nodes:
             self.log("已开启启动自动连接，正在启动代理...")
@@ -640,6 +677,54 @@ class App(ctk.CTk):
         self.auto_connect = bool(self.autoconnect_check.get())
         self.save_settings()
         self.log(f"启动时自动连接：{'开启' if self.auto_connect else '关闭'}")
+
+    def on_minimized_option(self):
+        self.start_minimized = bool(self.minimized_check.get())
+        self.save_settings()
+        self.log(f"启动后最小化：{'开启' if self.start_minimized else '关闭'}")
+
+    def on_theme_change(self, value=None):
+        self.theme_label = self.theme_combo.get() or "跟随系统"
+        mode = THEME_MAP.get(self.theme_label, "System")
+        ctk.set_appearance_mode(mode)
+        self.save_settings()
+        self.log(f"主题已切换：{self.theme_label}")
+
+    def connectivity_test_thread(self):
+        Thread(target=self.connectivity_test, daemon=True).start()
+
+    def connectivity_test(self):
+        if not self.is_running:
+            self.log("请先启动代理再做连通性测试")
+            return
+        _, http_port = self.get_ports()
+        proxies = {
+            "http": f"http://127.0.0.1:{http_port}",
+            "https": f"http://127.0.0.1:{http_port}",
+        }
+        targets = [
+            ("https://www.google.com/generate_204", "Google"),
+            ("https://www.youtube.com", "YouTube"),
+            ("https://www.cloudflare.com", "Cloudflare"),
+        ]
+        self.log("---------- 连通性测试 ----------")
+        ok_count = 0
+        for url, name in targets:
+            try:
+                t0 = time.perf_counter()
+                r = requests.get(url, proxies=proxies, timeout=8, allow_redirects=True)
+                ms = int((time.perf_counter() - t0) * 1000)
+                # 204 or 200 都算成功
+                if r.status_code in (200, 204, 301, 302):
+                    self.log(f"  {name}: 成功 {ms}ms (HTTP {r.status_code})")
+                    ok_count += 1
+                else:
+                    self.log(f"  {name}: 异常 HTTP {r.status_code} ({ms}ms)")
+            except Exception as e:
+                self.log(f"  {name}: 失败 ({e})")
+        self.log(f"连通性结果：{ok_count}/{len(targets)} 成功")
+        if ok_count == 0:
+            self.log("提示：代理可能未真正可用，请更换节点后重试")
 
     def on_refresh_change(self, value=None):
         self.refresh_label = self.refresh_combo.get() or "不自动更新"
@@ -832,6 +917,8 @@ class App(ctk.CTk):
                 "socks_port": self.get_ports()[0],
                 "http_port": self.get_ports()[1],
                 "refresh_label": self.refresh_combo.get() if hasattr(self, "refresh_combo") else self.refresh_label,
+                "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
+                "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -891,6 +978,18 @@ class App(ctk.CTk):
                 self.refresh_label = rl
                 if hasattr(self, "refresh_combo"):
                     self.refresh_combo.set(rl)
+            self.start_minimized = bool(data.get("start_minimized", False))
+            if hasattr(self, "minimized_check"):
+                if self.start_minimized:
+                    self.minimized_check.select()
+                else:
+                    self.minimized_check.deselect()
+            tl = data.get("theme_label") or "跟随系统"
+            if tl in THEME_OPTIONS:
+                self.theme_label = tl
+                if hasattr(self, "theme_combo"):
+                    self.theme_combo.set(tl)
+                ctk.set_appearance_mode(THEME_MAP.get(tl, "System"))
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
