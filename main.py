@@ -490,6 +490,7 @@ class App(ctk.CTk):
         self._run_started_at = None
         self._bytes_up = 0
         self._bytes_down = 0
+        self._custom_refresh_hours = 0
         self.icons_dir = get_icons_dir()
 
         self.create_widgets()
@@ -837,9 +838,13 @@ class App(ctk.CTk):
         rr = ctk.CTkFrame(scroll, fg_color="transparent")
         rr.pack(fill="x", pady=8)
         ctk.CTkLabel(rr, text="订阅定时更新", font=("Microsoft YaHei UI", 13)).pack(side="left")
-        self.refresh_combo = ctk.CTkComboBox(rr, width=120, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
+        self.refresh_combo = ctk.CTkComboBox(rr, width=110, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
         self.refresh_combo.set("不自动更新")
-        self.refresh_combo.pack(side="left", padx=8)
+        self.refresh_combo.pack(side="left", padx=6)
+        self.refresh_custom_entry = ctk.CTkEntry(rr, width=60, placeholder_text="小时")
+        self.refresh_custom_entry.pack(side="left", padx=4)
+        ctk.CTkLabel(rr, text="小时", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        ctk.CTkButton(rr, text="应用", width=50, command=self.apply_custom_refresh).pack(side="left", padx=4)
 
         ur = ctk.CTkFrame(scroll, fg_color="transparent")
         ur.pack(fill="x", pady=10)
@@ -1093,18 +1098,35 @@ class App(ctk.CTk):
         self.log(f"订阅定时更新：{self.refresh_label}")
 
     def schedule_subscription_refresh(self):
-        # 取消旧定时器
-        if self._refresh_after_id is not None:
+        # 取消旧定时
+        job = getattr(self, "_refresh_job", None)
+        if job is not None:
             try:
-                self.after_cancel(self._refresh_after_id)
+                self.after_cancel(job)
             except Exception:
                 pass
-            self._refresh_after_id = None
-        hours = REFRESH_HOURS.get(self.refresh_label, 0)
-        if hours <= 0:
+            self._refresh_job = None
+
+        label = "不自动更新"
+        try:
+            label = self.refresh_combo.get()
+        except Exception:
+            pass
+        hours = REFRESH_HOURS.get(label, 0)
+        if hours == -1:
+            hours = getattr(self, "_custom_refresh_hours", 0) or 0
+        if not hours or hours <= 0:
             return
-        ms = int(hours * 3600 * 1000)
-        self._refresh_after_id = self.after(ms, self._auto_refresh_sub)
+        ms = int(float(hours) * 3600 * 1000)
+
+        def _tick():
+            self.log("定时更新：开始拉取订阅...")
+            self.load_nodes_thread()
+            self.schedule_subscription_refresh()
+
+        self._refresh_job = self.after(ms, _tick)
+        self.log(f"订阅定时更新已启用：每 {hours} 小时")
+
 
     def _auto_refresh_sub(self):
         self.log(f"定时任务：开始更新订阅（{self.refresh_label}）...")
@@ -1469,54 +1491,78 @@ class App(ctk.CTk):
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
     def refresh_combo(self, keep_selection: bool = True):
-        def _do():
-            try:
-                if not getattr(self, "node_combo", None):
-                    return
-                if not self.nodes:
-                    self.node_combo.configure(values=["（无可用节点）"])
-                    self.node_combo.set("（无可用节点）")
-                    return
-
-                def sort_key(n):
-                    lat = n.get("latency")
-                    if lat is None:
-                        return (2, 999999)
-                    if lat < 0:
-                        return (1, 999999)
-                    return (0, lat)
-
-                self.nodes.sort(key=sort_key)
-                for i, n in enumerate(self.nodes):
-                    n["_label"] = node_label(n)
-                    n["_index"] = i
-
-                view = self.filtered_nodes()
-                labels = []
-                for n in view:
-                    lb = n.get("_label") or node_label(n)
-                    n["_label"] = lb
-                    labels.append(lb)
-
-                if not labels:
-                    self.node_combo.configure(values=["（无匹配节点）"])
-                    self.node_combo.set("（无匹配节点）")
-                    return
-
-                prev = self.node_combo.get() if keep_selection else None
-                self.node_combo.configure(values=labels)
-                if prev and prev in labels:
-                    self.node_combo.set(prev)
-                else:
-                    self.node_combo.set(labels[0])
-                self.log(f"节点列表已更新：{len(labels)} 条")
-            except Exception as e:
-                self.log(f"刷新节点列表失败：{e}")
-
+        """在主线程刷新节点下拉列表。"""
         try:
-            self.after(0, _do)
-        except Exception:
-            _do()
+            if not hasattr(self, "node_combo") or self.node_combo is None:
+                self.log("刷新失败：node_combo 不存在")
+                return
+            nodes = list(self.nodes or [])
+            if not nodes:
+                self.node_combo.configure(values=["（无可用节点）"])
+                self.node_combo.set("（无可用节点）")
+                self.log("节点列表为空")
+                return
+
+            def sort_key(n):
+                lat = n.get("latency")
+                if lat is None:
+                    return (2, 999999)
+                if isinstance(lat, (int, float)) and lat < 0:
+                    return (1, 999999)
+                try:
+                    return (0, int(lat))
+                except Exception:
+                    return (2, 999999)
+
+            nodes.sort(key=sort_key)
+            self.nodes = nodes
+            labels = []
+            for i, n in enumerate(self.nodes):
+                try:
+                    lb = node_label(n)
+                except Exception:
+                    lb = f"节点{i+1}"
+                n["_label"] = lb
+                n["_index"] = i
+
+            kw = ""
+            try:
+                kw = (self.filter_entry.get() or "").strip().lower()
+            except Exception:
+                kw = ""
+            view_labels = []
+            view_nodes = []
+            for n in self.nodes:
+                if kw:
+                    blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+                    if kw not in blob:
+                        continue
+                view_labels.append(n["_label"])
+                view_nodes.append(n)
+
+            if not view_labels:
+                self.node_combo.configure(values=["（无匹配节点）"])
+                self.node_combo.set("（无匹配节点）")
+                self.log("筛选后无节点")
+                return
+
+            prev = None
+            if keep_selection:
+                try:
+                    prev = self.node_combo.get()
+                except Exception:
+                    prev = None
+
+            # CTk 对 list 偶发异常，改用 tuple
+            self.node_combo.configure(values=tuple(view_labels))
+            if prev and prev in view_labels:
+                self.node_combo.set(prev)
+            else:
+                self.node_combo.set(view_labels[0])
+                self.current_node = view_nodes[0]
+            self.log(f"节点列表已更新：{len(view_labels)} 条")
+        except Exception as e:
+            self.log(f"刷新节点列表失败：{type(e).__name__}: {e}")
 
 
     def load_nodes_thread(self):
@@ -1563,12 +1609,19 @@ class App(ctk.CTk):
             self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
-        self.log(f"解析到 {len(self.nodes)} 个节点，正在刷新列表...")
-        self.refresh_combo(keep_selection=False)
-        # 再延迟刷一次，避免被其它 after 覆盖
-        self.after(200, lambda: self.refresh_combo(keep_selection=True))
-        self.save_settings()
-        self.after(0, lambda: self.load_btn.configure(state="normal"))
+        count = len(self.nodes)
+        # 所有 UI 操作丢回主线程
+        def _ui_ok():
+            try:
+                self.log(f"解析到 {count} 个节点，正在刷新列表...")
+                self.refresh_combo(keep_selection=False)
+                self.save_settings()
+            finally:
+                try:
+                    self.load_btn.configure(state="normal")
+                except Exception:
+                    pass
+        self.after(0, _ui_ok)
 
     def on_dns_change(self, value=None):
         self.dns_mode = self.dns_combo.get() or "系统默认"
@@ -1709,14 +1762,22 @@ class App(ctk.CTk):
         self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
         self.save_settings()
 
-    def get_selected_node(self) -> dict | None:
-        if not self.nodes:
+    def get_selected_node(self):
+        try:
+            label = self.node_combo.get()
+        except Exception:
+            return self.current_node
+        if not label or label.startswith("（"):
             return None
-        current = self.node_combo.get()
-        for n in self.nodes:
-            if n.get("_label") == current:
+        for n in self.nodes or []:
+            if n.get("_label") == label:
                 return n
-        return self.nodes[0]
+        # 兜底：按名称模糊匹配
+        for n in self.nodes or []:
+            if n.get("name") and n.get("name") in label:
+                return n
+        return None
+
 
     def parse_domain_list(self, text: str) -> list:
         if not text:
