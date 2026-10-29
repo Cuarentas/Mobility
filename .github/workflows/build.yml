@@ -71,7 +71,7 @@ jobs:
       - name: Build with PyInstaller (onedir)
         shell: cmd
         run: |
-          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility --hidden-import=pystray --collect-all pystray main.py
+          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility --hidden-import=pystray --collect-all pystray --add-data "icons;icons" main.py
 
       - name: Package final zip (含 Xray-core 与 geo 数据)
         shell: pwsh
@@ -84,6 +84,11 @@ jobs:
 
           # 复制核心与 geo 数据
           Copy-Item -Path "core\xray.exe" -Destination "$coreDir\xray.exe" -Force
+          # 图标资源
+          if (Test-Path "icons") {
+            Copy-Item -Path "icons" -Destination "$distDir\icons" -Recurse -Force
+            Write-Host "已复制 icons"
+          }
           Copy-Item -Path "core\geoip.dat" -Destination "$coreDir\geoip.dat" -Force
           Copy-Item -Path "core\geosite.dat" -Destination "$coreDir\geosite.dat" -Force
 
