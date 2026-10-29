@@ -30,6 +30,19 @@ TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
 PROXY_MODE_DEFAULT = "规则模式"
+REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时"]
+REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
+THEME_OPTIONS = ["跟随系统", "浅色", "深色"]
+THEME_MAP = {"跟随系统": "System", "浅色": "Light", "深色": "Dark"}
+DNS_OPTIONS = ["系统默认", "国内 DNS", "国外 DNS", "自定义"]
+DNS_PRESETS = {
+    "系统默认": None,
+    "国内 DNS": ["223.5.5.5", "119.29.29.29"],
+    "国外 DNS": ["8.8.8.8", "1.1.1.1"],
+}
+LOG_LEVELS = ["警告", "信息", "调试"]
+LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
+LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
 
 def get_base_dir() -> Path:
@@ -147,6 +160,66 @@ def parse_trojan(link: str) -> dict | None:
         return None
 
 
+def parse_ss(link: str) -> dict | None:
+    """解析 ss:// 链接（支持标准与 SIP002）"""
+    try:
+        raw = link[5:]  # 去掉 ss://
+        name = "ss"
+        if "#" in raw:
+            raw, frag = raw.split("#", 1)
+            name = urllib.parse.unquote(frag) or "ss"
+
+        method = password = address = None
+        port = 443
+
+        # SIP002: ss://base64(method:password)@host:port
+        if "@" in raw and not raw.startswith("@"):
+            userinfo, hostinfo = raw.rsplit("@", 1)
+            # userinfo 可能是 base64
+            try:
+                decoded = b64_decode(urllib.parse.unquote(userinfo))
+                if ":" in decoded:
+                    userinfo = decoded
+            except Exception:
+                userinfo = urllib.parse.unquote(userinfo)
+            if ":" not in userinfo:
+                return None
+            method, password = userinfo.split(":", 1)
+            hostinfo = hostinfo.split("?")[0]
+            if ":" in hostinfo:
+                address, port_s = hostinfo.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                address = hostinfo
+        else:
+            # 旧格式: ss://base64(method:password@host:port)
+            decoded = b64_decode(urllib.parse.unquote(raw.split("?")[0]))
+            if "@" not in decoded or ":" not in decoded:
+                return None
+            userinfo, hostinfo = decoded.rsplit("@", 1)
+            method, password = userinfo.split(":", 1)
+            if ":" in hostinfo:
+                address, port_s = hostinfo.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                address = hostinfo
+
+        if not all([method, password, address]):
+            return None
+        return {
+            "protocol": "shadowsocks",
+            "name": name,
+            "address": address,
+            "port": int(port),
+            "method": method,
+            "password": password,
+            "raw": link,
+            "latency": None,
+        }
+    except Exception:
+        return None
+
+
 def parse_link(link: str) -> dict | None:
     link = link.strip()
     if not link:
@@ -157,6 +230,8 @@ def parse_link(link: str) -> dict | None:
         return parse_vless(link)
     if link.startswith("trojan://"):
         return parse_trojan(link)
+    if link.startswith("ss://"):
+        return parse_ss(link)
     return None
 
 
@@ -174,10 +249,10 @@ def parse_subscription_content(content: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        if not line.startswith(("vmess://", "vless://", "trojan://")):
+        if not line.startswith(("vmess://", "vless://", "trojan://", "ss://")):
             try:
                 inner = b64_decode(line).strip()
-                if inner.startswith(("vmess://", "vless://", "trojan://")):
+                if inner.startswith(("vmess://", "vless://", "trojan://", "ss://")):
                     line = inner
             except Exception:
                 continue
@@ -318,6 +393,20 @@ def build_outbound(node: dict) -> dict:
             "streamSettings": stream,
         }
 
+    if protocol == "shadowsocks":
+        return {
+            "tag": "proxy",
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": node["address"],
+                    "port": node["port"],
+                    "method": node.get("method") or "aes-256-gcm",
+                    "password": node["password"],
+                }]
+            },
+        }
+
     return None
 
 
@@ -337,7 +426,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("640x680")
+        self.geometry("680x960")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -355,6 +444,20 @@ class App(ctk.CTk):
         self.proxy_mode = PROXY_MODE_DEFAULT
         self.close_to_tray = True
         self.auto_start = False
+        self.auto_connect = False
+        self.socks_port = 10808
+        self.http_port = 10809
+        self.refresh_label = "不自动更新"
+        self._refresh_after_id = None
+        self.start_minimized = False
+        self.theme_label = "跟随系统"
+        self.allow_lan = False
+        self.filter_text = ""
+        self.direct_domains = ""
+        self.proxy_domains = ""
+        self.dns_mode = "系统默认"
+        self.dns_custom = "8.8.8.8,1.1.1.1"
+        self.log_level = "警告"
         self.tray_icon = None
         self._lock = Lock()
 
@@ -367,7 +470,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第六阶段：系统托盘 + 开机自启",
+            self, text="第十三阶段：DNS 设置 + 筛选测速 + 日志级别",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -388,14 +491,30 @@ class App(ctk.CTk):
         mid_btn.pack(pady=6)
 
         self.load_btn = ctk.CTkButton(
-            mid_btn, text="加载订阅", width=110, height=34,
+            mid_btn, text="加载订阅", width=100, height=34,
             font=("Microsoft YaHei UI", 13),
             command=self.load_nodes_thread
         )
-        self.load_btn.pack(side="left", padx=6)
+        self.load_btn.pack(side="left", padx=4)
+
+        self.clip_btn = ctk.CTkButton(
+            mid_btn, text="剪贴板导入", width=100, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#2980b9", hover_color="#1f6a9a",
+            command=self.import_clipboard_thread
+        )
+        self.clip_btn.pack(side="left", padx=4)
+
+        self.copy_btn = ctk.CTkButton(
+            mid_btn, text="复制节点", width=90, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.copy_selected_node
+        )
+        self.copy_btn.pack(side="left", padx=4)
 
         self.test_btn = ctk.CTkButton(
-            mid_btn, text="测速全部", width=110, height=34,
+            mid_btn, text="测速全部", width=90, height=34,
             font=("Microsoft YaHei UI", 13),
             fg_color="#8e44ad", hover_color="#6c3483",
             command=self.test_all_thread
@@ -403,7 +522,7 @@ class App(ctk.CTk):
         self.test_btn.pack(side="left", padx=6)
 
         self.best_btn = ctk.CTkButton(
-            mid_btn, text="选择最低延迟", width=120, height=34,
+            mid_btn, text="最低延迟", width=90, height=34,
             font=("Microsoft YaHei UI", 13),
             fg_color="#16a085", hover_color="#117a65",
             command=self.select_best
@@ -454,8 +573,91 @@ class App(ctk.CTk):
         )
         self.autostart_check.pack(side="left", padx=8)
 
+        self.autoconnect_check = ctk.CTkCheckBox(
+            opt_row, text="启动时自动连接",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_autoconnect_option
+        )
+        self.autoconnect_check.pack(side="left", padx=8)
+
+        self.minimized_check = ctk.CTkCheckBox(
+            opt_row, text="启动后最小化",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_minimized_option
+        )
+        self.minimized_check.pack(side="left", padx=8)
+
+        self.lan_check = ctk.CTkCheckBox(
+            opt_row, text="允许局域网",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_lan_option
+        )
+        self.lan_check.pack(side="left", padx=8)
+
+        theme_row = ctk.CTkFrame(self, fg_color="transparent")
+        theme_row.pack(pady=(4, 0))
+        ctk.CTkLabel(theme_row, text="主题：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.theme_combo = ctk.CTkComboBox(
+            theme_row, width=110, height=30,
+            values=THEME_OPTIONS,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_theme_change
+        )
+        self.theme_combo.set("跟随系统")
+        self.theme_combo.pack(side="left", padx=6)
+
+        port_row = ctk.CTkFrame(self, fg_color="transparent")
+        port_row.pack(pady=(6, 0))
+
+        ctk.CTkLabel(port_row, text="SOCKS:", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.socks_entry = ctk.CTkEntry(port_row, width=70, height=30)
+        self.socks_entry.insert(0, "10808")
+        self.socks_entry.pack(side="left", padx=(4, 12))
+
+        ctk.CTkLabel(port_row, text="HTTP:", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.http_entry = ctk.CTkEntry(port_row, width=70, height=30)
+        self.http_entry.insert(0, "10809")
+        self.http_entry.pack(side="left", padx=(4, 12))
+
+        self.apply_port_btn = ctk.CTkButton(
+            port_row, text="应用端口", width=80, height=30,
+            font=("Microsoft YaHei UI", 12),
+            command=self.apply_ports
+        )
+        self.apply_port_btn.pack(side="left", padx=4)
+
+        refresh_row = ctk.CTkFrame(self, fg_color="transparent")
+        refresh_row.pack(pady=(6, 0))
+        ctk.CTkLabel(refresh_row, text="订阅定时更新：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.refresh_combo = ctk.CTkComboBox(
+            refresh_row, width=120, height=30,
+            values=REFRESH_OPTIONS,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_refresh_change
+        )
+        self.refresh_combo.set("不自动更新")
+        self.refresh_combo.pack(side="left", padx=6)
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
+
+        filter_row = ctk.CTkFrame(self, fg_color="transparent")
+        filter_row.pack(pady=(4, 0))
+        ctk.CTkLabel(filter_row, text="搜索：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.filter_entry = ctk.CTkEntry(
+            filter_row, width=360, height=30,
+            placeholder_text="输入关键词过滤节点名称/地址/协议"
+        )
+        self.filter_entry.pack(side="left", padx=6)
+        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_node_filter())
+        self.filter_clear_btn = ctk.CTkButton(
+            filter_row, text="清除", width=60, height=30,
+            font=("Microsoft YaHei UI", 12),
+            command=self.clear_node_filter
+        )
+        self.filter_clear_btn.pack(side="left", padx=4)
 
         self.node_combo = ctk.CTkComboBox(
             self, width=560, height=34,
@@ -466,23 +668,86 @@ class App(ctk.CTk):
         self.node_combo.set("（请先加载订阅或节点）")
         self.node_combo.pack(pady=6)
 
+        domain_frame = ctk.CTkFrame(self, fg_color="transparent")
+        domain_frame.pack(pady=(4, 0), padx=40, fill="x")
+
+        d1 = ctk.CTkFrame(domain_frame, fg_color="transparent")
+        d1.pack(fill="x", pady=2)
+        ctk.CTkLabel(d1, text="直连域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
+        self.direct_entry = ctk.CTkEntry(
+            d1, width=400, height=28,
+            placeholder_text="例: example.com,*.baidu.com  （逗号分隔）"
+        )
+        self.direct_entry.pack(side="left", padx=4)
+
+        d2 = ctk.CTkFrame(domain_frame, fg_color="transparent")
+        d2.pack(fill="x", pady=2)
+        ctk.CTkLabel(d2, text="代理域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
+        self.proxy_entry = ctk.CTkEntry(
+            d2, width=400, height=28,
+            placeholder_text="例: google.com,youtube.com  （逗号分隔）"
+        )
+        self.proxy_entry.pack(side="left", padx=4)
+        self.domain_apply_btn = ctk.CTkButton(
+            d2, text="应用", width=60, height=28,
+            font=("Microsoft YaHei UI", 12),
+            command=self.apply_custom_domains
+        )
+        self.domain_apply_btn.pack(side="left", padx=4)
+
+        dns_row = ctk.CTkFrame(self, fg_color="transparent")
+        dns_row.pack(pady=(6, 0))
+        ctk.CTkLabel(dns_row, text="DNS：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.dns_combo = ctk.CTkComboBox(
+            dns_row, width=100, height=28,
+            values=DNS_OPTIONS, state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_dns_change
+        )
+        self.dns_combo.set("系统默认")
+        self.dns_combo.pack(side="left", padx=4)
+        self.dns_entry = ctk.CTkEntry(
+            dns_row, width=160, height=28,
+            placeholder_text="自定义 DNS，逗号分隔"
+        )
+        self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
+        self.dns_entry.pack(side="left", padx=4)
+
+        ctk.CTkLabel(dns_row, text="日志：", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 0))
+        self.loglevel_combo = ctk.CTkComboBox(
+            dns_row, width=90, height=28,
+            values=LOG_LEVELS, state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_loglevel_change
+        )
+        self.loglevel_combo.set("警告")
+        self.loglevel_combo.pack(side="left", padx=4)
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
 
         self.start_btn = ctk.CTkButton(
-            btn_frame, text="启动代理", width=150, height=40,
+            btn_frame, text="启动代理", width=120, height=40,
             font=("Microsoft YaHei UI", 14),
             command=self.start_proxy_thread
         )
         self.start_btn.pack(side="left", padx=12)
 
         self.stop_btn = ctk.CTkButton(
-            btn_frame, text="停止代理", width=150, height=40,
+            btn_frame, text="停止代理", width=120, height=40,
             font=("Microsoft YaHei UI", 14),
             fg_color="#c0392b", hover_color="#922b21",
             command=self.stop_proxy
         )
-        self.stop_btn.pack(side="left", padx=12)
+        self.stop_btn.pack(side="left", padx=8)
+
+        self.ping_btn = ctk.CTkButton(
+            btn_frame, text="连通性测试", width=120, height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#d35400", hover_color="#a04000",
+            command=self.connectivity_test_thread
+        )
+        self.ping_btn.pack(side="left", padx=8)
 
         self.status_label = ctk.CTkLabel(self, text="状态：未运行", font=("Microsoft YaHei UI", 14))
         self.status_label.pack(pady=4)
@@ -494,19 +759,74 @@ class App(ctk.CTk):
         )
         self.current_label.pack(pady=(0, 4))
 
-        self.log_box = ctk.CTkTextbox(self, width=580, height=180, font=("Consolas", 12))
+        util_row = ctk.CTkFrame(self, fg_color="transparent")
+        util_row.pack(pady=(0, 4))
+        self.clear_log_btn = ctk.CTkButton(
+            util_row, text="清空日志", width=90, height=28,
+            font=("Microsoft YaHei UI", 12),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.clear_log
+        )
+        self.clear_log_btn.pack(side="left", padx=6)
+        self.update_btn = ctk.CTkButton(
+            util_row, text="检查更新", width=90, height=28,
+            font=("Microsoft YaHei UI", 12),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.check_update_thread
+        )
+        self.update_btn.pack(side="left", padx=6)
+
+        self.log_box = ctk.CTkTextbox(self, width=580, height=170, font=("Consolas", 12))
         self.log_box.pack(pady=6)
         self.log("欢迎使用 Mobility")
         self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
         self.log("代理模式：规则(国内直连) / 全局 / 直连")
-        self.log("支持关闭到系统托盘、开机自启")
-        self.log("订阅与节点会自动保存到 Subscribe.json")
+        self.log("支持关闭到系统托盘、开机自启、启动自动连接")
+        self.log("可自定义本地 SOCKS / HTTP 端口")
+        self.log("支持剪贴板导入、复制节点、订阅定时更新")
+        self.log("支持协议：vmess / vless / trojan / ss")
+        self.log("支持节点搜索过滤、允许局域网连接")
+        self.log("支持自定义直连/代理域名分流")
+        self.log("支持 DNS 设置、筛选结果测速、日志级别")
+        self.log("支持连通性测试、主题切换、启动后最小化")
+        self.log("数据保存到 Subscribe.json")
 
     def log(self, msg: str):
         def _do():
             self.log_box.insert("end", msg + "\n")
             self.log_box.see("end")
         self.after(0, _do)
+
+    def clear_log(self):
+        self.log_box.delete("1.0", "end")
+        self.log("日志已清空")
+
+    def check_update_thread(self):
+        Thread(target=self.check_update, daemon=True).start()
+
+    def check_update(self):
+        self.log("正在检查更新...")
+        try:
+            # 读取当前仓库信息（从 git remote 不可用时用默认）
+            api = "https://api.github.com/repos/Cuarentas/Mobility/releases/latest"
+            r = requests.get(api, timeout=15, headers={"User-Agent": "Mobility-Client"})
+            if r.status_code == 404:
+                self.log("未找到 Release，请确认仓库已发布版本")
+                return
+            r.raise_for_status()
+            data = r.json()
+            tag = data.get("tag_name") or data.get("name") or "未知"
+            url = data.get("html_url") or ""
+            self.log(f"最新版本：{tag}")
+            if url:
+                self.log(f"发布页面：{url}")
+            assets = data.get("assets") or []
+            for a in assets:
+                if a.get("name"):
+                    self.log(f"  资源：{a['name']}")
+            self.log("请到 GitHub Releases 下载更新")
+        except Exception as e:
+            self.log(f"检查更新失败：{e}")
 
     def startup(self):
         self.prepare_core()
@@ -516,6 +836,16 @@ class App(ctk.CTk):
             self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
         else:
             self.log("系统托盘不可用（缺少 pystray）")
+        # 订阅定时更新
+        self.schedule_subscription_refresh()
+        # 启动后最小化到托盘
+        if self.start_minimized and TRAY_AVAILABLE:
+            self.after(300, self.withdraw)
+            self.log("已按设置启动后最小化到托盘")
+        # 启动时自动连接
+        if self.auto_connect and self.nodes:
+            self.log("已开启启动自动连接，正在启动代理...")
+            self.after(800, self.start_proxy_thread)
 
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
@@ -564,6 +894,165 @@ class App(ctk.CTk):
                 self.autostart_check.select()
                 self.auto_start = True
         self.save_settings()
+
+    def on_autoconnect_option(self):
+        self.auto_connect = bool(self.autoconnect_check.get())
+        self.save_settings()
+        self.log(f"启动时自动连接：{'开启' if self.auto_connect else '关闭'}")
+
+    def on_minimized_option(self):
+        self.start_minimized = bool(self.minimized_check.get())
+        self.save_settings()
+        self.log(f"启动后最小化：{'开启' if self.start_minimized else '关闭'}")
+
+    def on_theme_change(self, value=None):
+        self.theme_label = self.theme_combo.get() or "跟随系统"
+        mode = THEME_MAP.get(self.theme_label, "System")
+        ctk.set_appearance_mode(mode)
+        self.save_settings()
+        self.log(f"主题已切换：{self.theme_label}")
+
+    def connectivity_test_thread(self):
+        Thread(target=self.connectivity_test, daemon=True).start()
+
+    def connectivity_test(self):
+        if not self.is_running:
+            self.log("请先启动代理再做连通性测试")
+            return
+        _, http_port = self.get_ports()
+        proxies = {
+            "http": f"http://127.0.0.1:{http_port}",
+            "https": f"http://127.0.0.1:{http_port}",
+        }
+        targets = [
+            ("https://www.google.com/generate_204", "Google"),
+            ("https://www.youtube.com", "YouTube"),
+            ("https://www.cloudflare.com", "Cloudflare"),
+        ]
+        self.log("---------- 连通性测试 ----------")
+        ok_count = 0
+        for url, name in targets:
+            try:
+                t0 = time.perf_counter()
+                r = requests.get(url, proxies=proxies, timeout=8, allow_redirects=True)
+                ms = int((time.perf_counter() - t0) * 1000)
+                # 204 or 200 都算成功
+                if r.status_code in (200, 204, 301, 302):
+                    self.log(f"  {name}: 成功 {ms}ms (HTTP {r.status_code})")
+                    ok_count += 1
+                else:
+                    self.log(f"  {name}: 异常 HTTP {r.status_code} ({ms}ms)")
+            except Exception as e:
+                self.log(f"  {name}: 失败 ({e})")
+        self.log(f"连通性结果：{ok_count}/{len(targets)} 成功")
+        if ok_count == 0:
+            self.log("提示：代理可能未真正可用，请更换节点后重试")
+
+    def on_refresh_change(self, value=None):
+        self.refresh_label = self.refresh_combo.get() or "不自动更新"
+        self.save_settings()
+        self.schedule_subscription_refresh()
+        self.log(f"订阅定时更新：{self.refresh_label}")
+
+    def schedule_subscription_refresh(self):
+        # 取消旧定时器
+        if self._refresh_after_id is not None:
+            try:
+                self.after_cancel(self._refresh_after_id)
+            except Exception:
+                pass
+            self._refresh_after_id = None
+        hours = REFRESH_HOURS.get(self.refresh_label, 0)
+        if hours <= 0:
+            return
+        ms = int(hours * 3600 * 1000)
+        self._refresh_after_id = self.after(ms, self._auto_refresh_sub)
+
+    def _auto_refresh_sub(self):
+        self.log(f"定时任务：开始更新订阅（{self.refresh_label}）...")
+        if self.subscription_url:
+            self.entry.delete(0, "end")
+            self.entry.insert(0, self.subscription_url)
+            self.load_nodes_thread()
+        else:
+            self.log("无订阅地址，跳过定时更新")
+        # 继续下一轮
+        self.schedule_subscription_refresh()
+
+    def import_clipboard_thread(self):
+        Thread(target=self.import_clipboard, daemon=True).start()
+
+    def import_clipboard(self):
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            text = ""
+        text = (text or "").strip()
+        if not text:
+            self.log("剪贴板为空")
+            return
+        self.log("正在从剪贴板解析...")
+        # 订阅 URL
+        if text.startswith(("http://", "https://")):
+            self.after(0, lambda: (self.entry.delete(0, "end"), self.entry.insert(0, text)))
+            self.subscription_url = text
+            self.load_nodes()
+            return
+        nodes = parse_subscription_content(text)
+        if not nodes and "://" in text:
+            node = parse_link(text)
+            if node:
+                nodes = [node]
+        if not nodes:
+            self.log("剪贴板中未识别到有效节点或订阅链接")
+            return
+        self.nodes = nodes
+        self.refresh_combo(keep_selection=False)
+        self.save_settings()
+        self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
+
+    def copy_selected_node(self):
+        node = self.get_selected_node()
+        if not node:
+            self.log("没有可复制的节点")
+            return
+        raw = node.get("raw") or ""
+        if not raw:
+            self.log("该节点没有原始分享链接")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(raw)
+            self.log(f"已复制节点链接：{node.get('name', '')}")
+        except Exception as e:
+            self.log(f"复制失败：{e}")
+
+    def apply_ports(self):
+        try:
+            sp = int(self.socks_entry.get().strip())
+            hp = int(self.http_entry.get().strip())
+            if not (1 <= sp <= 65535 and 1 <= hp <= 65535):
+                raise ValueError("端口范围 1-65535")
+            if sp == hp:
+                raise ValueError("SOCKS 与 HTTP 端口不能相同")
+            self.socks_port = sp
+            self.http_port = hp
+            self.save_settings()
+            self.log(f"端口已应用：SOCKS={sp}  HTTP={hp}")
+            if self.is_running:
+                self.log("端口已更改，请停止后重新启动代理以生效")
+        except Exception as e:
+            self.log(f"端口设置无效：{e}")
+
+    def get_ports(self):
+        try:
+            sp = int(self.socks_entry.get().strip())
+            hp = int(self.http_entry.get().strip())
+            if 1 <= sp <= 65535 and 1 <= hp <= 65535 and sp != hp:
+                return sp, hp
+        except Exception:
+            pass
+        return self.socks_port, self.http_port
 
     def set_auto_start(self, enable: bool) -> bool:
         """写入/删除当前用户开机启动项"""
@@ -646,6 +1135,18 @@ class App(ctk.CTk):
                 "proxy_mode": self.mode_combo.get() if hasattr(self, "mode_combo") else self.proxy_mode,
                 "close_to_tray": bool(self.tray_check.get()) if hasattr(self, "tray_check") else self.close_to_tray,
                 "auto_start": bool(self.autostart_check.get()) if hasattr(self, "autostart_check") else self.auto_start,
+                "auto_connect": bool(self.autoconnect_check.get()) if hasattr(self, "autoconnect_check") else self.auto_connect,
+                "socks_port": self.get_ports()[0],
+                "http_port": self.get_ports()[1],
+                "refresh_label": self.refresh_combo.get() if hasattr(self, "refresh_combo") else self.refresh_label,
+                "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
+                "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
+                "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
+                "direct_domains": self.direct_entry.get().strip() if hasattr(self, "direct_entry") else self.direct_domains,
+                "proxy_domains": self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else self.proxy_domains,
+                "dns_mode": self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode,
+                "dns_custom": self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom,
+                "log_level": self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -684,6 +1185,66 @@ class App(ctk.CTk):
                     self.autostart_check.select()
                 else:
                     self.autostart_check.deselect()
+            self.auto_connect = bool(data.get("auto_connect", False))
+            if hasattr(self, "autoconnect_check"):
+                if self.auto_connect:
+                    self.autoconnect_check.select()
+                else:
+                    self.autoconnect_check.deselect()
+            try:
+                self.socks_port = int(data.get("socks_port", 10808))
+                self.http_port = int(data.get("http_port", 10809))
+            except Exception:
+                self.socks_port, self.http_port = 10808, 10809
+            if hasattr(self, "socks_entry"):
+                self.socks_entry.delete(0, "end")
+                self.socks_entry.insert(0, str(self.socks_port))
+                self.http_entry.delete(0, "end")
+                self.http_entry.insert(0, str(self.http_port))
+            rl = data.get("refresh_label") or "不自动更新"
+            if rl in REFRESH_OPTIONS:
+                self.refresh_label = rl
+                if hasattr(self, "refresh_combo"):
+                    self.refresh_combo.set(rl)
+            self.start_minimized = bool(data.get("start_minimized", False))
+            if hasattr(self, "minimized_check"):
+                if self.start_minimized:
+                    self.minimized_check.select()
+                else:
+                    self.minimized_check.deselect()
+            tl = data.get("theme_label") or "跟随系统"
+            if tl in THEME_OPTIONS:
+                self.theme_label = tl
+                if hasattr(self, "theme_combo"):
+                    self.theme_combo.set(tl)
+                ctk.set_appearance_mode(THEME_MAP.get(tl, "System"))
+            self.allow_lan = bool(data.get("allow_lan", False))
+            if hasattr(self, "lan_check"):
+                if self.allow_lan:
+                    self.lan_check.select()
+                else:
+                    self.lan_check.deselect()
+            self.direct_domains = data.get("direct_domains") or ""
+            self.proxy_domains = data.get("proxy_domains") or ""
+            if hasattr(self, "direct_entry"):
+                self.direct_entry.delete(0, "end")
+                self.direct_entry.insert(0, self.direct_domains)
+                self.proxy_entry.delete(0, "end")
+                self.proxy_entry.insert(0, self.proxy_domains)
+            self.dns_mode = data.get("dns_mode") or "系统默认"
+            if self.dns_mode in DNS_OPTIONS and hasattr(self, "dns_combo"):
+                self.dns_combo.set(self.dns_mode)
+            self.dns_custom = data.get("dns_custom") or "8.8.8.8,1.1.1.1"
+            if hasattr(self, "dns_entry"):
+                self.dns_entry.delete(0, "end")
+                self.dns_entry.insert(0, self.dns_custom)
+            raw_lv = data.get("log_level") or "警告"
+            # 兼容旧版英文配置
+            if raw_lv in LOG_LEVEL_REV:
+                raw_lv = LOG_LEVEL_REV[raw_lv]
+            self.log_level = raw_lv if raw_lv in LOG_LEVELS else "警告"
+            if hasattr(self, "loglevel_combo"):
+                self.loglevel_combo.set(self.log_level)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -699,6 +1260,35 @@ class App(ctk.CTk):
                 self.log("已恢复订阅地址，请点击「加载订阅」")
         except Exception as e:
             self.log(f"读取本地设置失败：{e}")
+
+    def filtered_nodes(self):
+        kw = (self.filter_text or "").strip().lower()
+        if not kw:
+            return list(self.nodes)
+        out = []
+        for n in self.nodes:
+            blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+            if kw in blob:
+                out.append(n)
+        return out
+
+    def apply_node_filter(self):
+        self.filter_text = self.filter_entry.get() if hasattr(self, "filter_entry") else ""
+        self.refresh_combo(keep_selection=True)
+
+    def clear_node_filter(self):
+        if hasattr(self, "filter_entry"):
+            self.filter_entry.delete(0, "end")
+        self.filter_text = ""
+        self.refresh_combo(keep_selection=False)
+        self.log("已清除节点搜索过滤")
+
+    def on_lan_option(self):
+        self.allow_lan = bool(self.lan_check.get())
+        self.save_settings()
+        self.log(f"允许局域网连接：{'开启' if self.allow_lan else '关闭'}（需重启代理生效）")
+        if self.allow_lan:
+            self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
     def refresh_combo(self, keep_selection: bool = True):
         def _do():
@@ -716,12 +1306,17 @@ class App(ctk.CTk):
                 return (0, lat)
 
             self.nodes.sort(key=sort_key)
-            labels = []
+            # 全量更新 label
             for i, n in enumerate(self.nodes):
-                label = node_label(n)
-                n["_label"] = label
+                n["_label"] = node_label(n)
                 n["_index"] = i
-                labels.append(label)
+
+            view = self.filtered_nodes()
+            labels = [n["_label"] for n in view]
+            if not labels:
+                self.node_combo.configure(values=["（无匹配节点）"])
+                self.node_combo.set("（无匹配节点）")
+                return
 
             prev = self.node_combo.get() if keep_selection else None
             self.node_combo.configure(values=labels)
@@ -781,6 +1376,16 @@ class App(ctk.CTk):
         self.log("已载入并保存，可点击「测速全部」")
         self.after(0, lambda: self.load_btn.configure(state="normal"))
 
+    def on_dns_change(self, value=None):
+        self.dns_mode = self.dns_combo.get() or "系统默认"
+        self.save_settings()
+        self.log(f"DNS 模式：{self.dns_mode}（重启代理后生效）")
+
+    def on_loglevel_change(self, value=None):
+        self.log_level = self.loglevel_combo.get() or "警告"
+        self.save_settings()
+        self.log(f"日志级别：{self.log_level}（重启代理后生效）")
+
     def test_all_thread(self):
         if self.is_testing:
             self.log("正在测速中，请稍候...")
@@ -788,14 +1393,58 @@ class App(ctk.CTk):
         if not self.nodes:
             self.log("请先加载节点")
             return
-        Thread(target=self.test_all, daemon=True).start()
+        Thread(target=lambda: self.test_all(only_filtered=False), daemon=True).start()
 
-    def test_all(self):
+    def test_filtered_thread(self):
+        if self.is_testing:
+            self.log("正在测速中，请稍候...")
+            return
+        if not self.nodes:
+            self.log("请先加载节点")
+            return
+        view = self.filtered_nodes()
+        if not view:
+            self.log("当前筛选结果为空")
+            return
+        Thread(target=lambda: self.test_all(only_filtered=True), daemon=True).start()
+
+    def test_all(self, only_filtered: bool = False):
         self.is_testing = True
         self.after(0, lambda: self.test_btn.configure(state="disabled"))
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
+        if hasattr(self, "test_filter_btn"):
+            self.after(0, lambda: self.test_filter_btn.configure(state="disabled"))
 
-        total = len(self.nodes)
+        # 建立待测列表：(全局 index, node)
+        if only_filtered:
+            targets = []
+            for i, n in enumerate(self.nodes):
+                if n in self.filtered_nodes() or n.get("_label") in {x.get("_label") for x in self.filtered_nodes()}:
+                    targets.append((i, n))
+            # 更稳妥：按过滤关键词重新筛
+            kw = (self.filter_text or "").strip().lower()
+            targets = []
+            for i, n in enumerate(self.nodes):
+                if not kw:
+                    targets.append((i, n))
+                else:
+                    blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+                    if kw in blob:
+                        targets.append((i, n))
+            self.log(f"仅测速筛选结果：{len(targets)} 个节点")
+        else:
+            targets = [(i, n) for i, n in enumerate(self.nodes)]
+
+        total = len(targets)
+        if total == 0:
+            self.log("没有可测速的节点")
+            self.is_testing = False
+            self.after(0, lambda: self.test_btn.configure(state="normal"))
+            self.after(0, lambda: self.load_btn.configure(state="normal"))
+            if hasattr(self, "test_filter_btn"):
+                self.after(0, lambda: self.test_filter_btn.configure(state="normal"))
+            return
+
         try:
             chosen = int(self.workers_combo.get())
         except Exception:
@@ -805,13 +1454,14 @@ class App(ctk.CTk):
 
         t_start = time.perf_counter()
 
-        def _one(i: int, node: dict):
+        def _one(pair):
+            i, node = pair
             ms = tcp_ping(node["address"], int(node["port"]), timeout=TEST_TIMEOUT)
             return i, ms
 
         ok = 0
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_one, i, n) for i, n in enumerate(self.nodes)]
+            futs = [ex.submit(_one, p) for p in targets]
             done = 0
             for fut in as_completed(futs):
                 i, ms = fut.result()
@@ -841,6 +1491,8 @@ class App(ctk.CTk):
         self.is_testing = False
         self.after(0, lambda: self.test_btn.configure(state="normal"))
         self.after(0, lambda: self.load_btn.configure(state="normal"))
+        if hasattr(self, "test_filter_btn"):
+            self.after(0, lambda: self.test_filter_btn.configure(state="normal"))
 
     def select_best(self):
         if not self.nodes:
@@ -872,29 +1524,76 @@ class App(ctk.CTk):
                 return n
         return self.nodes[0]
 
+    def parse_domain_list(self, text: str) -> list:
+        if not text:
+            return []
+        parts = []
+        for chunk in text.replace("\n", ",").split(","):
+            d = chunk.strip().lower()
+            if not d:
+                continue
+            # 支持 *.example.com -> domain:example.com 或完整域名
+            if d.startswith("*."):
+                d = "domain:" + d[2:]
+            elif d.startswith("domain:") or d.startswith("full:") or d.startswith("regexp:"):
+                pass
+            else:
+                d = "domain:" + d
+            parts.append(d)
+        # 去重保序
+        seen = set()
+        out = []
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def apply_custom_domains(self):
+        self.direct_domains = self.direct_entry.get().strip() if hasattr(self, "direct_entry") else ""
+        self.proxy_domains = self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else ""
+        self.save_settings()
+        dd = self.parse_domain_list(self.direct_domains)
+        pd = self.parse_domain_list(self.proxy_domains)
+        self.log(f"自定义域名已保存：直连 {len(dd)} 条，代理 {len(pd)} 条")
+        if self.is_running:
+            self.log("域名规则已更改，请停止后重新启动代理以生效")
+
     def build_routing_rules(self) -> list:
         """根据代理模式生成路由规则"""
         mode = self.proxy_mode or PROXY_MODE_DEFAULT
+        custom_direct = self.parse_domain_list(
+            self.direct_entry.get() if hasattr(self, "direct_entry") else self.direct_domains
+        )
+        custom_proxy = self.parse_domain_list(
+            self.proxy_entry.get() if hasattr(self, "proxy_entry") else self.proxy_domains
+        )
+
+        rules = []
+        # 自定义域名优先
+        if custom_direct:
+            rules.append({"type": "field", "outboundTag": "direct", "domain": custom_direct})
+        if custom_proxy:
+            rules.append({"type": "field", "outboundTag": "proxy", "domain": custom_proxy})
 
         # 直连模式：全部直连
         if mode == "直连模式":
-            return [
-                {"type": "field", "outboundTag": "direct", "network": "tcp,udp"}
-            ]
+            rules.append({"type": "field", "outboundTag": "direct", "network": "tcp,udp"})
+            return rules
 
         # 全局模式：仅私有地址直连，其余走代理
         if mode == "全局模式":
-            return [
-                {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
-            ]
+            rules.append({"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]})
+            return rules
 
         # 规则模式：国内直连，国外代理
-        return [
+        rules.extend([
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:private"]},
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:cn"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:cn"]},
-        ]
+        ])
+        return rules
 
     def create_config(self, node: dict) -> Path:
         outbound = build_outbound(node)
@@ -916,25 +1615,37 @@ class App(ctk.CTk):
                 {"tag": "block", "protocol": "blackhole"},
             ]
 
+        socks_port, http_port = self.get_ports()
+        listen_ip = "0.0.0.0" if self.allow_lan else "127.0.0.1"
+
+        # DNS
+        dns_mode = self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode
+        dns_servers = DNS_PRESETS.get(dns_mode)
+        if dns_mode == "自定义":
+            raw = self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom
+            dns_servers = [x.strip() for x in raw.split(",") if x.strip()]
+        log_level_label = self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level
+        log_level = LOG_LEVEL_MAP.get(log_level_label, "warning")
+
         config = {
             "log": {
-                "loglevel": "warning",
+                "loglevel": log_level,
                 "access": str(self.core_dir / "access.log"),
                 "error": str(self.core_dir / "error.log"),
             },
             "inbounds": [
                 {
                     "tag": "socks",
-                    "port": 10808,
-                    "listen": "127.0.0.1",
+                    "port": socks_port,
+                    "listen": listen_ip,
                     "protocol": "socks",
                     "settings": {"udp": True},
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 },
                 {
                     "tag": "http",
-                    "port": 10809,
-                    "listen": "127.0.0.1",
+                    "port": http_port,
+                    "listen": listen_ip,
                     "protocol": "http",
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 },
@@ -945,6 +1656,8 @@ class App(ctk.CTk):
                 "rules": self.build_routing_rules(),
             },
         }
+        if dns_servers:
+            config["dns"] = {"servers": dns_servers}
 
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
@@ -1077,13 +1790,16 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
-            if self.set_system_proxy(True, 10809):
+            _, http_port = self.get_ports()
+            if self.set_system_proxy(True, http_port):
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
                     text="状态：运行中", text_color="#27ae60"
                 ))
                 self.log("Xray 已启动")
-                self.log("系统代理已设置为 127.0.0.1:10809")
+                self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
+                if self.allow_lan:
+                    self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self.save_settings()
             else:
                 self.xray_process.terminate()
