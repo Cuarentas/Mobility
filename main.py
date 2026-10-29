@@ -30,6 +30,8 @@ TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
 PROXY_MODE_DEFAULT = "规则模式"
+REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时"]
+REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
 
 
 def get_base_dir() -> Path:
@@ -337,7 +339,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("640x720")
+        self.geometry("660x760")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -358,6 +360,8 @@ class App(ctk.CTk):
         self.auto_connect = False
         self.socks_port = 10808
         self.http_port = 10809
+        self.refresh_label = "不自动更新"
+        self._refresh_after_id = None
         self.tray_icon = None
         self._lock = Lock()
 
@@ -370,7 +374,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第七阶段：端口配置 + 启动自动连接",
+            self, text="第八阶段：剪贴板导入 + 定时更新订阅",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -391,14 +395,30 @@ class App(ctk.CTk):
         mid_btn.pack(pady=6)
 
         self.load_btn = ctk.CTkButton(
-            mid_btn, text="加载订阅", width=110, height=34,
+            mid_btn, text="加载订阅", width=100, height=34,
             font=("Microsoft YaHei UI", 13),
             command=self.load_nodes_thread
         )
-        self.load_btn.pack(side="left", padx=6)
+        self.load_btn.pack(side="left", padx=4)
+
+        self.clip_btn = ctk.CTkButton(
+            mid_btn, text="剪贴板导入", width=100, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#2980b9", hover_color="#1f6a9a",
+            command=self.import_clipboard_thread
+        )
+        self.clip_btn.pack(side="left", padx=4)
+
+        self.copy_btn = ctk.CTkButton(
+            mid_btn, text="复制节点", width=90, height=34,
+            font=("Microsoft YaHei UI", 13),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.copy_selected_node
+        )
+        self.copy_btn.pack(side="left", padx=4)
 
         self.test_btn = ctk.CTkButton(
-            mid_btn, text="测速全部", width=110, height=34,
+            mid_btn, text="测速全部", width=90, height=34,
             font=("Microsoft YaHei UI", 13),
             fg_color="#8e44ad", hover_color="#6c3483",
             command=self.test_all_thread
@@ -406,7 +426,7 @@ class App(ctk.CTk):
         self.test_btn.pack(side="left", padx=6)
 
         self.best_btn = ctk.CTkButton(
-            mid_btn, text="选择最低延迟", width=120, height=34,
+            mid_btn, text="最低延迟", width=90, height=34,
             font=("Microsoft YaHei UI", 13),
             fg_color="#16a085", hover_color="#117a65",
             command=self.select_best
@@ -484,6 +504,19 @@ class App(ctk.CTk):
         )
         self.apply_port_btn.pack(side="left", padx=4)
 
+        refresh_row = ctk.CTkFrame(self, fg_color="transparent")
+        refresh_row.pack(pady=(6, 0))
+        ctk.CTkLabel(refresh_row, text="订阅定时更新：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.refresh_combo = ctk.CTkComboBox(
+            refresh_row, width=120, height=30,
+            values=REFRESH_OPTIONS,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_refresh_change
+        )
+        self.refresh_combo.set("不自动更新")
+        self.refresh_combo.pack(side="left", padx=6)
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
@@ -531,7 +564,8 @@ class App(ctk.CTk):
         self.log("代理模式：规则(国内直连) / 全局 / 直连")
         self.log("支持关闭到系统托盘、开机自启、启动自动连接")
         self.log("可自定义本地 SOCKS / HTTP 端口")
-        self.log("订阅与节点会自动保存到 Subscribe.json")
+        self.log("支持剪贴板导入、复制节点、订阅定时更新")
+        self.log("数据保存到 Subscribe.json")
 
     def log(self, msg: str):
         def _do():
@@ -547,6 +581,8 @@ class App(ctk.CTk):
             self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
         else:
             self.log("系统托盘不可用（缺少 pystray）")
+        # 订阅定时更新
+        self.schedule_subscription_refresh()
         # 启动时自动连接
         if self.auto_connect and self.nodes:
             self.log("已开启启动自动连接，正在启动代理...")
@@ -604,6 +640,85 @@ class App(ctk.CTk):
         self.auto_connect = bool(self.autoconnect_check.get())
         self.save_settings()
         self.log(f"启动时自动连接：{'开启' if self.auto_connect else '关闭'}")
+
+    def on_refresh_change(self, value=None):
+        self.refresh_label = self.refresh_combo.get() or "不自动更新"
+        self.save_settings()
+        self.schedule_subscription_refresh()
+        self.log(f"订阅定时更新：{self.refresh_label}")
+
+    def schedule_subscription_refresh(self):
+        # 取消旧定时器
+        if self._refresh_after_id is not None:
+            try:
+                self.after_cancel(self._refresh_after_id)
+            except Exception:
+                pass
+            self._refresh_after_id = None
+        hours = REFRESH_HOURS.get(self.refresh_label, 0)
+        if hours <= 0:
+            return
+        ms = int(hours * 3600 * 1000)
+        self._refresh_after_id = self.after(ms, self._auto_refresh_sub)
+
+    def _auto_refresh_sub(self):
+        self.log(f"定时任务：开始更新订阅（{self.refresh_label}）...")
+        if self.subscription_url:
+            self.entry.delete(0, "end")
+            self.entry.insert(0, self.subscription_url)
+            self.load_nodes_thread()
+        else:
+            self.log("无订阅地址，跳过定时更新")
+        # 继续下一轮
+        self.schedule_subscription_refresh()
+
+    def import_clipboard_thread(self):
+        Thread(target=self.import_clipboard, daemon=True).start()
+
+    def import_clipboard(self):
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            text = ""
+        text = (text or "").strip()
+        if not text:
+            self.log("剪贴板为空")
+            return
+        self.log("正在从剪贴板解析...")
+        # 订阅 URL
+        if text.startswith(("http://", "https://")):
+            self.after(0, lambda: (self.entry.delete(0, "end"), self.entry.insert(0, text)))
+            self.subscription_url = text
+            self.load_nodes()
+            return
+        nodes = parse_subscription_content(text)
+        if not nodes and "://" in text:
+            node = parse_link(text)
+            if node:
+                nodes = [node]
+        if not nodes:
+            self.log("剪贴板中未识别到有效节点或订阅链接")
+            return
+        self.nodes = nodes
+        self.refresh_combo(keep_selection=False)
+        self.save_settings()
+        self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
+
+    def copy_selected_node(self):
+        node = self.get_selected_node()
+        if not node:
+            self.log("没有可复制的节点")
+            return
+        raw = node.get("raw") or ""
+        if not raw:
+            self.log("该节点没有原始分享链接")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(raw)
+            self.log(f"已复制节点链接：{node.get('name', '')}")
+        except Exception as e:
+            self.log(f"复制失败：{e}")
 
     def apply_ports(self):
         try:
@@ -716,6 +831,7 @@ class App(ctk.CTk):
                 "auto_connect": bool(self.autoconnect_check.get()) if hasattr(self, "autoconnect_check") else self.auto_connect,
                 "socks_port": self.get_ports()[0],
                 "http_port": self.get_ports()[1],
+                "refresh_label": self.refresh_combo.get() if hasattr(self, "refresh_combo") else self.refresh_label,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -770,6 +886,11 @@ class App(ctk.CTk):
                 self.socks_entry.insert(0, str(self.socks_port))
                 self.http_entry.delete(0, "end")
                 self.http_entry.insert(0, str(self.http_port))
+            rl = data.get("refresh_label") or "不自动更新"
+            if rl in REFRESH_OPTIONS:
+                self.refresh_label = rl
+                if hasattr(self, "refresh_combo"):
+                    self.refresh_combo.set(rl)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
