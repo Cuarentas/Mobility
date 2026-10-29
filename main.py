@@ -426,8 +426,9 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("680x960")
-        self.resizable(False, False)
+        self.geometry("780x640")
+        self.resizable(True, True)
+        self.minsize(720, 560)
 
         self.base_dir = get_base_dir()
         self.core_dir = self.base_dir / "core"
@@ -466,330 +467,176 @@ class App(ctk.CTk):
         self.after(200, self.startup)
 
     def create_widgets(self):
-        title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
-        title.pack(pady=(14, 4))
-
-        subtitle = ctk.CTkLabel(
-            self, text="第十三阶段：DNS 设置 + 筛选测速 + 日志级别",
-            font=("Microsoft YaHei UI", 12)
-        )
-        subtitle.pack(pady=(0, 8))
-
-        self.entry_label = ctk.CTkLabel(
-            self, text="订阅链接 或 单条节点链接：",
-            font=("Microsoft YaHei UI", 13)
-        )
-        self.entry_label.pack(anchor="w", padx=40)
-
-        self.entry = ctk.CTkEntry(
-            self, width=560, height=34,
-            placeholder_text="https://... 订阅地址，或 vmess:// / vless:// / trojan://"
-        )
-        self.entry.pack(pady=6)
-
-        mid_btn = ctk.CTkFrame(self, fg_color="transparent")
-        mid_btn.pack(pady=6)
-
-        self.load_btn = ctk.CTkButton(
-            mid_btn, text="加载订阅", width=100, height=34,
-            font=("Microsoft YaHei UI", 13),
-            command=self.load_nodes_thread
-        )
-        self.load_btn.pack(side="left", padx=4)
-
-        self.clip_btn = ctk.CTkButton(
-            mid_btn, text="剪贴板导入", width=100, height=34,
-            font=("Microsoft YaHei UI", 13),
-            fg_color="#2980b9", hover_color="#1f6a9a",
-            command=self.import_clipboard_thread
-        )
-        self.clip_btn.pack(side="left", padx=4)
-
-        self.copy_btn = ctk.CTkButton(
-            mid_btn, text="复制节点", width=90, height=34,
-            font=("Microsoft YaHei UI", 13),
-            fg_color="#7f8c8d", hover_color="#636e72",
-            command=self.copy_selected_node
-        )
-        self.copy_btn.pack(side="left", padx=4)
-
-        self.test_btn = ctk.CTkButton(
-            mid_btn, text="测速全部", width=90, height=34,
-            font=("Microsoft YaHei UI", 13),
-            fg_color="#8e44ad", hover_color="#6c3483",
-            command=self.test_all_thread
-        )
-        self.test_btn.pack(side="left", padx=6)
-
-        self.best_btn = ctk.CTkButton(
-            mid_btn, text="最低延迟", width=90, height=34,
-            font=("Microsoft YaHei UI", 13),
-            fg_color="#16a085", hover_color="#117a65",
-            command=self.select_best
-        )
-        self.best_btn.pack(side="left", padx=6)
-
-        self.workers_label = ctk.CTkLabel(mid_btn, text="并发:", font=("Microsoft YaHei UI", 12))
-        self.workers_label.pack(side="left", padx=(12, 4))
-
-        self.workers_combo = ctk.CTkComboBox(
-            mid_btn, width=72, height=34,
-            values=TEST_WORKERS_OPTIONS,
-            state="readonly",
-            font=("Microsoft YaHei UI", 12)
-        )
-        self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
-        self.workers_combo.pack(side="left", padx=2)
-
-        mode_row = ctk.CTkFrame(self, fg_color="transparent")
-        mode_row.pack(pady=(4, 0))
-
-        ctk.CTkLabel(mode_row, text="代理模式：", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(0, 8))
-        self.mode_combo = ctk.CTkComboBox(
-            mode_row, width=140, height=32,
-            values=PROXY_MODES,
-            state="readonly",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_mode_change
-        )
-        self.mode_combo.set(PROXY_MODE_DEFAULT)
-        self.mode_combo.pack(side="left")
-
-        opt_row = ctk.CTkFrame(self, fg_color="transparent")
-        opt_row.pack(pady=(6, 0))
-
-        self.tray_check = ctk.CTkCheckBox(
-            opt_row, text="关闭到托盘",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_tray_option
-        )
-        self.tray_check.select()
-        self.tray_check.pack(side="left", padx=8)
-
-        self.autostart_check = ctk.CTkCheckBox(
-            opt_row, text="开机自启",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_autostart_option
-        )
-        self.autostart_check.pack(side="left", padx=8)
-
-        self.autoconnect_check = ctk.CTkCheckBox(
-            opt_row, text="启动时自动连接",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_autoconnect_option
-        )
-        self.autoconnect_check.pack(side="left", padx=8)
-
-        self.minimized_check = ctk.CTkCheckBox(
-            opt_row, text="启动后最小化",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_minimized_option
-        )
-        self.minimized_check.pack(side="left", padx=8)
-
-        self.lan_check = ctk.CTkCheckBox(
-            opt_row, text="允许局域网",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_lan_option
-        )
-        self.lan_check.pack(side="left", padx=8)
-
-        theme_row = ctk.CTkFrame(self, fg_color="transparent")
-        theme_row.pack(pady=(4, 0))
-        ctk.CTkLabel(theme_row, text="主题：", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.theme_combo = ctk.CTkComboBox(
-            theme_row, width=110, height=30,
-            values=THEME_OPTIONS,
-            state="readonly",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_theme_change
-        )
-        self.theme_combo.set("跟随系统")
-        self.theme_combo.pack(side="left", padx=6)
-
-        port_row = ctk.CTkFrame(self, fg_color="transparent")
-        port_row.pack(pady=(6, 0))
-
-        ctk.CTkLabel(port_row, text="SOCKS:", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.socks_entry = ctk.CTkEntry(port_row, width=70, height=30)
-        self.socks_entry.insert(0, "10808")
-        self.socks_entry.pack(side="left", padx=(4, 12))
-
-        ctk.CTkLabel(port_row, text="HTTP:", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.http_entry = ctk.CTkEntry(port_row, width=70, height=30)
-        self.http_entry.insert(0, "10809")
-        self.http_entry.pack(side="left", padx=(4, 12))
-
-        self.apply_port_btn = ctk.CTkButton(
-            port_row, text="应用端口", width=80, height=30,
-            font=("Microsoft YaHei UI", 12),
-            command=self.apply_ports
-        )
-        self.apply_port_btn.pack(side="left", padx=4)
-
-        refresh_row = ctk.CTkFrame(self, fg_color="transparent")
-        refresh_row.pack(pady=(6, 0))
-        ctk.CTkLabel(refresh_row, text="订阅定时更新：", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.refresh_combo = ctk.CTkComboBox(
-            refresh_row, width=120, height=30,
-            values=REFRESH_OPTIONS,
-            state="readonly",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_refresh_change
-        )
-        self.refresh_combo.set("不自动更新")
-        self.refresh_combo.pack(side="left", padx=6)
-
-        self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
-        self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
-
-        filter_row = ctk.CTkFrame(self, fg_color="transparent")
-        filter_row.pack(pady=(4, 0))
-        ctk.CTkLabel(filter_row, text="搜索：", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.filter_entry = ctk.CTkEntry(
-            filter_row, width=360, height=30,
-            placeholder_text="输入关键词过滤节点名称/地址/协议"
-        )
-        self.filter_entry.pack(side="left", padx=6)
-        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_node_filter())
-        self.filter_clear_btn = ctk.CTkButton(
-            filter_row, text="清除", width=60, height=30,
-            font=("Microsoft YaHei UI", 12),
-            command=self.clear_node_filter
-        )
-        self.filter_clear_btn.pack(side="left", padx=4)
-
-        self.node_combo = ctk.CTkComboBox(
-            self, width=560, height=34,
-            values=["（请先加载订阅或节点）"],
-            state="readonly",
-            font=("Microsoft YaHei UI", 12)
-        )
-        self.node_combo.set("（请先加载订阅或节点）")
-        self.node_combo.pack(pady=6)
-
-        domain_frame = ctk.CTkFrame(self, fg_color="transparent")
-        domain_frame.pack(pady=(4, 0), padx=40, fill="x")
-
-        d1 = ctk.CTkFrame(domain_frame, fg_color="transparent")
-        d1.pack(fill="x", pady=2)
-        ctk.CTkLabel(d1, text="直连域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
-        self.direct_entry = ctk.CTkEntry(
-            d1, width=400, height=28,
-            placeholder_text="例: example.com,*.baidu.com  （逗号分隔）"
-        )
-        self.direct_entry.pack(side="left", padx=4)
-
-        d2 = ctk.CTkFrame(domain_frame, fg_color="transparent")
-        d2.pack(fill="x", pady=2)
-        ctk.CTkLabel(d2, text="代理域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
-        self.proxy_entry = ctk.CTkEntry(
-            d2, width=400, height=28,
-            placeholder_text="例: google.com,youtube.com  （逗号分隔）"
-        )
-        self.proxy_entry.pack(side="left", padx=4)
-        self.domain_apply_btn = ctk.CTkButton(
-            d2, text="应用", width=60, height=28,
-            font=("Microsoft YaHei UI", 12),
-            command=self.apply_custom_domains
-        )
-        self.domain_apply_btn.pack(side="left", padx=4)
-
-        dns_row = ctk.CTkFrame(self, fg_color="transparent")
-        dns_row.pack(pady=(6, 0))
-        ctk.CTkLabel(dns_row, text="DNS：", font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.dns_combo = ctk.CTkComboBox(
-            dns_row, width=100, height=28,
-            values=DNS_OPTIONS, state="readonly",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_dns_change
-        )
-        self.dns_combo.set("系统默认")
-        self.dns_combo.pack(side="left", padx=4)
-        self.dns_entry = ctk.CTkEntry(
-            dns_row, width=160, height=28,
-            placeholder_text="自定义 DNS，逗号分隔"
-        )
-        self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
-        self.dns_entry.pack(side="left", padx=4)
-
-        ctk.CTkLabel(dns_row, text="日志：", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 0))
-        self.loglevel_combo = ctk.CTkComboBox(
-            dns_row, width=90, height=28,
-            values=LOG_LEVELS, state="readonly",
-            font=("Microsoft YaHei UI", 12),
-            command=self.on_loglevel_change
-        )
-        self.loglevel_combo.set("警告")
-        self.loglevel_combo.pack(side="left", padx=4)
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=10)
-
-        self.start_btn = ctk.CTkButton(
-            btn_frame, text="启动代理", width=120, height=40,
-            font=("Microsoft YaHei UI", 14),
-            command=self.start_proxy_thread
-        )
-        self.start_btn.pack(side="left", padx=12)
-
-        self.stop_btn = ctk.CTkButton(
-            btn_frame, text="停止代理", width=120, height=40,
-            font=("Microsoft YaHei UI", 14),
-            fg_color="#c0392b", hover_color="#922b21",
-            command=self.stop_proxy
-        )
-        self.stop_btn.pack(side="left", padx=8)
-
-        self.ping_btn = ctk.CTkButton(
-            btn_frame, text="连通性测试", width=120, height=40,
-            font=("Microsoft YaHei UI", 14),
-            fg_color="#d35400", hover_color="#a04000",
-            command=self.connectivity_test_thread
-        )
-        self.ping_btn.pack(side="left", padx=8)
-
-        self.status_label = ctk.CTkLabel(self, text="状态：未运行", font=("Microsoft YaHei UI", 14))
-        self.status_label.pack(pady=4)
-
+        # 顶部标题
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(head, text="Mobility", font=("Microsoft YaHei UI", 22, "bold")).pack(side="left")
+        self.status_label = ctk.CTkLabel(head, text="状态：未运行", font=("Microsoft YaHei UI", 13))
+        self.status_label.pack(side="right", padx=8)
         self.current_label = ctk.CTkLabel(
-            self, text="当前节点：无",
+            head, text="当前节点：无",
             font=("Microsoft YaHei UI", 12),
             text_color=("gray40", "gray60")
         )
-        self.current_label.pack(pady=(0, 4))
+        self.current_label.pack(side="right", padx=8)
 
-        util_row = ctk.CTkFrame(self, fg_color="transparent")
-        util_row.pack(pady=(0, 4))
-        self.clear_log_btn = ctk.CTkButton(
-            util_row, text="清空日志", width=90, height=28,
-            font=("Microsoft YaHei UI", 12),
-            fg_color="#7f8c8d", hover_color="#636e72",
-            command=self.clear_log
+        # 分页
+        self.tabs = ctk.CTkTabview(self)
+        self.tabs.pack(fill="both", expand=True, padx=12, pady=6)
+        tab_node = self.tabs.add("节点")
+        tab_set = self.tabs.add("设置")
+        tab_route = self.tabs.add("分流")
+
+        # ========== 节点页 ==========
+        ctk.CTkLabel(tab_node, text="订阅 / 节点链接：", font=("Microsoft YaHei UI", 13)).pack(anchor="w", padx=8, pady=(6, 0))
+        self.entry = ctk.CTkEntry(
+            tab_node, height=34,
+            placeholder_text="https://... 订阅地址，或 vmess / vless / trojan / ss 节点"
         )
+        self.entry.pack(fill="x", padx=8, pady=6)
+
+        mid_btn = ctk.CTkFrame(tab_node, fg_color="transparent")
+        mid_btn.pack(fill="x", padx=4, pady=4)
+
+        self.load_btn = ctk.CTkButton(mid_btn, text="加载订阅", width=90, height=32, command=self.load_nodes_thread)
+        self.load_btn.pack(side="left", padx=3)
+        self.clip_btn = ctk.CTkButton(mid_btn, text="剪贴板导入", width=90, height=32, fg_color="#2980b9", hover_color="#1f6a9a", command=self.import_clipboard_thread)
+        self.clip_btn.pack(side="left", padx=3)
+        self.copy_btn = ctk.CTkButton(mid_btn, text="复制节点", width=80, height=32, fg_color="#7f8c8d", hover_color="#636e72", command=self.copy_selected_node)
+        self.copy_btn.pack(side="left", padx=3)
+        self.test_btn = ctk.CTkButton(mid_btn, text="测速全部", width=80, height=32, fg_color="#8e44ad", hover_color="#6c3483", command=self.test_all_thread)
+        self.test_btn.pack(side="left", padx=3)
+        self.test_filter_btn = ctk.CTkButton(mid_btn, text="测速筛选", width=80, height=32, fg_color="#9b59b6", hover_color="#7d3c98", command=self.test_filtered_thread)
+        self.test_filter_btn.pack(side="left", padx=3)
+        self.best_btn = ctk.CTkButton(mid_btn, text="最低延迟", width=80, height=32, fg_color="#16a085", hover_color="#117a65", command=self.select_best)
+        self.best_btn.pack(side="left", padx=3)
+
+        ctk.CTkLabel(mid_btn, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(8, 2))
+        self.workers_combo = ctk.CTkComboBox(mid_btn, width=70, height=32, values=TEST_WORKERS_OPTIONS, state="readonly")
+        self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
+        self.workers_combo.pack(side="left", padx=2)
+
+        filter_row = ctk.CTkFrame(tab_node, fg_color="transparent")
+        filter_row.pack(fill="x", padx=8, pady=4)
+        ctk.CTkLabel(filter_row, text="搜索", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.filter_entry = ctk.CTkEntry(filter_row, height=30, placeholder_text="关键词过滤名称/地址/协议")
+        self.filter_entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_node_filter())
+        self.filter_clear_btn = ctk.CTkButton(filter_row, text="清除", width=60, height=30, command=self.clear_node_filter)
+        self.filter_clear_btn.pack(side="left")
+
+        self.node_combo = ctk.CTkComboBox(tab_node, height=34, values=["（请先加载订阅或节点）"], state="readonly", font=("Microsoft YaHei UI", 12))
+        self.node_combo.set("（请先加载订阅或节点）")
+        self.node_combo.pack(fill="x", padx=8, pady=6)
+
+        act = ctk.CTkFrame(tab_node, fg_color="transparent")
+        act.pack(fill="x", padx=8, pady=6)
+        self.start_btn = ctk.CTkButton(act, text="启动代理", width=120, height=38, command=self.start_proxy_thread)
+        self.start_btn.pack(side="left", padx=4)
+        self.stop_btn = ctk.CTkButton(act, text="停止代理", width=120, height=38, fg_color="#c0392b", hover_color="#922b21", command=self.stop_proxy)
+        self.stop_btn.pack(side="left", padx=4)
+        self.ping_btn = ctk.CTkButton(act, text="连通性测试", width=120, height=38, fg_color="#d35400", hover_color="#a04000", command=self.connectivity_test_thread)
+        self.ping_btn.pack(side="left", padx=4)
+
+        # ========== 设置页 ==========
+        scroll_set = ctk.CTkScrollableFrame(tab_set)
+        scroll_set.pack(fill="both", expand=True, padx=4, pady=4)
+
+        mode_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        mode_row.pack(fill="x", pady=6)
+        ctk.CTkLabel(mode_row, text="代理模式", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        self.mode_combo = ctk.CTkComboBox(mode_row, width=140, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
+        self.mode_combo.set(PROXY_MODE_DEFAULT)
+        self.mode_combo.pack(side="left", padx=8)
+
+        opt_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        opt_row.pack(fill="x", pady=6)
+        self.tray_check = ctk.CTkCheckBox(opt_row, text="关闭到托盘", command=self.on_tray_option)
+        self.tray_check.select()
+        self.tray_check.pack(side="left", padx=6)
+        self.autostart_check = ctk.CTkCheckBox(opt_row, text="开机自启", command=self.on_autostart_option)
+        self.autostart_check.pack(side="left", padx=6)
+        self.autoconnect_check = ctk.CTkCheckBox(opt_row, text="启动时自动连接", command=self.on_autoconnect_option)
+        self.autoconnect_check.pack(side="left", padx=6)
+        self.minimized_check = ctk.CTkCheckBox(opt_row, text="启动后最小化", command=self.on_minimized_option)
+        self.minimized_check.pack(side="left", padx=6)
+        self.lan_check = ctk.CTkCheckBox(opt_row, text="允许局域网", command=self.on_lan_option)
+        self.lan_check.pack(side="left", padx=6)
+
+        theme_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        theme_row.pack(fill="x", pady=6)
+        ctk.CTkLabel(theme_row, text="主题", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        self.theme_combo = ctk.CTkComboBox(theme_row, width=120, values=THEME_OPTIONS, state="readonly", command=self.on_theme_change)
+        self.theme_combo.set("跟随系统")
+        self.theme_combo.pack(side="left", padx=8)
+
+        port_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        port_row.pack(fill="x", pady=6)
+        ctk.CTkLabel(port_row, text="SOCKS", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.socks_entry = ctk.CTkEntry(port_row, width=80)
+        self.socks_entry.insert(0, "10808")
+        self.socks_entry.pack(side="left", padx=6)
+        ctk.CTkLabel(port_row, text="HTTP", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.http_entry = ctk.CTkEntry(port_row, width=80)
+        self.http_entry.insert(0, "10809")
+        self.http_entry.pack(side="left", padx=6)
+        self.apply_port_btn = ctk.CTkButton(port_row, text="应用端口", width=80, command=self.apply_ports)
+        self.apply_port_btn.pack(side="left", padx=6)
+
+        refresh_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        refresh_row.pack(fill="x", pady=6)
+        ctk.CTkLabel(refresh_row, text="订阅定时更新", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        self.refresh_combo = ctk.CTkComboBox(refresh_row, width=120, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
+        self.refresh_combo.set("不自动更新")
+        self.refresh_combo.pack(side="left", padx=8)
+
+        util_row = ctk.CTkFrame(scroll_set, fg_color="transparent")
+        util_row.pack(fill="x", pady=10)
+        self.clear_log_btn = ctk.CTkButton(util_row, text="清空日志", width=90, fg_color="#7f8c8d", hover_color="#636e72", command=self.clear_log)
         self.clear_log_btn.pack(side="left", padx=6)
-        self.update_btn = ctk.CTkButton(
-            util_row, text="检查更新", width=90, height=28,
-            font=("Microsoft YaHei UI", 12),
-            fg_color="#7f8c8d", hover_color="#636e72",
-            command=self.check_update_thread
-        )
+        self.update_btn = ctk.CTkButton(util_row, text="检查更新", width=90, fg_color="#7f8c8d", hover_color="#636e72", command=self.check_update_thread)
         self.update_btn.pack(side="left", padx=6)
 
-        self.log_box = ctk.CTkTextbox(self, width=580, height=170, font=("Consolas", 12))
-        self.log_box.pack(pady=6)
+        # ========== 分流页 ==========
+        scroll_route = ctk.CTkScrollableFrame(tab_route)
+        scroll_route.pack(fill="both", expand=True, padx=4, pady=4)
+
+        ctk.CTkLabel(scroll_route, text="直连域名（逗号分隔，支持 *.domain.com / regexp:）", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=4, pady=(6, 2))
+        self.direct_entry = ctk.CTkEntry(scroll_route, height=32, placeholder_text="例: baidu.com,*.qq.com")
+        self.direct_entry.pack(fill="x", padx=4, pady=4)
+
+        ctk.CTkLabel(scroll_route, text="代理域名（逗号分隔）", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=4, pady=(6, 2))
+        proxy_row = ctk.CTkFrame(scroll_route, fg_color="transparent")
+        proxy_row.pack(fill="x", padx=4, pady=4)
+        self.proxy_entry = ctk.CTkEntry(proxy_row, height=32, placeholder_text="例: google.com,youtube.com")
+        self.proxy_entry.pack(side="left", fill="x", expand=True)
+        self.domain_apply_btn = ctk.CTkButton(proxy_row, text="应用域名规则", width=110, command=self.apply_custom_domains)
+        self.domain_apply_btn.pack(side="left", padx=6)
+
+        dns_row = ctk.CTkFrame(scroll_route, fg_color="transparent")
+        dns_row.pack(fill="x", padx=4, pady=10)
+        ctk.CTkLabel(dns_row, text="DNS", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        self.dns_combo = ctk.CTkComboBox(dns_row, width=110, values=DNS_OPTIONS, state="readonly", command=self.on_dns_change)
+        self.dns_combo.set("系统默认")
+        self.dns_combo.pack(side="left", padx=6)
+        self.dns_entry = ctk.CTkEntry(dns_row, width=180, placeholder_text="自定义 DNS")
+        self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
+        self.dns_entry.pack(side="left", padx=6)
+        ctk.CTkLabel(dns_row, text="日志级别", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(12, 0))
+        self.loglevel_combo = ctk.CTkComboBox(dns_row, width=90, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
+        self.loglevel_combo.set("警告")
+        self.loglevel_combo.pack(side="left", padx=6)
+
+        # ========== 底部日志（始终可见，可随窗口拉伸） ==========
+        log_frame = ctk.CTkFrame(self, fg_color="transparent")
+        log_frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        ctk.CTkLabel(log_frame, text="运行日志", font=("Microsoft YaHei UI", 12)).pack(anchor="w")
+        self.log_box = ctk.CTkTextbox(log_frame, font=("Consolas", 12))
+        self.log_box.pack(fill="both", expand=True, pady=4)
+
         self.log("欢迎使用 Mobility")
-        self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
-        self.log("代理模式：规则(国内直连) / 全局 / 直连")
-        self.log("支持关闭到系统托盘、开机自启、启动自动连接")
-        self.log("可自定义本地 SOCKS / HTTP 端口")
-        self.log("支持剪贴板导入、复制节点、订阅定时更新")
-        self.log("支持协议：vmess / vless / trojan / ss")
-        self.log("支持节点搜索过滤、允许局域网连接")
-        self.log("支持自定义直连/代理域名分流")
-        self.log("支持 DNS 设置、筛选结果测速、日志级别")
-        self.log("支持连通性测试、主题切换、启动后最小化")
-        self.log("数据保存到 Subscribe.json")
+        self.log("窗口可自由缩放；功能已分页：节点 / 设置 / 分流")
+        self.log("请先加载订阅，节点会显示在下拉列表中")
 
     def log(self, msg: str):
         def _do():
@@ -1292,40 +1139,49 @@ class App(ctk.CTk):
 
     def refresh_combo(self, keep_selection: bool = True):
         def _do():
-            if not self.nodes:
-                self.node_combo.configure(values=["（无可用节点）"])
-                self.node_combo.set("（无可用节点）")
-                return
+            try:
+                if not self.nodes:
+                    self.node_combo.configure(values=["（无可用节点）"])
+                    self.node_combo.set("（无可用节点）")
+                    return
 
-            def sort_key(n):
-                lat = n.get("latency")
-                if lat is None:
-                    return (2, 999999)
-                if lat < 0:
-                    return (1, 999999)
-                return (0, lat)
+                def sort_key(n):
+                    lat = n.get("latency")
+                    if lat is None:
+                        return (2, 999999)
+                    if lat < 0:
+                        return (1, 999999)
+                    return (0, lat)
 
-            self.nodes.sort(key=sort_key)
-            # 全量更新 label
-            for i, n in enumerate(self.nodes):
-                n["_label"] = node_label(n)
-                n["_index"] = i
+                self.nodes.sort(key=sort_key)
+                for i, n in enumerate(self.nodes):
+                    n["_label"] = node_label(n)
+                    n["_index"] = i
 
-            view = self.filtered_nodes()
-            labels = [n["_label"] for n in view]
-            if not labels:
-                self.node_combo.configure(values=["（无匹配节点）"])
-                self.node_combo.set("（无匹配节点）")
-                return
+                view = self.filtered_nodes()
+                labels = [n.get("_label") or node_label(n) for n in view]
+                if not labels:
+                    self.node_combo.configure(values=["（无匹配节点）"])
+                    self.node_combo.set("（无匹配节点）")
+                    return
 
-            prev = self.node_combo.get() if keep_selection else None
-            self.node_combo.configure(values=labels)
-            if prev and prev in labels:
-                self.node_combo.set(prev)
-            else:
-                self.node_combo.set(labels[0])
+                prev = self.node_combo.get() if keep_selection else None
+                # CTkComboBox 需要非空 list[str]
+                self.node_combo.configure(values=labels)
+                if prev and prev in labels:
+                    self.node_combo.set(prev)
+                else:
+                    self.node_combo.set(labels[0])
+                # 调试：确认数量
+                # self.log(f"节点列表已更新：显示 {len(labels)} / 共 {len(self.nodes)}")
+            except Exception as e:
+                self.log(f"刷新节点列表失败：{e}")
 
-        self.after(0, _do)
+        # 若已在主线程也可直接调用；统一丢到 after 保证线程安全
+        try:
+            self.after(0, _do)
+        except Exception:
+            _do()
 
     def load_nodes_thread(self):
         Thread(target=self.load_nodes, daemon=True).start()
@@ -1373,7 +1229,7 @@ class App(ctk.CTk):
 
         self.refresh_combo(keep_selection=False)
         self.save_settings()
-        self.log("已载入并保存，可点击「测速全部」")
+        self.log(f"已载入并保存 {len(self.nodes)} 个节点，请在下拉框中选择")
         self.after(0, lambda: self.load_btn.configure(state="normal"))
 
     def on_dns_change(self, value=None):
