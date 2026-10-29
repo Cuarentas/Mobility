@@ -40,7 +40,9 @@ DNS_PRESETS = {
     "国内 DNS": ["223.5.5.5", "119.29.29.29"],
     "国外 DNS": ["8.8.8.8", "1.1.1.1"],
 }
-LOG_LEVELS = ["warning", "info", "debug"]
+LOG_LEVELS = ["警告", "信息", "调试"]
+LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
+LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
 
 def get_base_dir() -> Path:
@@ -455,7 +457,7 @@ class App(ctk.CTk):
         self.proxy_domains = ""
         self.dns_mode = "系统默认"
         self.dns_custom = "8.8.8.8,1.1.1.1"
-        self.log_level = "warning"
+        self.log_level = "警告"
         self.tray_icon = None
         self._lock = Lock()
 
@@ -718,7 +720,7 @@ class App(ctk.CTk):
             font=("Microsoft YaHei UI", 12),
             command=self.on_loglevel_change
         )
-        self.loglevel_combo.set("warning")
+        self.loglevel_combo.set("警告")
         self.loglevel_combo.pack(side="left", padx=4)
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -1236,8 +1238,12 @@ class App(ctk.CTk):
             if hasattr(self, "dns_entry"):
                 self.dns_entry.delete(0, "end")
                 self.dns_entry.insert(0, self.dns_custom)
-            self.log_level = data.get("log_level") or "warning"
-            if self.log_level in LOG_LEVELS and hasattr(self, "loglevel_combo"):
+            raw_lv = data.get("log_level") or "警告"
+            # 兼容旧版英文配置
+            if raw_lv in LOG_LEVEL_REV:
+                raw_lv = LOG_LEVEL_REV[raw_lv]
+            self.log_level = raw_lv if raw_lv in LOG_LEVELS else "警告"
+            if hasattr(self, "loglevel_combo"):
                 self.loglevel_combo.set(self.log_level)
             if nodes:
                 self.nodes = nodes
@@ -1376,7 +1382,7 @@ class App(ctk.CTk):
         self.log(f"DNS 模式：{self.dns_mode}（重启代理后生效）")
 
     def on_loglevel_change(self, value=None):
-        self.log_level = self.loglevel_combo.get() or "warning"
+        self.log_level = self.loglevel_combo.get() or "警告"
         self.save_settings()
         self.log(f"日志级别：{self.log_level}（重启代理后生效）")
 
@@ -1618,11 +1624,12 @@ class App(ctk.CTk):
         if dns_mode == "自定义":
             raw = self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom
             dns_servers = [x.strip() for x in raw.split(",") if x.strip()]
-        log_level = self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level
+        log_level_label = self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level
+        log_level = LOG_LEVEL_MAP.get(log_level_label, "warning")
 
         config = {
             "log": {
-                "loglevel": log_level or "warning",
+                "loglevel": log_level,
                 "access": str(self.core_dir / "access.log"),
                 "error": str(self.core_dir / "error.log"),
             },
