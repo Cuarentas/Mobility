@@ -46,19 +46,21 @@ jobs:
       - name: Download Xray-core and geo data
         shell: pwsh
         run: |
-          # 不走 GitHub API，避免 rate limit；使用 releases/latest/download 直链
-          Write-Host "开始下载 Xray-core（直链）..."
+          Write-Host "开始下载 Xray-core（curl 直链）..."
+          # windows-latest 自带 curl.exe，能正确跟随 GitHub 跳转
           $xrayUrl = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
-          Invoke-WebRequest -Uri $xrayUrl -OutFile "xray.zip" -UserAgent "Mozilla/5.0"
+          & curl.exe -L --fail --retry 3 --retry-delay 2 -A "Mozilla/5.0" -o "xray.zip" $xrayUrl
+          if (-not (Test-Path "xray.zip")) { throw "xray.zip download failed" }
+
           if (Test-Path "core") { Remove-Item -Recurse -Force "core" }
           New-Item -ItemType Directory -Path "core" -Force | Out-Null
           Expand-Archive -Path "xray.zip" -DestinationPath "core" -Force
           if (-not (Test-Path "core\xray.exe")) { throw "xray.exe not found after extract" }
           Write-Host "Xray-core 准备就绪"
 
-          Write-Host "下载 geoip.dat / geosite.dat（直链）..."
-          Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile "core\geoip.dat" -UserAgent "Mozilla/5.0"
-          Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile "core\geosite.dat" -UserAgent "Mozilla/5.0"
+          Write-Host "下载 geoip.dat / geosite.dat..."
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "core\geoip.dat" "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "core\geosite.dat" "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
           if (-not (Test-Path "core\geoip.dat")) { throw "geoip.dat download failed" }
           if (-not (Test-Path "core\geosite.dat")) { throw "geosite.dat download failed" }
           Write-Host "geo 数据文件准备就绪"
