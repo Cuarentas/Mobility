@@ -417,7 +417,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("660x860")
+        self.geometry("660x920")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -444,6 +444,8 @@ class App(ctk.CTk):
         self.theme_label = "跟随系统"
         self.allow_lan = False
         self.filter_text = ""
+        self.direct_domains = ""
+        self.proxy_domains = ""
         self.tray_icon = None
         self._lock = Lock()
 
@@ -456,7 +458,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第十一阶段：节点搜索 + 允许局域网连接",
+            self, text="第十二阶段：自定义分流域名",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -654,6 +656,33 @@ class App(ctk.CTk):
         self.node_combo.set("（请先加载订阅或节点）")
         self.node_combo.pack(pady=6)
 
+        domain_frame = ctk.CTkFrame(self, fg_color="transparent")
+        domain_frame.pack(pady=(4, 0), padx=40, fill="x")
+
+        d1 = ctk.CTkFrame(domain_frame, fg_color="transparent")
+        d1.pack(fill="x", pady=2)
+        ctk.CTkLabel(d1, text="直连域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
+        self.direct_entry = ctk.CTkEntry(
+            d1, width=400, height=28,
+            placeholder_text="例: example.com,*.baidu.com  （逗号分隔）"
+        )
+        self.direct_entry.pack(side="left", padx=4)
+
+        d2 = ctk.CTkFrame(domain_frame, fg_color="transparent")
+        d2.pack(fill="x", pady=2)
+        ctk.CTkLabel(d2, text="代理域名：", font=("Microsoft YaHei UI", 12), width=70).pack(side="left")
+        self.proxy_entry = ctk.CTkEntry(
+            d2, width=400, height=28,
+            placeholder_text="例: google.com,youtube.com  （逗号分隔）"
+        )
+        self.proxy_entry.pack(side="left", padx=4)
+        self.domain_apply_btn = ctk.CTkButton(
+            d2, text="应用", width=60, height=28,
+            font=("Microsoft YaHei UI", 12),
+            command=self.apply_custom_domains
+        )
+        self.domain_apply_btn.pack(side="left", padx=4)
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
 
@@ -717,6 +746,7 @@ class App(ctk.CTk):
         self.log("支持剪贴板导入、复制节点、订阅定时更新")
         self.log("支持协议：vmess / vless / trojan / ss")
         self.log("支持节点搜索过滤、允许局域网连接")
+        self.log("支持自定义直连/代理域名分流")
         self.log("支持连通性测试、主题切换、启动后最小化")
         self.log("数据保存到 Subscribe.json")
 
@@ -1071,6 +1101,8 @@ class App(ctk.CTk):
                 "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
                 "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
                 "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
+                "direct_domains": self.direct_entry.get().strip() if hasattr(self, "direct_entry") else self.direct_domains,
+                "proxy_domains": self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else self.proxy_domains,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -1148,6 +1180,13 @@ class App(ctk.CTk):
                     self.lan_check.select()
                 else:
                     self.lan_check.deselect()
+            self.direct_domains = data.get("direct_domains") or ""
+            self.proxy_domains = data.get("proxy_domains") or ""
+            if hasattr(self, "direct_entry"):
+                self.direct_entry.delete(0, "end")
+                self.direct_entry.insert(0, self.direct_domains)
+                self.proxy_entry.delete(0, "end")
+                self.proxy_entry.insert(0, self.proxy_domains)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -1370,29 +1409,76 @@ class App(ctk.CTk):
                 return n
         return self.nodes[0]
 
+    def parse_domain_list(self, text: str) -> list:
+        if not text:
+            return []
+        parts = []
+        for chunk in text.replace("\n", ",").split(","):
+            d = chunk.strip().lower()
+            if not d:
+                continue
+            # 支持 *.example.com -> domain:example.com 或完整域名
+            if d.startswith("*."):
+                d = "domain:" + d[2:]
+            elif d.startswith("domain:") or d.startswith("full:") or d.startswith("regexp:"):
+                pass
+            else:
+                d = "domain:" + d
+            parts.append(d)
+        # 去重保序
+        seen = set()
+        out = []
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def apply_custom_domains(self):
+        self.direct_domains = self.direct_entry.get().strip() if hasattr(self, "direct_entry") else ""
+        self.proxy_domains = self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else ""
+        self.save_settings()
+        dd = self.parse_domain_list(self.direct_domains)
+        pd = self.parse_domain_list(self.proxy_domains)
+        self.log(f"自定义域名已保存：直连 {len(dd)} 条，代理 {len(pd)} 条")
+        if self.is_running:
+            self.log("域名规则已更改，请停止后重新启动代理以生效")
+
     def build_routing_rules(self) -> list:
         """根据代理模式生成路由规则"""
         mode = self.proxy_mode or PROXY_MODE_DEFAULT
+        custom_direct = self.parse_domain_list(
+            self.direct_entry.get() if hasattr(self, "direct_entry") else self.direct_domains
+        )
+        custom_proxy = self.parse_domain_list(
+            self.proxy_entry.get() if hasattr(self, "proxy_entry") else self.proxy_domains
+        )
+
+        rules = []
+        # 自定义域名优先
+        if custom_direct:
+            rules.append({"type": "field", "outboundTag": "direct", "domain": custom_direct})
+        if custom_proxy:
+            rules.append({"type": "field", "outboundTag": "proxy", "domain": custom_proxy})
 
         # 直连模式：全部直连
         if mode == "直连模式":
-            return [
-                {"type": "field", "outboundTag": "direct", "network": "tcp,udp"}
-            ]
+            rules.append({"type": "field", "outboundTag": "direct", "network": "tcp,udp"})
+            return rules
 
         # 全局模式：仅私有地址直连，其余走代理
         if mode == "全局模式":
-            return [
-                {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
-            ]
+            rules.append({"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]})
+            return rules
 
         # 规则模式：国内直连，国外代理
-        return [
+        rules.extend([
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:private"]},
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:cn"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:cn"]},
-        ]
+        ])
+        return rules
 
     def create_config(self, node: dict) -> Path:
         outbound = build_outbound(node)
