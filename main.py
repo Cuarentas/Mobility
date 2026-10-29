@@ -34,6 +34,13 @@ REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小�
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
 THEME_OPTIONS = ["跟随系统", "浅色", "深色"]
 THEME_MAP = {"跟随系统": "System", "浅色": "Light", "深色": "Dark"}
+DNS_OPTIONS = ["系统默认", "国内 DNS", "国外 DNS", "自定义"]
+DNS_PRESETS = {
+    "系统默认": None,
+    "国内 DNS": ["223.5.5.5", "119.29.29.29"],
+    "国外 DNS": ["8.8.8.8", "1.1.1.1"],
+}
+LOG_LEVELS = ["warning", "info", "debug"]
 
 
 def get_base_dir() -> Path:
@@ -417,7 +424,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("660x920")
+        self.geometry("680x960")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -446,6 +453,9 @@ class App(ctk.CTk):
         self.filter_text = ""
         self.direct_domains = ""
         self.proxy_domains = ""
+        self.dns_mode = "系统默认"
+        self.dns_custom = "8.8.8.8,1.1.1.1"
+        self.log_level = "warning"
         self.tray_icon = None
         self._lock = Lock()
 
@@ -458,7 +468,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第十二阶段：自定义分流域名",
+            self, text="第十三阶段：DNS 设置 + 筛选测速 + 日志级别",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -683,6 +693,34 @@ class App(ctk.CTk):
         )
         self.domain_apply_btn.pack(side="left", padx=4)
 
+        dns_row = ctk.CTkFrame(self, fg_color="transparent")
+        dns_row.pack(pady=(6, 0))
+        ctk.CTkLabel(dns_row, text="DNS：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.dns_combo = ctk.CTkComboBox(
+            dns_row, width=100, height=28,
+            values=DNS_OPTIONS, state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_dns_change
+        )
+        self.dns_combo.set("系统默认")
+        self.dns_combo.pack(side="left", padx=4)
+        self.dns_entry = ctk.CTkEntry(
+            dns_row, width=160, height=28,
+            placeholder_text="自定义 DNS，逗号分隔"
+        )
+        self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
+        self.dns_entry.pack(side="left", padx=4)
+
+        ctk.CTkLabel(dns_row, text="日志：", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 0))
+        self.loglevel_combo = ctk.CTkComboBox(
+            dns_row, width=90, height=28,
+            values=LOG_LEVELS, state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_loglevel_change
+        )
+        self.loglevel_combo.set("warning")
+        self.loglevel_combo.pack(side="left", padx=4)
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
 
@@ -747,6 +785,7 @@ class App(ctk.CTk):
         self.log("支持协议：vmess / vless / trojan / ss")
         self.log("支持节点搜索过滤、允许局域网连接")
         self.log("支持自定义直连/代理域名分流")
+        self.log("支持 DNS 设置、筛选结果测速、日志级别")
         self.log("支持连通性测试、主题切换、启动后最小化")
         self.log("数据保存到 Subscribe.json")
 
@@ -1103,6 +1142,9 @@ class App(ctk.CTk):
                 "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
                 "direct_domains": self.direct_entry.get().strip() if hasattr(self, "direct_entry") else self.direct_domains,
                 "proxy_domains": self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else self.proxy_domains,
+                "dns_mode": self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode,
+                "dns_custom": self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom,
+                "log_level": self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -1187,6 +1229,16 @@ class App(ctk.CTk):
                 self.direct_entry.insert(0, self.direct_domains)
                 self.proxy_entry.delete(0, "end")
                 self.proxy_entry.insert(0, self.proxy_domains)
+            self.dns_mode = data.get("dns_mode") or "系统默认"
+            if self.dns_mode in DNS_OPTIONS and hasattr(self, "dns_combo"):
+                self.dns_combo.set(self.dns_mode)
+            self.dns_custom = data.get("dns_custom") or "8.8.8.8,1.1.1.1"
+            if hasattr(self, "dns_entry"):
+                self.dns_entry.delete(0, "end")
+                self.dns_entry.insert(0, self.dns_custom)
+            self.log_level = data.get("log_level") or "warning"
+            if self.log_level in LOG_LEVELS and hasattr(self, "loglevel_combo"):
+                self.loglevel_combo.set(self.log_level)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -1318,6 +1370,16 @@ class App(ctk.CTk):
         self.log("已载入并保存，可点击「测速全部」")
         self.after(0, lambda: self.load_btn.configure(state="normal"))
 
+    def on_dns_change(self, value=None):
+        self.dns_mode = self.dns_combo.get() or "系统默认"
+        self.save_settings()
+        self.log(f"DNS 模式：{self.dns_mode}（重启代理后生效）")
+
+    def on_loglevel_change(self, value=None):
+        self.log_level = self.loglevel_combo.get() or "warning"
+        self.save_settings()
+        self.log(f"日志级别：{self.log_level}（重启代理后生效）")
+
     def test_all_thread(self):
         if self.is_testing:
             self.log("正在测速中，请稍候...")
@@ -1325,14 +1387,58 @@ class App(ctk.CTk):
         if not self.nodes:
             self.log("请先加载节点")
             return
-        Thread(target=self.test_all, daemon=True).start()
+        Thread(target=lambda: self.test_all(only_filtered=False), daemon=True).start()
 
-    def test_all(self):
+    def test_filtered_thread(self):
+        if self.is_testing:
+            self.log("正在测速中，请稍候...")
+            return
+        if not self.nodes:
+            self.log("请先加载节点")
+            return
+        view = self.filtered_nodes()
+        if not view:
+            self.log("当前筛选结果为空")
+            return
+        Thread(target=lambda: self.test_all(only_filtered=True), daemon=True).start()
+
+    def test_all(self, only_filtered: bool = False):
         self.is_testing = True
         self.after(0, lambda: self.test_btn.configure(state="disabled"))
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
+        if hasattr(self, "test_filter_btn"):
+            self.after(0, lambda: self.test_filter_btn.configure(state="disabled"))
 
-        total = len(self.nodes)
+        # 建立待测列表：(全局 index, node)
+        if only_filtered:
+            targets = []
+            for i, n in enumerate(self.nodes):
+                if n in self.filtered_nodes() or n.get("_label") in {x.get("_label") for x in self.filtered_nodes()}:
+                    targets.append((i, n))
+            # 更稳妥：按过滤关键词重新筛
+            kw = (self.filter_text or "").strip().lower()
+            targets = []
+            for i, n in enumerate(self.nodes):
+                if not kw:
+                    targets.append((i, n))
+                else:
+                    blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+                    if kw in blob:
+                        targets.append((i, n))
+            self.log(f"仅测速筛选结果：{len(targets)} 个节点")
+        else:
+            targets = [(i, n) for i, n in enumerate(self.nodes)]
+
+        total = len(targets)
+        if total == 0:
+            self.log("没有可测速的节点")
+            self.is_testing = False
+            self.after(0, lambda: self.test_btn.configure(state="normal"))
+            self.after(0, lambda: self.load_btn.configure(state="normal"))
+            if hasattr(self, "test_filter_btn"):
+                self.after(0, lambda: self.test_filter_btn.configure(state="normal"))
+            return
+
         try:
             chosen = int(self.workers_combo.get())
         except Exception:
@@ -1342,13 +1448,14 @@ class App(ctk.CTk):
 
         t_start = time.perf_counter()
 
-        def _one(i: int, node: dict):
+        def _one(pair):
+            i, node = pair
             ms = tcp_ping(node["address"], int(node["port"]), timeout=TEST_TIMEOUT)
             return i, ms
 
         ok = 0
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_one, i, n) for i, n in enumerate(self.nodes)]
+            futs = [ex.submit(_one, p) for p in targets]
             done = 0
             for fut in as_completed(futs):
                 i, ms = fut.result()
@@ -1378,6 +1485,8 @@ class App(ctk.CTk):
         self.is_testing = False
         self.after(0, lambda: self.test_btn.configure(state="normal"))
         self.after(0, lambda: self.load_btn.configure(state="normal"))
+        if hasattr(self, "test_filter_btn"):
+            self.after(0, lambda: self.test_filter_btn.configure(state="normal"))
 
     def select_best(self):
         if not self.nodes:
@@ -1503,9 +1612,17 @@ class App(ctk.CTk):
         socks_port, http_port = self.get_ports()
         listen_ip = "0.0.0.0" if self.allow_lan else "127.0.0.1"
 
+        # DNS
+        dns_mode = self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode
+        dns_servers = DNS_PRESETS.get(dns_mode)
+        if dns_mode == "自定义":
+            raw = self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom
+            dns_servers = [x.strip() for x in raw.split(",") if x.strip()]
+        log_level = self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level
+
         config = {
             "log": {
-                "loglevel": "warning",
+                "loglevel": log_level or "warning",
                 "access": str(self.core_dir / "access.log"),
                 "error": str(self.core_dir / "error.log"),
             },
@@ -1532,6 +1649,8 @@ class App(ctk.CTk):
                 "rules": self.build_routing_rules(),
             },
         }
+        if dns_servers:
+            config["dns"] = {"servers": dns_servers}
 
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
