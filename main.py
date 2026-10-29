@@ -417,7 +417,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("660x820")
+        self.geometry("660x860")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -442,6 +442,8 @@ class App(ctk.CTk):
         self._refresh_after_id = None
         self.start_minimized = False
         self.theme_label = "跟随系统"
+        self.allow_lan = False
+        self.filter_text = ""
         self.tray_icon = None
         self._lock = Lock()
 
@@ -454,7 +456,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第十阶段：ss 协议 + 清空日志 + 检查更新",
+            self, text="第十一阶段：节点搜索 + 允许局域网连接",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -571,6 +573,13 @@ class App(ctk.CTk):
         )
         self.minimized_check.pack(side="left", padx=8)
 
+        self.lan_check = ctk.CTkCheckBox(
+            opt_row, text="允许局域网",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_lan_option
+        )
+        self.lan_check.pack(side="left", padx=8)
+
         theme_row = ctk.CTkFrame(self, fg_color="transparent")
         theme_row.pack(pady=(4, 0))
         ctk.CTkLabel(theme_row, text="主题：", font=("Microsoft YaHei UI", 12)).pack(side="left")
@@ -619,6 +628,22 @@ class App(ctk.CTk):
 
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
+
+        filter_row = ctk.CTkFrame(self, fg_color="transparent")
+        filter_row.pack(pady=(4, 0))
+        ctk.CTkLabel(filter_row, text="搜索：", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.filter_entry = ctk.CTkEntry(
+            filter_row, width=360, height=30,
+            placeholder_text="输入关键词过滤节点名称/地址/协议"
+        )
+        self.filter_entry.pack(side="left", padx=6)
+        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_node_filter())
+        self.filter_clear_btn = ctk.CTkButton(
+            filter_row, text="清除", width=60, height=30,
+            font=("Microsoft YaHei UI", 12),
+            command=self.clear_node_filter
+        )
+        self.filter_clear_btn.pack(side="left", padx=4)
 
         self.node_combo = ctk.CTkComboBox(
             self, width=560, height=34,
@@ -691,6 +716,7 @@ class App(ctk.CTk):
         self.log("可自定义本地 SOCKS / HTTP 端口")
         self.log("支持剪贴板导入、复制节点、订阅定时更新")
         self.log("支持协议：vmess / vless / trojan / ss")
+        self.log("支持节点搜索过滤、允许局域网连接")
         self.log("支持连通性测试、主题切换、启动后最小化")
         self.log("数据保存到 Subscribe.json")
 
@@ -1044,6 +1070,7 @@ class App(ctk.CTk):
                 "refresh_label": self.refresh_combo.get() if hasattr(self, "refresh_combo") else self.refresh_label,
                 "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
                 "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
+                "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -1115,6 +1142,12 @@ class App(ctk.CTk):
                 if hasattr(self, "theme_combo"):
                     self.theme_combo.set(tl)
                 ctk.set_appearance_mode(THEME_MAP.get(tl, "System"))
+            self.allow_lan = bool(data.get("allow_lan", False))
+            if hasattr(self, "lan_check"):
+                if self.allow_lan:
+                    self.lan_check.select()
+                else:
+                    self.lan_check.deselect()
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -1130,6 +1163,35 @@ class App(ctk.CTk):
                 self.log("已恢复订阅地址，请点击「加载订阅」")
         except Exception as e:
             self.log(f"读取本地设置失败：{e}")
+
+    def filtered_nodes(self):
+        kw = (self.filter_text or "").strip().lower()
+        if not kw:
+            return list(self.nodes)
+        out = []
+        for n in self.nodes:
+            blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+            if kw in blob:
+                out.append(n)
+        return out
+
+    def apply_node_filter(self):
+        self.filter_text = self.filter_entry.get() if hasattr(self, "filter_entry") else ""
+        self.refresh_combo(keep_selection=True)
+
+    def clear_node_filter(self):
+        if hasattr(self, "filter_entry"):
+            self.filter_entry.delete(0, "end")
+        self.filter_text = ""
+        self.refresh_combo(keep_selection=False)
+        self.log("已清除节点搜索过滤")
+
+    def on_lan_option(self):
+        self.allow_lan = bool(self.lan_check.get())
+        self.save_settings()
+        self.log(f"允许局域网连接：{'开启' if self.allow_lan else '关闭'}（需重启代理生效）")
+        if self.allow_lan:
+            self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
     def refresh_combo(self, keep_selection: bool = True):
         def _do():
@@ -1147,12 +1209,17 @@ class App(ctk.CTk):
                 return (0, lat)
 
             self.nodes.sort(key=sort_key)
-            labels = []
+            # 全量更新 label
             for i, n in enumerate(self.nodes):
-                label = node_label(n)
-                n["_label"] = label
+                n["_label"] = node_label(n)
                 n["_index"] = i
-                labels.append(label)
+
+            view = self.filtered_nodes()
+            labels = [n["_label"] for n in view]
+            if not labels:
+                self.node_combo.configure(values=["（无匹配节点）"])
+                self.node_combo.set("（无匹配节点）")
+                return
 
             prev = self.node_combo.get() if keep_selection else None
             self.node_combo.configure(values=labels)
@@ -1348,6 +1415,7 @@ class App(ctk.CTk):
             ]
 
         socks_port, http_port = self.get_ports()
+        listen_ip = "0.0.0.0" if self.allow_lan else "127.0.0.1"
 
         config = {
             "log": {
@@ -1359,7 +1427,7 @@ class App(ctk.CTk):
                 {
                     "tag": "socks",
                     "port": socks_port,
-                    "listen": "127.0.0.1",
+                    "listen": listen_ip,
                     "protocol": "socks",
                     "settings": {"udp": True},
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
@@ -1367,7 +1435,7 @@ class App(ctk.CTk):
                 {
                     "tag": "http",
                     "port": http_port,
-                    "listen": "127.0.0.1",
+                    "listen": listen_ip,
                     "protocol": "http",
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 },
@@ -1518,6 +1586,8 @@ class App(ctk.CTk):
                 ))
                 self.log("Xray 已启动")
                 self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
+                if self.allow_lan:
+                    self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self.save_settings()
             else:
                 self.xray_process.terminate()
