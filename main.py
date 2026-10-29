@@ -21,6 +21,8 @@ ctk.set_default_color_theme("blue")
 TEST_WORKERS_DEFAULT = 32
 TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
+PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
+PROXY_MODE_DEFAULT = "规则模式"
 
 
 def get_base_dir() -> Path:
@@ -328,7 +330,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("640x600")
+        self.geometry("640x640")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -343,6 +345,7 @@ class App(ctk.CTk):
         self.nodes: list[dict] = []
         self.current_node = None
         self.subscription_url = ""
+        self.proxy_mode = PROXY_MODE_DEFAULT
         self._lock = Lock()
 
         self.create_widgets()
@@ -354,7 +357,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第四阶段：节点延迟测试与优选（并行测速 + 本地保存）",
+            self, text="第五阶段：规则分流 / 全局 / 直连",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -409,6 +412,20 @@ class App(ctk.CTk):
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
 
+        mode_row = ctk.CTkFrame(self, fg_color="transparent")
+        mode_row.pack(pady=(4, 0))
+
+        ctk.CTkLabel(mode_row, text="代理模式：", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(0, 8))
+        self.mode_combo = ctk.CTkComboBox(
+            mode_row, width=140, height=32,
+            values=PROXY_MODES,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_mode_change
+        )
+        self.mode_combo.set(PROXY_MODE_DEFAULT)
+        self.mode_combo.pack(side="left")
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
@@ -453,6 +470,7 @@ class App(ctk.CTk):
         self.log_box.pack(pady=6)
         self.log("欢迎使用 Mobility")
         self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
+        self.log("代理模式：规则(国内直连) / 全局 / 直连")
         self.log("订阅与节点会自动保存到 Subscribe.json，下次打开自动恢复")
 
     def log(self, msg: str):
@@ -485,6 +503,13 @@ class App(ctk.CTk):
             return
         self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
 
+    def on_mode_change(self, value=None):
+        self.proxy_mode = self.mode_combo.get() or PROXY_MODE_DEFAULT
+        self.log(f"代理模式已切换为：{self.proxy_mode}")
+        self.save_settings()
+        if self.is_running:
+            self.log("模式已更改，请停止后重新启动代理以生效")
+
     def save_settings(self):
         try:
             slim_nodes = []
@@ -496,6 +521,7 @@ class App(ctk.CTk):
                 "nodes": slim_nodes,
                 "selected_label": self.node_combo.get() if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
+                "proxy_mode": self.mode_combo.get() if hasattr(self, "mode_combo") else self.proxy_mode,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -518,6 +544,10 @@ class App(ctk.CTk):
             tw = str(data.get("test_workers") or TEST_WORKERS_DEFAULT)
             if tw in TEST_WORKERS_OPTIONS:
                 self.workers_combo.set(tw)
+            pm = data.get("proxy_mode") or PROXY_MODE_DEFAULT
+            if pm in PROXY_MODES:
+                self.proxy_mode = pm
+                self.mode_combo.set(pm)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -706,10 +736,49 @@ class App(ctk.CTk):
                 return n
         return self.nodes[0]
 
+    def build_routing_rules(self) -> list:
+        """根据代理模式生成路由规则"""
+        mode = self.proxy_mode or PROXY_MODE_DEFAULT
+
+        # 直连模式：全部直连
+        if mode == "直连模式":
+            return [
+                {"type": "field", "outboundTag": "direct", "network": "tcp,udp"}
+            ]
+
+        # 全局模式：仅私有地址直连，其余走代理
+        if mode == "全局模式":
+            return [
+                {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
+            ]
+
+        # 规则模式：国内直连，国外代理
+        return [
+            {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
+            {"type": "field", "outboundTag": "direct", "domain": ["geosite:private"]},
+            {"type": "field", "outboundTag": "direct", "ip": ["geoip:cn"]},
+            {"type": "field", "outboundTag": "direct", "domain": ["geosite:cn"]},
+        ]
+
     def create_config(self, node: dict) -> Path:
         outbound = build_outbound(node)
         if not outbound:
             raise ValueError("无法生成出站配置")
+
+        mode = self.proxy_mode or PROXY_MODE_DEFAULT
+        # 直连模式时默认出站改为 direct，更干净
+        outbounds = [
+            outbound,
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "block", "protocol": "blackhole"},
+        ]
+        if mode == "直连模式":
+            # 把 direct 放第一位作为默认
+            outbounds = [
+                {"tag": "direct", "protocol": "freedom"},
+                outbound,
+                {"tag": "block", "protocol": "blackhole"},
+            ]
 
         config = {
             "log": {
@@ -734,20 +803,10 @@ class App(ctk.CTk):
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 },
             ],
-            "outbounds": [
-                outbound,
-                {"tag": "direct", "protocol": "freedom"},
-                {"tag": "block", "protocol": "blackhole"},
-            ],
+            "outbounds": outbounds,
             "routing": {
-                "domainStrategy": "AsIs",
-                "rules": [
-                    {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "ip": ["geoip:private"],
-                    }
-                ],
+                "domainStrategy": "IPIfNonMatch",
+                "rules": self.build_routing_rules(),
             },
         }
 
@@ -820,6 +879,7 @@ class App(ctk.CTk):
         lat_s = f"{lat}ms" if isinstance(lat, int) and lat >= 0 else "未测速"
         self.log(f"使用节点：[{node['protocol']}] {node['name']} ({lat_s})")
         self.log(f"服务器：{node['address']}:{node['port']}")
+        self.log(f"代理模式：{self.proxy_mode}")
         self.after(0, lambda: self.current_label.configure(
             text=f"当前节点：[{node['protocol']}] {node['name']} ({lat_s})"
         ))
