@@ -151,6 +151,66 @@ def parse_trojan(link: str) -> dict | None:
         return None
 
 
+def parse_ss(link: str) -> dict | None:
+    """解析 ss:// 链接（支持标准与 SIP002）"""
+    try:
+        raw = link[5:]  # 去掉 ss://
+        name = "ss"
+        if "#" in raw:
+            raw, frag = raw.split("#", 1)
+            name = urllib.parse.unquote(frag) or "ss"
+
+        method = password = address = None
+        port = 443
+
+        # SIP002: ss://base64(method:password)@host:port
+        if "@" in raw and not raw.startswith("@"):
+            userinfo, hostinfo = raw.rsplit("@", 1)
+            # userinfo 可能是 base64
+            try:
+                decoded = b64_decode(urllib.parse.unquote(userinfo))
+                if ":" in decoded:
+                    userinfo = decoded
+            except Exception:
+                userinfo = urllib.parse.unquote(userinfo)
+            if ":" not in userinfo:
+                return None
+            method, password = userinfo.split(":", 1)
+            hostinfo = hostinfo.split("?")[0]
+            if ":" in hostinfo:
+                address, port_s = hostinfo.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                address = hostinfo
+        else:
+            # 旧格式: ss://base64(method:password@host:port)
+            decoded = b64_decode(urllib.parse.unquote(raw.split("?")[0]))
+            if "@" not in decoded or ":" not in decoded:
+                return None
+            userinfo, hostinfo = decoded.rsplit("@", 1)
+            method, password = userinfo.split(":", 1)
+            if ":" in hostinfo:
+                address, port_s = hostinfo.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                address = hostinfo
+
+        if not all([method, password, address]):
+            return None
+        return {
+            "protocol": "shadowsocks",
+            "name": name,
+            "address": address,
+            "port": int(port),
+            "method": method,
+            "password": password,
+            "raw": link,
+            "latency": None,
+        }
+    except Exception:
+        return None
+
+
 def parse_link(link: str) -> dict | None:
     link = link.strip()
     if not link:
@@ -161,6 +221,8 @@ def parse_link(link: str) -> dict | None:
         return parse_vless(link)
     if link.startswith("trojan://"):
         return parse_trojan(link)
+    if link.startswith("ss://"):
+        return parse_ss(link)
     return None
 
 
@@ -178,10 +240,10 @@ def parse_subscription_content(content: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        if not line.startswith(("vmess://", "vless://", "trojan://")):
+        if not line.startswith(("vmess://", "vless://", "trojan://", "ss://")):
             try:
                 inner = b64_decode(line).strip()
-                if inner.startswith(("vmess://", "vless://", "trojan://")):
+                if inner.startswith(("vmess://", "vless://", "trojan://", "ss://")):
                     line = inner
             except Exception:
                 continue
@@ -322,6 +384,20 @@ def build_outbound(node: dict) -> dict:
             "streamSettings": stream,
         }
 
+    if protocol == "shadowsocks":
+        return {
+            "tag": "proxy",
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": node["address"],
+                    "port": node["port"],
+                    "method": node.get("method") or "aes-256-gcm",
+                    "password": node["password"],
+                }]
+            },
+        }
+
     return None
 
 
@@ -341,7 +417,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("660x800")
+        self.geometry("660x820")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -378,7 +454,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第九阶段：连通性测试 + 主题 + 启动最小化",
+            self, text="第十阶段：ss 协议 + 清空日志 + 检查更新",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -589,7 +665,24 @@ class App(ctk.CTk):
         )
         self.current_label.pack(pady=(0, 4))
 
-        self.log_box = ctk.CTkTextbox(self, width=580, height=180, font=("Consolas", 12))
+        util_row = ctk.CTkFrame(self, fg_color="transparent")
+        util_row.pack(pady=(0, 4))
+        self.clear_log_btn = ctk.CTkButton(
+            util_row, text="清空日志", width=90, height=28,
+            font=("Microsoft YaHei UI", 12),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.clear_log
+        )
+        self.clear_log_btn.pack(side="left", padx=6)
+        self.update_btn = ctk.CTkButton(
+            util_row, text="检查更新", width=90, height=28,
+            font=("Microsoft YaHei UI", 12),
+            fg_color="#7f8c8d", hover_color="#636e72",
+            command=self.check_update_thread
+        )
+        self.update_btn.pack(side="left", padx=6)
+
+        self.log_box = ctk.CTkTextbox(self, width=580, height=170, font=("Consolas", 12))
         self.log_box.pack(pady=6)
         self.log("欢迎使用 Mobility")
         self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
@@ -597,6 +690,7 @@ class App(ctk.CTk):
         self.log("支持关闭到系统托盘、开机自启、启动自动连接")
         self.log("可自定义本地 SOCKS / HTTP 端口")
         self.log("支持剪贴板导入、复制节点、订阅定时更新")
+        self.log("支持协议：vmess / vless / trojan / ss")
         self.log("支持连通性测试、主题切换、启动后最小化")
         self.log("数据保存到 Subscribe.json")
 
@@ -605,6 +699,37 @@ class App(ctk.CTk):
             self.log_box.insert("end", msg + "\n")
             self.log_box.see("end")
         self.after(0, _do)
+
+    def clear_log(self):
+        self.log_box.delete("1.0", "end")
+        self.log("日志已清空")
+
+    def check_update_thread(self):
+        Thread(target=self.check_update, daemon=True).start()
+
+    def check_update(self):
+        self.log("正在检查更新...")
+        try:
+            # 读取当前仓库信息（从 git remote 不可用时用默认）
+            api = "https://api.github.com/repos/Cuarentas/Mobility/releases/latest"
+            r = requests.get(api, timeout=15, headers={"User-Agent": "Mobility-Client"})
+            if r.status_code == 404:
+                self.log("未找到 Release，请确认仓库已发布版本")
+                return
+            r.raise_for_status()
+            data = r.json()
+            tag = data.get("tag_name") or data.get("name") or "未知"
+            url = data.get("html_url") or ""
+            self.log(f"最新版本：{tag}")
+            if url:
+                self.log(f"发布页面：{url}")
+            assets = data.get("assets") or []
+            for a in assets:
+                if a.get("name"):
+                    self.log(f"  资源：{a['name']}")
+            self.log("请到 GitHub Releases 下载更新")
+        except Exception as e:
+            self.log(f"检查更新失败：{e}")
 
     def startup(self):
         self.prepare_core()
