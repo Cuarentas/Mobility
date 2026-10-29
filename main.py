@@ -14,6 +14,13 @@ from pathlib import Path
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    TRAY_AVAILABLE = True
+except Exception:
+    TRAY_AVAILABLE = False
+
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -330,7 +337,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("640x640")
+        self.geometry("640x680")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -346,6 +353,9 @@ class App(ctk.CTk):
         self.current_node = None
         self.subscription_url = ""
         self.proxy_mode = PROXY_MODE_DEFAULT
+        self.close_to_tray = True
+        self.auto_start = False
+        self.tray_icon = None
         self._lock = Lock()
 
         self.create_widgets()
@@ -357,7 +367,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第五阶段：规则分流 / 全局 / 直连",
+            self, text="第六阶段：系统托盘 + 开机自启",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -426,6 +436,24 @@ class App(ctk.CTk):
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left")
 
+        opt_row = ctk.CTkFrame(self, fg_color="transparent")
+        opt_row.pack(pady=(6, 0))
+
+        self.tray_check = ctk.CTkCheckBox(
+            opt_row, text="关闭到托盘",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_tray_option
+        )
+        self.tray_check.select()
+        self.tray_check.pack(side="left", padx=8)
+
+        self.autostart_check = ctk.CTkCheckBox(
+            opt_row, text="开机自启",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_autostart_option
+        )
+        self.autostart_check.pack(side="left", padx=8)
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
@@ -471,7 +499,8 @@ class App(ctk.CTk):
         self.log("欢迎使用 Mobility")
         self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
         self.log("代理模式：规则(国内直连) / 全局 / 直连")
-        self.log("订阅与节点会自动保存到 Subscribe.json，下次打开自动恢复")
+        self.log("支持关闭到系统托盘、开机自启")
+        self.log("订阅与节点会自动保存到 Subscribe.json")
 
     def log(self, msg: str):
         def _do():
@@ -482,6 +511,11 @@ class App(ctk.CTk):
     def startup(self):
         self.prepare_core()
         self.load_settings()
+        if TRAY_AVAILABLE:
+            self.setup_tray()
+            self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
+        else:
+            self.log("系统托盘不可用（缺少 pystray）")
 
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
@@ -510,6 +544,94 @@ class App(ctk.CTk):
         if self.is_running:
             self.log("模式已更改，请停止后重新启动代理以生效")
 
+    def on_tray_option(self):
+        self.close_to_tray = bool(self.tray_check.get())
+        self.save_settings()
+        self.log(f"关闭到托盘：{'开启' if self.close_to_tray else '关闭'}")
+
+    def on_autostart_option(self):
+        self.auto_start = bool(self.autostart_check.get())
+        ok = self.set_auto_start(self.auto_start)
+        if ok:
+            self.log(f"开机自启：{'已开启' if self.auto_start else '已关闭'}")
+        else:
+            self.log("设置开机自启失败")
+            # 回滚勾选
+            if self.auto_start:
+                self.autostart_check.deselect()
+                self.auto_start = False
+            else:
+                self.autostart_check.select()
+                self.auto_start = True
+        self.save_settings()
+
+    def set_auto_start(self, enable: bool) -> bool:
+        """写入/删除当前用户开机启动项"""
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Mobility"
+            if getattr(sys, 'frozen', False):
+                cmd = f'"{sys.executable}"'
+            else:
+                cmd = f'"{sys.executable}" "{Path(__file__).resolve()}"'
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
+                if enable:
+                    winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
+                else:
+                    try:
+                        winreg.DeleteValue(key, app_name)
+                    except FileNotFoundError:
+                        pass
+            return True
+        except Exception as e:
+            self.log(f"开机自启注册表操作失败：{e}")
+            return False
+
+    def make_tray_image(self):
+        # 简单生成一个托盘图标
+        size = 64
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((4, 4, size - 4, size - 4), fill=(41, 128, 185, 255))
+        draw.ellipse((18, 18, size - 18, size - 18), fill=(236, 240, 241, 255))
+        return image
+
+    def setup_tray(self):
+        if not TRAY_AVAILABLE:
+            self.log("未安装 pystray，托盘功能不可用")
+            return
+        if self.tray_icon is not None:
+            return
+
+        menu = pystray.Menu(
+            pystray.MenuItem("显示主窗口", self.tray_show_window, default=True),
+            pystray.MenuItem("启动代理", self.tray_start),
+            pystray.MenuItem("停止代理", self.tray_stop),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出", self.tray_quit),
+        )
+        self.tray_icon = pystray.Icon("Mobility", self.make_tray_image(), "Mobility", menu)
+        Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def tray_show_window(self, icon=None, item=None):
+        def _do():
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        self.after(0, _do)
+
+    def tray_start(self, icon=None, item=None):
+        self.after(0, self.start_proxy_thread)
+
+    def tray_stop(self, icon=None, item=None):
+        self.after(0, self.stop_proxy)
+
+    def tray_quit(self, icon=None, item=None):
+        def _do():
+            self.close_to_tray = False
+            self.on_closing()
+        self.after(0, _do)
+
     def save_settings(self):
         try:
             slim_nodes = []
@@ -522,6 +644,8 @@ class App(ctk.CTk):
                 "selected_label": self.node_combo.get() if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
                 "proxy_mode": self.mode_combo.get() if hasattr(self, "mode_combo") else self.proxy_mode,
+                "close_to_tray": bool(self.tray_check.get()) if hasattr(self, "tray_check") else self.close_to_tray,
+                "auto_start": bool(self.autostart_check.get()) if hasattr(self, "autostart_check") else self.auto_start,
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -548,6 +672,18 @@ class App(ctk.CTk):
             if pm in PROXY_MODES:
                 self.proxy_mode = pm
                 self.mode_combo.set(pm)
+            self.close_to_tray = bool(data.get("close_to_tray", True))
+            if hasattr(self, "tray_check"):
+                if self.close_to_tray:
+                    self.tray_check.select()
+                else:
+                    self.tray_check.deselect()
+            self.auto_start = bool(data.get("auto_start", False))
+            if hasattr(self, "autostart_check"):
+                if self.auto_start:
+                    self.autostart_check.select()
+                else:
+                    self.autostart_check.deselect()
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -979,8 +1115,19 @@ class App(ctk.CTk):
         self.log("代理已停止，系统代理已关闭")
 
     def on_closing(self):
+        # 关闭到托盘
+        if self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
+            self.save_settings()
+            self.withdraw()
+            self.log("已最小化到系统托盘")
+            return
         self.stop_proxy()
         self.save_settings()
+        try:
+            if self.tray_icon is not None:
+                self.tray_icon.stop()
+        except Exception:
+            pass
         self.destroy()
 
 
