@@ -67,7 +67,7 @@ jobs:
       - name: Build with PyInstaller (onedir)
         shell: cmd
         run: |
-          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility --hidden-import=pystray --collect-all pystray --add-data "icons;icons" main.py
+          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility --icon icons\mobility.ico --hidden-import=pystray --collect-all pystray --add-data "icons;icons" main.py
 
       - name: Package final zip (含 Xray-core 与 geo 数据)
         shell: pwsh
