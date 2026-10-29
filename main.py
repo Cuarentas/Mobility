@@ -1097,6 +1097,27 @@ class App(ctk.CTk):
         self.schedule_subscription_refresh()
         self.log(f"订阅定时更新：{self.refresh_label}")
 
+    def apply_custom_refresh(self):
+        try:
+            raw = ""
+            if hasattr(self, "refresh_custom_entry"):
+                raw = self.refresh_custom_entry.get().strip()
+            h = float(raw)
+            if h <= 0:
+                raise ValueError("must be positive")
+        except Exception:
+            self.log("请输入有效的小时数（例如 2 或 0.5）")
+            return
+        self._custom_refresh_hours = h
+        try:
+            self.refresh_combo.set("自定义")
+        except Exception:
+            pass
+        self.refresh_label = "自定义"
+        self.save_settings()
+        self.schedule_subscription_refresh()
+        self.log(f"已设置自定义订阅更新：每 {h} 小时")
+
     def schedule_subscription_refresh(self):
         # 取消旧定时
         job = getattr(self, "_refresh_job", None)
