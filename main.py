@@ -61,16 +61,23 @@ def get_resource_path(relative: str) -> Path:
 
 
 def get_icons_dir() -> Path:
-    d = get_base_dir() / "icons"
-    if d.exists():
-        return d
-    # 开发/打包资源路径
+    candidates = [
+        get_base_dir() / "icons",
+        Path(sys.executable).parent / "icons",
+        Path(sys.executable).parent / "_internal" / "icons",
+    ]
     try:
-        r = get_resource_path("icons")
-        if r.exists():
-            return r
+        candidates.append(get_resource_path("icons"))
     except Exception:
         pass
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "icons")
+    for d in candidates:
+        try:
+            if d and Path(d).exists():
+                return Path(d)
+        except Exception:
+            pass
     return get_base_dir() / "icons"
 
 
@@ -428,12 +435,16 @@ def build_outbound(node: dict) -> dict:
 def node_label(node: dict) -> str:
     lat = node.get("latency")
     if lat is None:
-        lat_s = "未测速"
+        lat_s = "未测"
     elif lat < 0:
         lat_s = "超时"
     else:
         lat_s = f"{lat}ms"
-    return f"[{node['protocol']}] {node['name']}  ({lat_s})  {node['address']}:{node['port']}"
+    name = str(node.get("name") or "node")
+    if len(name) > 24:
+        name = name[:24] + "…"
+    proto = node.get("protocol") or "?"
+    return f"[{proto}] {name} ({lat_s})"
 
 
 class App(ctk.CTk):
@@ -494,9 +505,19 @@ class App(ctk.CTk):
         try:
             ico = self.icons_dir / "mobility.ico"
             if ico.exists():
+                self.iconbitmap(default=str(ico))
                 self.iconbitmap(str(ico))
         except Exception:
             pass
+        try:
+            from PIL import ImageTk
+            png = self.icons_dir / "logo-main.png"
+            if png.exists():
+                self._wm_icon = ImageTk.PhotoImage(Image.open(png).resize((32, 32)))
+                self.iconphoto(True, self._wm_icon)
+        except Exception:
+            pass
+        self.log(f"图标目录：{self.icons_dir}")
 
         # ===== 顶栏 =====
         top = ctk.CTkFrame(self, fg_color="transparent", height=48)
@@ -692,25 +713,27 @@ class App(ctk.CTk):
 
         row = ctk.CTkFrame(scroll, fg_color="transparent")
         row.pack(fill="x", pady=4)
-        self.load_btn = ctk.CTkButton(row, text="加载订阅", width=90, height=32, command=self.load_nodes_thread)
-        self.load_btn.pack(side="left", padx=3)
-        self.clip_btn = ctk.CTkButton(row, text="剪贴板", width=80, height=32, command=self.import_clipboard_thread)
-        self.clip_btn.pack(side="left", padx=3)
-        self.copy_btn = ctk.CTkButton(row, text="复制节点", width=80, height=32, command=self.copy_selected_node)
-        self.copy_btn.pack(side="left", padx=3)
-        self.test_btn = ctk.CTkButton(row, text="测速全部", width=80, height=32, fg_color="#8e44ad", command=self.test_all_thread)
-        self.test_btn.pack(side="left", padx=3)
-        self.test_filter_btn = ctk.CTkButton(row, text="测速筛选", width=80, height=32, fg_color="#9b59b6", command=self.test_filtered_thread)
-        self.test_filter_btn.pack(side="left", padx=3)
+        self.load_btn = ctk.CTkButton(row, text="加载", width=64, height=32, command=self.load_nodes_thread)
+        self.load_btn.pack(side="left", padx=2)
+        self.clip_btn = ctk.CTkButton(row, text="剪贴板", width=64, height=32, command=self.import_clipboard_thread)
+        self.clip_btn.pack(side="left", padx=2)
+        self.copy_btn = ctk.CTkButton(row, text="复制", width=56, height=32, command=self.copy_selected_node)
+        self.copy_btn.pack(side="left", padx=2)
+        self.test_btn = ctk.CTkButton(row, text="测速", width=56, height=32, fg_color="#8e44ad", command=self.test_all_thread)
+        self.test_btn.pack(side="left", padx=2)
+        self.test_filter_btn = ctk.CTkButton(row, text="测筛选", width=64, height=32, fg_color="#9b59b6", command=self.test_filtered_thread)
+        self.test_filter_btn.pack(side="left", padx=2)
+        self.best_btn = ctk.CTkButton(row, text="最快", width=56, height=32, fg_color="#16a085", command=self.select_best)
+        self.best_btn.pack(side="left", padx=2)
 
         row2 = ctk.CTkFrame(scroll, fg_color="transparent")
         row2.pack(fill="x", pady=4)
-        self.best_btn = ctk.CTkButton(row2, text="最低延迟", width=90, height=32, fg_color="#16a085", command=self.select_best)
-        self.best_btn.pack(side="left", padx=3)
-        ctk.CTkLabel(row2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(8, 2))
+        ctk.CTkLabel(row2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(2, 2))
         self.workers_combo = ctk.CTkComboBox(row2, width=70, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
-        self.workers_combo.pack(side="left")
+        self.workers_combo.pack(side="left", padx=2)
+        self.ping_btn = ctk.CTkButton(row2, text="连通性测试", width=100, height=32, fg_color="#d35400", command=self.connectivity_test_thread)
+        self.ping_btn.pack(side="left", padx=6)
 
         fr = ctk.CTkFrame(scroll, fg_color="transparent")
         fr.pack(fill="x", pady=4)
@@ -720,18 +743,18 @@ class App(ctk.CTk):
         self.filter_clear_btn = ctk.CTkButton(fr, text="清除", width=60, height=32, command=self.clear_node_filter)
         self.filter_clear_btn.pack(side="left")
 
-        self.node_combo = ctk.CTkComboBox(scroll, height=34, values=["（请先加载订阅或节点）"], state="readonly")
+        self.node_combo = ctk.CTkComboBox(
+            scroll, height=34,
+            values=["（请先加载订阅或节点）"],
+            state="readonly",
+            command=self.on_node_picked
+        )
         self.node_combo.set("（请先加载订阅或节点）")
         self.node_combo.pack(fill="x", padx=4, pady=8)
 
-        act = ctk.CTkFrame(scroll, fg_color="transparent")
-        act.pack(fill="x", pady=6)
-        self.start_btn = ctk.CTkButton(act, text="启动代理", height=36, command=self.start_proxy_thread)
-        self.start_btn.pack(side="left", fill="x", expand=True, padx=3)
-        self.stop_btn = ctk.CTkButton(act, text="停止代理", height=36, fg_color="#c0392b", hover_color="#922b21", command=self.stop_proxy)
-        self.stop_btn.pack(side="left", fill="x", expand=True, padx=3)
-        self.ping_btn = ctk.CTkButton(act, text="连通性测试", height=36, fg_color="#d35400", command=self.connectivity_test_thread)
-        self.ping_btn.pack(side="left", fill="x", expand=True, padx=3)
+        # 启动/停止仅在首页开关，节点页不再重复
+        self.start_btn = None
+        self.stop_btn = None
 
     def _build_page_route(self, root):
         scroll = ctk.CTkScrollableFrame(root, fg_color="transparent")
@@ -828,6 +851,20 @@ class App(ctk.CTk):
         ctk.CTkLabel(scroll, text="运行日志", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w", pady=(12, 4))
         self.log_box = ctk.CTkTextbox(scroll, height=220, font=("Consolas", 11))
         self.log_box.pack(fill="both", expand=True, pady=4)
+
+    def on_node_picked(self, value=None):
+        node = self.get_selected_node()
+        if node:
+            self.current_node = node
+            try:
+                self.home_node.configure(text=f"[{node.get('protocol')}] {node.get('name')}")
+                lat = node.get("latency")
+                if isinstance(lat, int) and lat >= 0:
+                    self.home_latency.configure(text=f"{lat} ms")
+                else:
+                    self.home_latency.configure(text="")
+            except Exception:
+                pass
 
     def on_connect_switch(self):
         if self.connect_switch.get():
@@ -1189,18 +1226,21 @@ class App(ctk.CTk):
     def load_tray_image(self, state: str = "disconnected"):
         """state: main/connected/pac/warning/disconnected"""
         name_map = {
-            "main": "logo-main-64.png",
-            "connected": "logo-connected-64.png",
-            "pac": "logo-pac-64.png",
-            "warning": "logo-warning-64.png",
-            "disconnected": "logo-disconnected-64.png",
+            "main": ["logo-main-64.png", "logo-main.png"],
+            "connected": ["logo-connected-64.png", "logo-connected.png"],
+            "pac": ["logo-pac-64.png", "logo-pac.png"],
+            "warning": ["logo-warning-64.png", "logo-warning.png"],
+            "disconnected": ["logo-disconnected-64.png", "logo-disconnected.png"],
         }
-        path = self.icons_dir / name_map.get(state, "logo-disconnected-64.png")
-        try:
-            if path.exists():
-                return Image.open(path)
-        except Exception:
-            pass
+        for name in name_map.get(state, name_map["disconnected"]):
+            path = self.icons_dir / name
+            try:
+                if path.exists() and path.stat().st_size > 100:
+                    img = Image.open(path).convert("RGBA")
+                    img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                    return img
+            except Exception:
+                continue
         return self.make_tray_image()
 
     def set_tray_state(self, state: str):
@@ -1431,6 +1471,8 @@ class App(ctk.CTk):
     def refresh_combo(self, keep_selection: bool = True):
         def _do():
             try:
+                if not getattr(self, "node_combo", None):
+                    return
                 if not self.nodes:
                     self.node_combo.configure(values=["（无可用节点）"])
                     self.node_combo.set("（无可用节点）")
@@ -1450,29 +1492,32 @@ class App(ctk.CTk):
                     n["_index"] = i
 
                 view = self.filtered_nodes()
-                labels = [n.get("_label") or node_label(n) for n in view]
+                labels = []
+                for n in view:
+                    lb = n.get("_label") or node_label(n)
+                    n["_label"] = lb
+                    labels.append(lb)
+
                 if not labels:
                     self.node_combo.configure(values=["（无匹配节点）"])
                     self.node_combo.set("（无匹配节点）")
                     return
 
                 prev = self.node_combo.get() if keep_selection else None
-                # CTkComboBox 需要非空 list[str]
                 self.node_combo.configure(values=labels)
                 if prev and prev in labels:
                     self.node_combo.set(prev)
                 else:
                     self.node_combo.set(labels[0])
-                # 调试：确认数量
-                # self.log(f"节点列表已更新：显示 {len(labels)} / 共 {len(self.nodes)}")
+                self.log(f"节点列表已更新：{len(labels)} 条")
             except Exception as e:
                 self.log(f"刷新节点列表失败：{e}")
 
-        # 若已在主线程也可直接调用；统一丢到 after 保证线程安全
         try:
             self.after(0, _do)
         except Exception:
             _do()
+
 
     def load_nodes_thread(self):
         Thread(target=self.load_nodes, daemon=True).start()
@@ -1518,9 +1563,11 @@ class App(ctk.CTk):
             self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
+        self.log(f"解析到 {len(self.nodes)} 个节点，正在刷新列表...")
         self.refresh_combo(keep_selection=False)
+        # 再延迟刷一次，避免被其它 after 覆盖
+        self.after(200, lambda: self.refresh_combo(keep_selection=True))
         self.save_settings()
-        self.log(f"已载入并保存 {len(self.nodes)} 个节点，请在下拉框中选择")
         self.after(0, lambda: self.load_btn.configure(state="normal"))
 
     def on_dns_change(self, value=None):
@@ -1852,7 +1899,7 @@ class App(ctk.CTk):
         Thread(target=self.start_proxy, daemon=True).start()
 
     def start_proxy(self):
-        self.after(0, lambda: self.start_btn.configure(state="disabled"))
+        self.after(0, lambda: self.start_btn and self.start_btn.configure(state="disabled") if self.start_btn else None)
         self.log("---------- 开始启动 ----------")
 
         node = self.get_selected_node()
@@ -1862,12 +1909,12 @@ class App(ctk.CTk):
                 node = parse_link(text)
             if not node:
                 self.log("错误：请先加载订阅并选择节点")
-                self.after(0, lambda: self.start_btn.configure(state="normal"))
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
         if not node.get("address") or not node.get("port"):
             self.log("错误：节点地址或端口无效")
-            self.after(0, lambda: self.start_btn.configure(state="normal"))
+            self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
             return
 
         self.current_node = node
@@ -1885,7 +1932,7 @@ class App(ctk.CTk):
             self.prepare_core()
             if not xray_exe.exists():
                 self.log("错误：找不到 Xray-core")
-                self.after(0, lambda: self.start_btn.configure(state="normal"))
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
         for f in ("error.log", "access.log"):
@@ -1901,7 +1948,7 @@ class App(ctk.CTk):
             self.log("配置文件已生成")
         except Exception as e:
             self.log(f"生成配置失败：{e}")
-            self.after(0, lambda: self.start_btn.configure(state="normal"))
+            self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
             return
 
         try:
@@ -1934,7 +1981,7 @@ class App(ctk.CTk):
                     except Exception:
                         pass
                 self.xray_process = None
-                self.after(0, lambda: self.start_btn.configure(state="normal"))
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
             _, http_port = self.get_ports()
@@ -1963,7 +2010,7 @@ class App(ctk.CTk):
             self.log(f"启动失败：{e}")
             self.xray_process = None
 
-        self.after(0, lambda: self.start_btn.configure(state="normal"))
+        self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
 
     def stop_proxy(self):
         if self.xray_process:
