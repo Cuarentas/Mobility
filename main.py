@@ -17,6 +17,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
+# 并行测速线程数
+TEST_WORKERS = 32
+TEST_TIMEOUT = 2.0
+
 
 def get_base_dir() -> Path:
     if getattr(sys, 'frozen', False):
@@ -173,10 +177,8 @@ def parse_subscription_content(content: str) -> list[dict]:
     return nodes
 
 
-def tcp_ping(host: str, port: int, timeout: float = 2.5) -> int | None:
-    """TCP 连接耗时（毫秒），失败返回 None"""
+def tcp_ping(host: str, port: int, timeout: float = TEST_TIMEOUT) -> int | None:
     try:
-        # 解析域名
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         if not infos:
             return None
@@ -332,24 +334,26 @@ class App(ctk.CTk):
         self.core_dir = self.base_dir / "core"
         self.core_dir.mkdir(exist_ok=True)
         self.log_file = self.core_dir / "xray.log"
+        self.settings_path = self.base_dir / "mobility_settings.json"
 
         self.xray_process = None
         self.is_running = False
         self.is_testing = False
         self.nodes: list[dict] = []
         self.current_node = None
+        self.subscription_url = ""
         self._lock = Lock()
 
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.after(200, self.prepare_core)
+        self.after(200, self.startup)
 
     def create_widgets(self):
         title = ctk.CTkLabel(self, text="Mobility", font=("Microsoft YaHei UI", 22, "bold"))
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第四阶段：节点延迟测试与优选",
+            self, text="第四阶段：节点延迟测试与优选（并行测速 + 本地保存）",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -434,13 +438,19 @@ class App(ctk.CTk):
 
         self.log_box = ctk.CTkTextbox(self, width=580, height=180, font=("Consolas", 12))
         self.log_box.pack(pady=6)
-        self.log("欢迎使用 Mobility 第四阶段")
-        self.log("流程：加载订阅 → 测速全部 → 选择最低延迟 → 启动代理")
-        self.log("测速方式：TCP 连接延迟（到节点地址:端口）")
+        self.log("欢迎使用 Mobility")
+        self.log(f"并行测速并发数：{TEST_WORKERS}")
+        self.log("订阅与节点会自动保存，下次打开自动恢复")
 
     def log(self, msg: str):
-        self.log_box.insert("end", msg + "\n")
-        self.log_box.see("end")
+        def _do():
+            self.log_box.insert("end", msg + "\n")
+            self.log_box.see("end")
+        self.after(0, _do)
+
+    def startup(self):
+        self.prepare_core()
+        self.load_settings()
 
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
@@ -462,50 +472,98 @@ class App(ctk.CTk):
             return
         self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
 
-    def refresh_combo(self, keep_selection: bool = True):
-        if not self.nodes:
-            self.node_combo.configure(values=["（无可用节点）"])
-            self.node_combo.set("（无可用节点）")
+    def save_settings(self):
+        try:
+            slim_nodes = []
+            for n in self.nodes:
+                item = {k: v for k, v in n.items() if not str(k).startswith("_")}
+                slim_nodes.append(item)
+            data = {
+                "subscription_url": self.subscription_url or self.entry.get().strip(),
+                "nodes": slim_nodes,
+                "selected_label": self.node_combo.get() if self.nodes else "",
+            }
+            self.settings_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+        except Exception as e:
+            self.log(f"保存设置失败：{e}")
+
+    def load_settings(self):
+        if not self.settings_path.exists():
             return
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            url = data.get("subscription_url") or ""
+            nodes = data.get("nodes") or []
+            if url:
+                self.subscription_url = url
+                self.entry.delete(0, "end")
+                self.entry.insert(0, url)
+            if nodes:
+                self.nodes = nodes
+                for n in self.nodes:
+                    if "latency" not in n:
+                        n["latency"] = None
+                self.refresh_combo(keep_selection=False)
+                sel = data.get("selected_label") or ""
+                labels = [n.get("_label") for n in self.nodes]
+                if sel and sel in labels:
+                    self.node_combo.set(sel)
+                self.log(f"已恢复上次数据：{len(self.nodes)} 个节点")
+            elif url:
+                self.log("已恢复订阅地址，请点击「加载订阅」")
+        except Exception as e:
+            self.log(f"读取本地设置失败：{e}")
 
-        # 按延迟排序：有数值的在前，超时/未测在后
-        def sort_key(n):
-            lat = n.get("latency")
-            if lat is None:
-                return (2, 999999)
-            if lat < 0:
-                return (1, 999999)
-            return (0, lat)
+    def refresh_combo(self, keep_selection: bool = True):
+        def _do():
+            if not self.nodes:
+                self.node_combo.configure(values=["（无可用节点）"])
+                self.node_combo.set("（无可用节点）")
+                return
 
-        self.nodes.sort(key=sort_key)
-        labels = []
-        for i, n in enumerate(self.nodes):
-            label = node_label(n)
-            n["_label"] = label
-            n["_index"] = i
-            labels.append(label)
+            def sort_key(n):
+                lat = n.get("latency")
+                if lat is None:
+                    return (2, 999999)
+                if lat < 0:
+                    return (1, 999999)
+                return (0, lat)
 
-        prev = self.node_combo.get() if keep_selection else None
-        self.node_combo.configure(values=labels)
-        if prev and prev in labels:
-            self.node_combo.set(prev)
-        else:
-            self.node_combo.set(labels[0])
+            self.nodes.sort(key=sort_key)
+            labels = []
+            for i, n in enumerate(self.nodes):
+                label = node_label(n)
+                n["_label"] = label
+                n["_index"] = i
+                labels.append(label)
+
+            prev = self.node_combo.get() if keep_selection else None
+            self.node_combo.configure(values=labels)
+            if prev and prev in labels:
+                self.node_combo.set(prev)
+            else:
+                self.node_combo.set(labels[0])
+
+        self.after(0, _do)
 
     def load_nodes_thread(self):
         Thread(target=self.load_nodes, daemon=True).start()
 
     def load_nodes(self):
-        self.load_btn.configure(state="disabled")
+        self.after(0, lambda: self.load_btn.configure(state="disabled"))
         text = self.entry.get().strip()
         if not text:
             self.log("错误：请输入订阅链接或节点链接")
-            self.load_btn.configure(state="normal")
+            self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
         self.nodes = []
         try:
             if text.startswith(("http://", "https://")):
+                self.subscription_url = text
                 self.log("正在拉取订阅...")
                 resp = requests.get(
                     text,
@@ -516,6 +574,7 @@ class App(ctk.CTk):
                 self.nodes = parse_subscription_content(resp.text)
                 self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
             else:
+                self.subscription_url = ""
                 if "://" in text and "\n" not in text:
                     node = parse_link(text)
                     if node:
@@ -525,18 +584,19 @@ class App(ctk.CTk):
                 self.log(f"解析完成，共 {len(self.nodes)} 个节点")
         except Exception as e:
             self.log(f"加载失败：{e}")
-            self.load_btn.configure(state="normal")
+            self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
         if not self.nodes:
             self.log("未解析到有效节点")
             self.refresh_combo()
-            self.load_btn.configure(state="normal")
+            self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
         self.refresh_combo(keep_selection=False)
-        self.log("已载入节点，可点击「测速全部」")
-        self.load_btn.configure(state="normal")
+        self.save_settings()
+        self.log("已载入并保存，可点击「测速全部」")
+        self.after(0, lambda: self.load_btn.configure(state="normal"))
 
     def test_all_thread(self):
         if self.is_testing:
@@ -549,41 +609,51 @@ class App(ctk.CTk):
 
     def test_all(self):
         self.is_testing = True
-        self.test_btn.configure(state="disabled")
-        self.load_btn.configure(state="disabled")
-        total = len(self.nodes)
-        # 并行数量：节点少时用节点数，最多 20 路
-        workers = min(20, max(1, total))
-        self.log(f"开始并行测速，共 {total} 个节点（并发 {workers}）...")
+        self.after(0, lambda: self.test_btn.configure(state="disabled"))
+        self.after(0, lambda: self.load_btn.configure(state="disabled"))
 
-        def _one(idx_node):
-            idx, node = idx_node
-            ms = tcp_ping(node["address"], int(node["port"]), timeout=2.5)
-            return idx, node, ms
+        total = len(self.nodes)
+        workers = min(TEST_WORKERS, max(1, total))
+        self.log(f"开始并行测速：{total} 个节点，并发 {workers}，超时 {TEST_TIMEOUT}s")
+
+        t_start = time.perf_counter()
+
+        def _one(i: int, node: dict):
+            ms = tcp_ping(node["address"], int(node["port"]), timeout=TEST_TIMEOUT)
+            return i, ms
 
         ok = 0
-        done = 0
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = [ex.submit(_one, (i, n)) for i, n in enumerate(self.nodes)]
-            for fut in as_completed(futures):
-                idx, node, ms = fut.result()
+            futs = [ex.submit(_one, i, n) for i, n in enumerate(self.nodes)]
+            done = 0
+            for fut in as_completed(futs):
+                i, ms = fut.result()
                 done += 1
                 if ms is None:
-                    node["latency"] = -1
-                    self.log(f"  [{done}/{total}] {node['name']} → 超时")
+                    self.nodes[i]["latency"] = -1
                 else:
-                    node["latency"] = ms
+                    self.nodes[i]["latency"] = ms
                     ok += 1
-                    self.log(f"  [{done}/{total}] {node['name']} → {ms}ms")
-                if done % 5 == 0 or done == total:
-                    self.refresh_combo(keep_selection=True)
+                if done % max(1, total // 5) == 0 or done == total:
+                    self.log(f"  进度 {done}/{total} ...")
 
-        self.log(f"测速完成：成功 {ok}/{total}")
+        elapsed = time.perf_counter() - t_start
+        self.log(f"测速完成：成功 {ok}/{total}，耗时 {elapsed:.1f}s")
+
+        ranked = sorted(
+            [n for n in self.nodes if isinstance(n.get("latency"), int) and n["latency"] >= 0],
+            key=lambda x: x["latency"]
+        )
+        for n in ranked[:5]:
+            self.log(f"  优: {n['name']} → {n['latency']}ms")
+
         self.refresh_combo(keep_selection=False)
         self.select_best()
+        self.save_settings()
+
         self.is_testing = False
-        self.test_btn.configure(state="normal")
-        self.load_btn.configure(state="normal")
+        self.after(0, lambda: self.test_btn.configure(state="normal"))
+        self.after(0, lambda: self.load_btn.configure(state="normal"))
 
     def select_best(self):
         if not self.nodes:
@@ -599,8 +669,12 @@ class App(ctk.CTk):
             self.log("没有测速成功的节点，请先点「测速全部」")
             return
         self.refresh_combo(keep_selection=False)
-        self.node_combo.set(best["_label"])
+
+        def _set():
+            self.node_combo.set(best["_label"])
+        self.after(0, _set)
         self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
+        self.save_settings()
 
     def get_selected_node(self) -> dict | None:
         if not self.nodes:
@@ -702,7 +776,7 @@ class App(ctk.CTk):
         Thread(target=self.start_proxy, daemon=True).start()
 
     def start_proxy(self):
-        self.start_btn.configure(state="disabled")
+        self.after(0, lambda: self.start_btn.configure(state="disabled"))
         self.log("---------- 开始启动 ----------")
 
         node = self.get_selected_node()
@@ -712,12 +786,12 @@ class App(ctk.CTk):
                 node = parse_link(text)
             if not node:
                 self.log("错误：请先加载订阅并选择节点")
-                self.start_btn.configure(state="normal")
+                self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
         if not node.get("address") or not node.get("port"):
             self.log("错误：节点地址或端口无效")
-            self.start_btn.configure(state="normal")
+            self.after(0, lambda: self.start_btn.configure(state="normal"))
             return
 
         self.current_node = node
@@ -725,14 +799,16 @@ class App(ctk.CTk):
         lat_s = f"{lat}ms" if isinstance(lat, int) and lat >= 0 else "未测速"
         self.log(f"使用节点：[{node['protocol']}] {node['name']} ({lat_s})")
         self.log(f"服务器：{node['address']}:{node['port']}")
-        self.current_label.configure(text=f"当前节点：[{node['protocol']}] {node['name']} ({lat_s})")
+        self.after(0, lambda: self.current_label.configure(
+            text=f"当前节点：[{node['protocol']}] {node['name']} ({lat_s})"
+        ))
 
         xray_exe = self.core_dir / "xray.exe"
         if not xray_exe.exists():
             self.prepare_core()
             if not xray_exe.exists():
                 self.log("错误：找不到 Xray-core")
-                self.start_btn.configure(state="normal")
+                self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
         for f in ("error.log", "access.log"):
@@ -748,7 +824,7 @@ class App(ctk.CTk):
             self.log("配置文件已生成")
         except Exception as e:
             self.log(f"生成配置失败：{e}")
-            self.start_btn.configure(state="normal")
+            self.after(0, lambda: self.start_btn.configure(state="normal"))
             return
 
         try:
@@ -781,14 +857,17 @@ class App(ctk.CTk):
                     except Exception:
                         pass
                 self.xray_process = None
-                self.start_btn.configure(state="normal")
+                self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
             if self.set_system_proxy(True, 10809):
                 self.is_running = True
-                self.status_label.configure(text="状态：运行中", text_color="#27ae60")
+                self.after(0, lambda: self.status_label.configure(
+                    text="状态：运行中", text_color="#27ae60"
+                ))
                 self.log("Xray 已启动")
                 self.log("系统代理已设置为 127.0.0.1:10809")
+                self.save_settings()
             else:
                 self.xray_process.terminate()
                 self.xray_process = None
@@ -798,7 +877,7 @@ class App(ctk.CTk):
             self.log(f"启动失败：{e}")
             self.xray_process = None
 
-        self.start_btn.configure(state="normal")
+        self.after(0, lambda: self.start_btn.configure(state="normal"))
 
     def stop_proxy(self):
         if self.xray_process:
@@ -820,6 +899,7 @@ class App(ctk.CTk):
 
     def on_closing(self):
         self.stop_proxy()
+        self.save_settings()
         self.destroy()
 
 
