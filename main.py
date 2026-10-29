@@ -12,6 +12,7 @@ import shutil
 import requests
 from pathlib import Path
 from threading import Thread, Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -551,26 +552,34 @@ class App(ctk.CTk):
         self.test_btn.configure(state="disabled")
         self.load_btn.configure(state="disabled")
         total = len(self.nodes)
-        self.log(f"开始测速，共 {total} 个节点...")
+        # 并行数量：节点少时用节点数，最多 20 路
+        workers = min(20, max(1, total))
+        self.log(f"开始并行测速，共 {total} 个节点（并发 {workers}）...")
+
+        def _one(idx_node):
+            idx, node = idx_node
+            ms = tcp_ping(node["address"], int(node["port"]), timeout=2.5)
+            return idx, node, ms
+
         ok = 0
-        for i, node in enumerate(self.nodes):
-            host = node["address"]
-            port = int(node["port"])
-            ms = tcp_ping(host, port, timeout=2.5)
-            if ms is None:
-                node["latency"] = -1
-                self.log(f"  [{i+1}/{total}] {node['name']} → 超时")
-            else:
-                node["latency"] = ms
-                ok += 1
-                self.log(f"  [{i+1}/{total}] {node['name']} → {ms}ms")
-            # 边测边刷新列表
-            if (i + 1) % 3 == 0 or i == total - 1:
-                self.refresh_combo(keep_selection=True)
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_one, (i, n)) for i, n in enumerate(self.nodes)]
+            for fut in as_completed(futures):
+                idx, node, ms = fut.result()
+                done += 1
+                if ms is None:
+                    node["latency"] = -1
+                    self.log(f"  [{done}/{total}] {node['name']} → 超时")
+                else:
+                    node["latency"] = ms
+                    ok += 1
+                    self.log(f"  [{done}/{total}] {node['name']} → {ms}ms")
+                if done % 5 == 0 or done == total:
+                    self.refresh_combo(keep_selection=True)
 
         self.log(f"测速完成：成功 {ok}/{total}")
         self.refresh_combo(keep_selection=False)
-        # 自动选中最低延迟
         self.select_best()
         self.is_testing = False
         self.test_btn.configure(state="normal")
