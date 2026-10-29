@@ -46,23 +46,19 @@ jobs:
       - name: Download Xray-core and geo data
         shell: pwsh
         run: |
-          Write-Host "开始下载 Xray-core..."
-          $api = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-          $release = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "GitHub-Actions" }
-          $asset = $release.assets | Where-Object { $_.name -like "*windows-64.zip" -and $_.name -notlike "*arm64*" } | Select-Object -First 1
-          if (-not $asset) { throw "Xray windows-64.zip not found" }
-          Write-Host "找到文件: $($asset.name)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "xray.zip"
+          # 不走 GitHub API，避免 rate limit；使用 releases/latest/download 直链
+          Write-Host "开始下载 Xray-core（直链）..."
+          $xrayUrl = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+          Invoke-WebRequest -Uri $xrayUrl -OutFile "xray.zip" -UserAgent "Mozilla/5.0"
           if (Test-Path "core") { Remove-Item -Recurse -Force "core" }
+          New-Item -ItemType Directory -Path "core" -Force | Out-Null
           Expand-Archive -Path "xray.zip" -DestinationPath "core" -Force
           if (-not (Test-Path "core\xray.exe")) { throw "xray.exe not found after extract" }
           Write-Host "Xray-core 准备就绪"
 
-          Write-Host "下载 geoip.dat / geosite.dat (v2fly 官方)..."
-          # geoip: https://github.com/v2fly/geoip
-          Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile "core\geoip.dat"
-          # geosite: https://github.com/v2fly/domain-list-community
-          Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile "core\geosite.dat"
+          Write-Host "下载 geoip.dat / geosite.dat（直链）..."
+          Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile "core\geoip.dat" -UserAgent "Mozilla/5.0"
+          Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile "core\geosite.dat" -UserAgent "Mozilla/5.0"
           if (-not (Test-Path "core\geoip.dat")) { throw "geoip.dat download failed" }
           if (-not (Test-Path "core\geosite.dat")) { throw "geosite.dat download failed" }
           Write-Host "geo 数据文件准备就绪"
