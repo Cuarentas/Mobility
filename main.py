@@ -17,9 +17,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
-# 并行测速线程数
-TEST_WORKERS = 32
-TEST_TIMEOUT = 2.0
+# 并行测速默认值
+TEST_WORKERS_DEFAULT = 32
+TEST_TIMEOUT = 5.0
+TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 
 
 def get_base_dir() -> Path:
@@ -334,7 +335,7 @@ class App(ctk.CTk):
         self.core_dir = self.base_dir / "core"
         self.core_dir.mkdir(exist_ok=True)
         self.log_file = self.core_dir / "xray.log"
-        self.settings_path = self.base_dir / "mobility_settings.json"
+        self.settings_path = self.base_dir / "Subscribe.json"
 
         self.xray_process = None
         self.is_running = False
@@ -396,6 +397,18 @@ class App(ctk.CTk):
         )
         self.best_btn.pack(side="left", padx=6)
 
+        self.workers_label = ctk.CTkLabel(mid_btn, text="并发:", font=("Microsoft YaHei UI", 12))
+        self.workers_label.pack(side="left", padx=(12, 4))
+
+        self.workers_combo = ctk.CTkComboBox(
+            mid_btn, width=72, height=34,
+            values=TEST_WORKERS_OPTIONS,
+            state="readonly",
+            font=("Microsoft YaHei UI", 12)
+        )
+        self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
+        self.workers_combo.pack(side="left", padx=2)
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
@@ -439,8 +452,8 @@ class App(ctk.CTk):
         self.log_box = ctk.CTkTextbox(self, width=580, height=180, font=("Consolas", 12))
         self.log_box.pack(pady=6)
         self.log("欢迎使用 Mobility")
-        self.log(f"并行测速并发数：{TEST_WORKERS}")
-        self.log("订阅与节点会自动保存，下次打开自动恢复")
+        self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
+        self.log("订阅与节点会自动保存到 Subscribe.json，下次打开自动恢复")
 
     def log(self, msg: str):
         def _do():
@@ -482,6 +495,7 @@ class App(ctk.CTk):
                 "subscription_url": self.subscription_url or self.entry.get().strip(),
                 "nodes": slim_nodes,
                 "selected_label": self.node_combo.get() if self.nodes else "",
+                "test_workers": self.workers_combo.get(),
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -501,6 +515,9 @@ class App(ctk.CTk):
                 self.subscription_url = url
                 self.entry.delete(0, "end")
                 self.entry.insert(0, url)
+            tw = str(data.get("test_workers") or TEST_WORKERS_DEFAULT)
+            if tw in TEST_WORKERS_OPTIONS:
+                self.workers_combo.set(tw)
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -613,7 +630,11 @@ class App(ctk.CTk):
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
 
         total = len(self.nodes)
-        workers = min(TEST_WORKERS, max(1, total))
+        try:
+            chosen = int(self.workers_combo.get())
+        except Exception:
+            chosen = TEST_WORKERS_DEFAULT
+        workers = min(chosen, max(1, total))
         self.log(f"开始并行测速：{total} 个节点，并发 {workers}，超时 {TEST_TIMEOUT}s")
 
         t_start = time.perf_counter()
