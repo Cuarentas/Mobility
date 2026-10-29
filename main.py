@@ -337,7 +337,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Mobility")
-        self.geometry("640x680")
+        self.geometry("640x720")
         self.resizable(False, False)
 
         self.base_dir = get_base_dir()
@@ -355,6 +355,9 @@ class App(ctk.CTk):
         self.proxy_mode = PROXY_MODE_DEFAULT
         self.close_to_tray = True
         self.auto_start = False
+        self.auto_connect = False
+        self.socks_port = 10808
+        self.http_port = 10809
         self.tray_icon = None
         self._lock = Lock()
 
@@ -367,7 +370,7 @@ class App(ctk.CTk):
         title.pack(pady=(14, 4))
 
         subtitle = ctk.CTkLabel(
-            self, text="第六阶段：系统托盘 + 开机自启",
+            self, text="第七阶段：端口配置 + 启动自动连接",
             font=("Microsoft YaHei UI", 12)
         )
         subtitle.pack(pady=(0, 8))
@@ -454,6 +457,33 @@ class App(ctk.CTk):
         )
         self.autostart_check.pack(side="left", padx=8)
 
+        self.autoconnect_check = ctk.CTkCheckBox(
+            opt_row, text="启动时自动连接",
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_autoconnect_option
+        )
+        self.autoconnect_check.pack(side="left", padx=8)
+
+        port_row = ctk.CTkFrame(self, fg_color="transparent")
+        port_row.pack(pady=(6, 0))
+
+        ctk.CTkLabel(port_row, text="SOCKS:", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.socks_entry = ctk.CTkEntry(port_row, width=70, height=30)
+        self.socks_entry.insert(0, "10808")
+        self.socks_entry.pack(side="left", padx=(4, 12))
+
+        ctk.CTkLabel(port_row, text="HTTP:", font=("Microsoft YaHei UI", 12)).pack(side="left")
+        self.http_entry = ctk.CTkEntry(port_row, width=70, height=30)
+        self.http_entry.insert(0, "10809")
+        self.http_entry.pack(side="left", padx=(4, 12))
+
+        self.apply_port_btn = ctk.CTkButton(
+            port_row, text="应用端口", width=80, height=30,
+            font=("Microsoft YaHei UI", 12),
+            command=self.apply_ports
+        )
+        self.apply_port_btn.pack(side="left", padx=4)
+
         self.node_label = ctk.CTkLabel(self, text="选择节点：", font=("Microsoft YaHei UI", 13))
         self.node_label.pack(anchor="w", padx=40, pady=(8, 0))
 
@@ -499,7 +529,8 @@ class App(ctk.CTk):
         self.log("欢迎使用 Mobility")
         self.log(f"默认并行测速并发数：{TEST_WORKERS_DEFAULT}（可在界面调整）")
         self.log("代理模式：规则(国内直连) / 全局 / 直连")
-        self.log("支持关闭到系统托盘、开机自启")
+        self.log("支持关闭到系统托盘、开机自启、启动自动连接")
+        self.log("可自定义本地 SOCKS / HTTP 端口")
         self.log("订阅与节点会自动保存到 Subscribe.json")
 
     def log(self, msg: str):
@@ -516,6 +547,10 @@ class App(ctk.CTk):
             self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
         else:
             self.log("系统托盘不可用（缺少 pystray）")
+        # 启动时自动连接
+        if self.auto_connect and self.nodes:
+            self.log("已开启启动自动连接，正在启动代理...")
+            self.after(800, self.start_proxy_thread)
 
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
@@ -564,6 +599,38 @@ class App(ctk.CTk):
                 self.autostart_check.select()
                 self.auto_start = True
         self.save_settings()
+
+    def on_autoconnect_option(self):
+        self.auto_connect = bool(self.autoconnect_check.get())
+        self.save_settings()
+        self.log(f"启动时自动连接：{'开启' if self.auto_connect else '关闭'}")
+
+    def apply_ports(self):
+        try:
+            sp = int(self.socks_entry.get().strip())
+            hp = int(self.http_entry.get().strip())
+            if not (1 <= sp <= 65535 and 1 <= hp <= 65535):
+                raise ValueError("端口范围 1-65535")
+            if sp == hp:
+                raise ValueError("SOCKS 与 HTTP 端口不能相同")
+            self.socks_port = sp
+            self.http_port = hp
+            self.save_settings()
+            self.log(f"端口已应用：SOCKS={sp}  HTTP={hp}")
+            if self.is_running:
+                self.log("端口已更改，请停止后重新启动代理以生效")
+        except Exception as e:
+            self.log(f"端口设置无效：{e}")
+
+    def get_ports(self):
+        try:
+            sp = int(self.socks_entry.get().strip())
+            hp = int(self.http_entry.get().strip())
+            if 1 <= sp <= 65535 and 1 <= hp <= 65535 and sp != hp:
+                return sp, hp
+        except Exception:
+            pass
+        return self.socks_port, self.http_port
 
     def set_auto_start(self, enable: bool) -> bool:
         """写入/删除当前用户开机启动项"""
@@ -646,6 +713,9 @@ class App(ctk.CTk):
                 "proxy_mode": self.mode_combo.get() if hasattr(self, "mode_combo") else self.proxy_mode,
                 "close_to_tray": bool(self.tray_check.get()) if hasattr(self, "tray_check") else self.close_to_tray,
                 "auto_start": bool(self.autostart_check.get()) if hasattr(self, "autostart_check") else self.auto_start,
+                "auto_connect": bool(self.autoconnect_check.get()) if hasattr(self, "autoconnect_check") else self.auto_connect,
+                "socks_port": self.get_ports()[0],
+                "http_port": self.get_ports()[1],
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -684,6 +754,22 @@ class App(ctk.CTk):
                     self.autostart_check.select()
                 else:
                     self.autostart_check.deselect()
+            self.auto_connect = bool(data.get("auto_connect", False))
+            if hasattr(self, "autoconnect_check"):
+                if self.auto_connect:
+                    self.autoconnect_check.select()
+                else:
+                    self.autoconnect_check.deselect()
+            try:
+                self.socks_port = int(data.get("socks_port", 10808))
+                self.http_port = int(data.get("http_port", 10809))
+            except Exception:
+                self.socks_port, self.http_port = 10808, 10809
+            if hasattr(self, "socks_entry"):
+                self.socks_entry.delete(0, "end")
+                self.socks_entry.insert(0, str(self.socks_port))
+                self.http_entry.delete(0, "end")
+                self.http_entry.insert(0, str(self.http_port))
             if nodes:
                 self.nodes = nodes
                 for n in self.nodes:
@@ -916,6 +1002,8 @@ class App(ctk.CTk):
                 {"tag": "block", "protocol": "blackhole"},
             ]
 
+        socks_port, http_port = self.get_ports()
+
         config = {
             "log": {
                 "loglevel": "warning",
@@ -925,7 +1013,7 @@ class App(ctk.CTk):
             "inbounds": [
                 {
                     "tag": "socks",
-                    "port": 10808,
+                    "port": socks_port,
                     "listen": "127.0.0.1",
                     "protocol": "socks",
                     "settings": {"udp": True},
@@ -933,7 +1021,7 @@ class App(ctk.CTk):
                 },
                 {
                     "tag": "http",
-                    "port": 10809,
+                    "port": http_port,
                     "listen": "127.0.0.1",
                     "protocol": "http",
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
@@ -1077,13 +1165,14 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
-            if self.set_system_proxy(True, 10809):
+            _, http_port = self.get_ports()
+            if self.set_system_proxy(True, http_port):
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
                     text="状态：运行中", text_color="#27ae60"
                 ))
                 self.log("Xray 已启动")
-                self.log("系统代理已设置为 127.0.0.1:10809")
+                self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
                 self.save_settings()
             else:
                 self.xray_process.terminate()
