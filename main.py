@@ -629,7 +629,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(right, text="订阅更新", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(8, 2))
         self.refresh_interval_combo = ctk.CTkComboBox(right, width=180, height=28, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
         self.refresh_interval_combo.set("不自动更新")
-        self.refresh_combo.pack(padx=12)
+        self.refresh_interval_combo.pack(padx=12)
         cr = ctk.CTkFrame(right, fg_color="transparent")
         cr.pack(fill="x", padx=12, pady=4)
         self.refresh_custom_entry = ctk.CTkEntry(cr, width=60, height=26, placeholder_text="小时")
