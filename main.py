@@ -718,6 +718,71 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def on_tun_placeholder(self):
+        try:
+            self.tun_check.deselect()
+        except Exception:
+            pass
+        self.log("TUN 模式开发中，当前版本仅预留开关")
+
+    def show_about(self):
+        try:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "关于 Mobility",
+                "Mobility 代理客户端\n"
+                "版本：开发版\n"
+                "基于 Xray-core\n\n"
+                "功能：订阅 / 测速 / 分流 / 系统代理\n"
+                "手动更新：GitHub Releases 下载最新包\n"
+                "核心更新：设置中的「更新核心」"
+            )
+        except Exception as e:
+            self.log(f"打开关于失败：{e}")
+
+    def update_core_thread(self):
+        Thread(target=self.update_core, daemon=True).start()
+
+    def update_core(self):
+        self.log("开始检查并更新 Xray-core ...")
+        try:
+            import tempfile
+            import zipfile
+            url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+            tmp = Path(tempfile.gettempdir()) / "xray_update.zip"
+            self.log(f"下载：{url}")
+            r = requests.get(url, timeout=120, headers={"User-Agent": "Mobility"})
+            r.raise_for_status()
+            tmp.write_bytes(r.content)
+            core_dir = get_base_dir() / "core"
+            core_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp, "r") as zf:
+                for name in zf.namelist():
+                    if name.lower().endswith("xray.exe"):
+                        (core_dir / "xray.exe").write_bytes(zf.read(name))
+                        self.log("xray.exe 已更新")
+                        break
+            for geo_name, geo_url in [
+                ("geoip.dat", "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"),
+                ("geosite.dat", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"),
+            ]:
+                try:
+                    self.log(f"更新 {geo_name} ...")
+                    gr = requests.get(geo_url, timeout=60, headers={"User-Agent": "Mobility"})
+                    if gr.status_code == 200:
+                        (core_dir / geo_name).write_bytes(gr.content)
+                        self.log(f"{geo_name} 已更新")
+                except Exception as ge:
+                    self.log(f"{geo_name} 更新失败：{ge}")
+            self.log("核心/规则文件更新完成（建议重启软件）")
+            try:
+                self.xray_path = find_xray()
+            except Exception:
+                pass
+        except Exception as e:
+            self.log(f"更新核心失败：{e}")
+
+
     def log(self, msg: str):
         def _do():
             self.log_box.insert("end", msg + "\n")
