@@ -2,6 +2,7 @@ import customtkinter as ctk
 import subprocess
 import sys
 import json
+import re
 import base64
 import urllib.parse
 import time
@@ -44,6 +45,27 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
+APP_VERSION = "0.14.0"
+GITHUB_REPO = "Cuarentas/Mobility"
+
+
+def normalize_version(v: str) -> tuple:
+    v = (v or "").strip().lstrip("vV")
+    parts = []
+    for x in v.split("."):
+        try:
+            parts.append(int(re.sub(r"[^0-9].*", "", x) or 0))
+        except Exception:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def version_newer(remote: str, local: str) -> bool:
+    return normalize_version(remote) > normalize_version(local)
+
+
 
 def get_base_dir() -> Path:
     if getattr(sys, 'frozen', False):
@@ -58,6 +80,26 @@ def get_resource_path(relative: str) -> Path:
         return Path(sys.executable).parent / relative
     return Path(__file__).parent / relative
 
+
+
+def get_xray_version(xray_path) -> str:
+    if not xray_path or not Path(xray_path).exists():
+        return "未找到"
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        r = subprocess.run(
+            [str(xray_path), "version"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=flags,
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        m = re.search(r"Xray\s+([0-9.]+)", out, re.I)
+        if m:
+            return m.group(1)
+        line = out.strip().splitlines()[0] if out.strip() else ""
+        return line[:40] if line else "未知"
+    except Exception:
+        return "未知"
 
 
 def get_icons_dir() -> Path:
@@ -468,6 +510,8 @@ class App(ctk.CTk):
         self.nodes: list[dict] = []
         self.current_node = None
         self.subscription_url = ""
+        self.subscriptions = []
+        self._xray_ver = "未知"
         self.proxy_mode = PROXY_MODE_DEFAULT
         self.close_to_tray = True
         self.auto_start = False
@@ -517,6 +561,11 @@ class App(ctk.CTk):
         self.current_label = ctk.CTkLabel(top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
                                           text_color=("gray40", "gray60"))
         self.current_label.pack(side="left", padx=8)
+        self.version_label = ctk.CTkLabel(
+            top, text=f"v{APP_VERSION}",
+            font=("Microsoft YaHei UI", 11), text_color=("gray45", "gray55")
+        )
+        self.version_label.pack(side="left", padx=8)
 
         self.stop_btn = ctk.CTkButton(top, text="停止", width=72, height=32,
                                       fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy)
@@ -527,14 +576,26 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        # ===== 订阅行 =====
+        # ===== 订阅行（多订阅）=====
         sub = ctk.CTkFrame(body, fg_color="transparent")
-        sub.pack(fill="x", pady=(0, 6))
+        sub.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(sub, text="订阅", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        self.sub_select = ctk.CTkComboBox(
+            sub, width=140, height=32, values=["（无订阅）"], state="readonly",
+            command=self.on_sub_select
+        )
+        self.sub_select.set("（无订阅）")
+        self.sub_select.pack(side="left", padx=(6, 4))
         self.entry = ctk.CTkEntry(sub, height=32, placeholder_text="订阅 URL 或节点链接")
-        self.entry.pack(side="left", fill="x", expand=True, padx=8)
-        self.load_btn = ctk.CTkButton(sub, text="加载", width=64, height=32, command=self.load_nodes_thread)
+        self.entry.pack(side="left", fill="x", expand=True, padx=4)
+        self.load_btn = ctk.CTkButton(sub, text="加载", width=56, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="left", padx=2)
+        self.add_sub_btn = ctk.CTkButton(sub, text="添加", width=56, height=32, fg_color="#0D9488", command=self.add_subscription)
+        self.add_sub_btn.pack(side="left", padx=2)
+        self.del_sub_btn = ctk.CTkButton(sub, text="删除", width=56, height=32, fg_color="#DC2626", command=self.remove_subscription)
+        self.del_sub_btn.pack(side="left", padx=2)
+        self.refresh_all_btn = ctk.CTkButton(sub, text="更新全部", width=72, height=32, fg_color="#7C3AED", command=self.refresh_all_subs_thread)
+        self.refresh_all_btn.pack(side="left", padx=2)
         self.clip_btn = ctk.CTkButton(sub, text="剪贴板", width=64, height=32, command=self.import_clipboard_thread)
         self.clip_btn.pack(side="left", padx=2)
 
@@ -730,12 +791,13 @@ class App(ctk.CTk):
             from tkinter import messagebox
             messagebox.showinfo(
                 "关于 Mobility",
-                "Mobility 代理客户端\n"
-                "版本：开发版\n"
-                "基于 Xray-core\n\n"
-                "功能：订阅 / 测速 / 分流 / 系统代理\n"
-                "手动更新：GitHub Releases 下载最新包\n"
-                "核心更新：设置中的「更新核心」"
+                f"Mobility 代理客户端\n"
+                f"软件版本：v{APP_VERSION}\n"
+                f"Xray 核心：{getattr(self, '_xray_ver', '未知')}\n\n"
+                f"仓库：{GITHUB_REPO}\n"
+                f"功能：多订阅 / 测速 / 分流 / 系统代理\n"
+                f"手动更新：GitHub Releases\n"
+                f"核心更新：设置 → 更新核心"
             )
         except Exception as e:
             self.log(f"打开关于失败：{e}")
@@ -798,31 +860,41 @@ class App(ctk.CTk):
 
     def check_update(self):
         self.log("正在检查更新...")
+        self.log(f"当前软件版本：v{APP_VERSION}")
         try:
-            # 读取当前仓库信息（从 git remote 不可用时用默认）
-            api = "https://api.github.com/repos/Cuarentas/Mobility/releases/latest"
+            api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             r = requests.get(api, timeout=15, headers={"User-Agent": "Mobility-Client"})
             if r.status_code == 404:
                 self.log("未找到 Release，请确认仓库已发布版本")
                 return
             r.raise_for_status()
             data = r.json()
-            tag = data.get("tag_name") or data.get("name") or "未知"
+            tag = data.get("tag_name") or data.get("name") or ""
             url = data.get("html_url") or ""
-            self.log(f"最新版本：{tag}")
-            if url:
-                self.log(f"发布页面：{url}")
-            assets = data.get("assets") or []
-            for a in assets:
-                if a.get("name"):
-                    self.log(f"  资源：{a['name']}")
-            self.log("请到 GitHub Releases 下载更新")
+            self.log(f"仓库最新版本：{tag}")
+            if version_newer(tag, APP_VERSION):
+                self.log("发现新版本，请到 GitHub Releases 下载更新")
+                if url:
+                    self.log(f"发布页面：{url}")
+                for a in data.get("assets") or []:
+                    if a.get("name"):
+                        self.log(f"  资源：{a['name']}")
+            else:
+                self.log("当前已是最新版本（或更新）")
         except Exception as e:
             self.log(f"检查更新失败：{e}")
 
     def startup(self):
         self.prepare_core()
+        try:
+            self._xray_ver = get_xray_version(getattr(self, "xray_path", None) or find_xray())
+        except Exception:
+            self._xray_ver = "未知"
         self.load_settings()
+        try:
+            self.version_label.configure(text=f"v{APP_VERSION} | Xray {self._xray_ver}")
+        except Exception:
+            pass
         if TRAY_AVAILABLE:
             self.setup_tray()
             self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
@@ -1198,6 +1270,7 @@ class App(ctk.CTk):
                 slim_nodes.append(item)
             data = {
                 "subscription_url": self.subscription_url or self.entry.get().strip(),
+                "subscriptions": getattr(self, "subscriptions", []),
                 "nodes": slim_nodes,
                 "selected_label": (self.current_node or {}).get("_label", "") if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
@@ -1235,6 +1308,13 @@ class App(ctk.CTk):
                 self.subscription_url = url
                 self.entry.delete(0, "end")
                 self.entry.insert(0, url)
+            self.subscriptions = data.get("subscriptions") or []
+            if not self.subscriptions and url.startswith("http"):
+                self.subscriptions = [{"name": "订阅1", "url": url}]
+            try:
+                self.refresh_sub_select()
+            except Exception:
+                pass
             tw = str(data.get("test_workers") or TEST_WORKERS_DEFAULT)
             if tw in TEST_WORKERS_OPTIONS:
                 self.workers_combo.set(tw)
@@ -1444,6 +1524,117 @@ class App(ctk.CTk):
             self.log(f"刷新节点列表失败：{type(e).__name__}: {e}")
 
 
+
+    def refresh_sub_select(self):
+        names = [s.get("name") or (s.get("url") or "")[:24] for s in self.subscriptions]
+        if not names:
+            self.sub_select.configure(values=["（无订阅）"])
+            self.sub_select.set("（无订阅）")
+            return
+        self.sub_select.configure(values=names)
+        cur = self.subscription_url
+        for s in self.subscriptions:
+            if s.get("url") == cur:
+                self.sub_select.set(s.get("name") or (s.get("url") or "")[:24])
+                return
+        self.sub_select.set(names[0])
+
+    def on_sub_select(self, value=None):
+        name = value or self.sub_select.get()
+        for s in self.subscriptions:
+            n = s.get("name") or (s.get("url") or "")[:24]
+            if n == name:
+                self.entry.delete(0, "end")
+                self.entry.insert(0, s.get("url") or "")
+                self.subscription_url = s.get("url") or ""
+                break
+
+    def add_subscription(self):
+        url = self.entry.get().strip()
+        if not url.startswith(("http://", "https://")):
+            self.log("请输入有效的订阅 URL 后再点添加")
+            return
+        for s in self.subscriptions:
+            if s.get("url") == url:
+                self.log("该订阅已存在")
+                self.subscription_url = url
+                self.refresh_sub_select()
+                return
+        try:
+            from urllib.parse import urlparse
+            name = (urlparse(url).netloc or "")[:20] or f"订阅{len(self.subscriptions)+1}"
+        except Exception:
+            name = f"订阅{len(self.subscriptions)+1}"
+        self.subscriptions.append({"name": name, "url": url})
+        self.subscription_url = url
+        self.refresh_sub_select()
+        self.save_settings()
+        self.log(f"已添加订阅：{name}")
+        self.load_nodes_thread()
+
+    def remove_subscription(self):
+        name = self.sub_select.get()
+        before = len(self.subscriptions)
+        self.subscriptions = [
+            s for s in self.subscriptions
+            if (s.get("name") or (s.get("url") or "")[:24]) != name
+        ]
+        if len(self.subscriptions) == before:
+            self.log("未找到要删除的订阅")
+            return
+        self.refresh_sub_select()
+        if self.subscriptions:
+            self.on_sub_select(self.sub_select.get())
+        else:
+            self.subscription_url = ""
+            self.entry.delete(0, "end")
+            self.nodes = []
+            self.refresh_node_list()
+        self.save_settings()
+        self.log(f"已删除订阅：{name}")
+
+    def refresh_all_subs_thread(self):
+        Thread(target=self.refresh_all_subs, daemon=True).start()
+
+    def refresh_all_subs(self):
+        if not self.subscriptions:
+            url = self.entry.get().strip()
+            if url.startswith("http"):
+                self.subscriptions.append({"name": "订阅1", "url": url})
+            else:
+                self.log("没有可更新的订阅")
+                return
+        self.after(0, lambda: self.load_btn.configure(state="disabled"))
+        all_nodes = []
+        seen = set()
+        for s in self.subscriptions:
+            url = s.get("url") or ""
+            if not url:
+                continue
+            try:
+                self.log(f"更新订阅：{s.get('name')} ...")
+                resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
+                resp.raise_for_status()
+                nodes = parse_subscription_content(resp.text)
+                for n in nodes:
+                    key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}|{n.get('name')}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    n["from_sub"] = s.get("name")
+                    all_nodes.append(n)
+                self.log(f"  -> {len(nodes)} 个节点")
+            except Exception as e:
+                self.log(f"  失败：{e}")
+        self.nodes = all_nodes
+
+        def _ui():
+            self.refresh_node_list(keep_selection=False)
+            self.save_settings()
+            self.load_btn.configure(state="normal")
+            self.log(f"全部订阅更新完成，去重后共 {len(self.nodes)} 个节点")
+        self.after(0, _ui)
+
     def load_nodes_thread(self):
         Thread(target=self.load_nodes, daemon=True).start()
 
@@ -1459,6 +1650,13 @@ class App(ctk.CTk):
         try:
             if text.startswith(("http://", "https://")):
                 self.subscription_url = text
+                if not any(s.get("url") == text for s in self.subscriptions):
+                    try:
+                        from urllib.parse import urlparse
+                        nm = (urlparse(text).netloc or "")[:20] or f"订阅{len(self.subscriptions)+1}"
+                    except Exception:
+                        nm = f"订阅{len(self.subscriptions)+1}"
+                    self.subscriptions.append({"name": nm, "url": text})
                 self.log("正在拉取订阅...")
                 resp = requests.get(
                     text,
@@ -1494,6 +1692,10 @@ class App(ctk.CTk):
             try:
                 self.log(f"解析到 {count} 个节点，正在刷新列表...")
                 self.refresh_node_list(keep_selection=False)
+                try:
+                    self.refresh_sub_select()
+                except Exception:
+                    pass
                 self.save_settings()
             finally:
                 try:
