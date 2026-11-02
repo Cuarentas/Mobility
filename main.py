@@ -589,10 +589,12 @@ class App(ctk.CTk):
         # 兼容旧代码：隐藏 combo
         self.node_combo = None
 
-        right = ctk.CTkFrame(mid, width=220)
-        right.pack(side="right", fill="y")
-        right.pack_propagate(False)
-        ctk.CTkLabel(right, text="设置", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
+        right_wrap = ctk.CTkFrame(mid, width=230)
+        right_wrap.pack(side="right", fill="y")
+        right_wrap.pack_propagate(False)
+        right = ctk.CTkScrollableFrame(right_wrap, width=210)
+        right.pack(fill="both", expand=True)
+        ctk.CTkLabel(right, text="设置", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=8, pady=(6, 6))
 
         self.tray_check = ctk.CTkCheckBox(right, text="关闭到托盘", command=self.on_tray_option)
         self.tray_check.select()
@@ -625,8 +627,8 @@ class App(ctk.CTk):
         self.theme_combo.pack(padx=12)
 
         ctk.CTkLabel(right, text="订阅更新", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(8, 2))
-        self.refresh_combo = ctk.CTkComboBox(right, width=180, height=28, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
-        self.refresh_combo.set("不自动更新")
+        self.refresh_interval_combo = ctk.CTkComboBox(right, width=180, height=28, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
+        self.refresh_interval_combo.set("不自动更新")
         self.refresh_combo.pack(padx=12)
         cr = ctk.CTkFrame(right, fg_color="transparent")
         cr.pack(fill="x", padx=12, pady=4)
@@ -655,14 +657,24 @@ class App(ctk.CTk):
         self.proxy_entry = ctk.CTkEntry(right, width=180, height=26, placeholder_text="google.com")
         self.proxy_entry.pack(padx=12, pady=2)
         self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=28, command=self.apply_custom_domains)
-        self.domain_apply_btn.pack(fill="x", padx=12, pady=6)
+        self.domain_apply_btn.pack(fill="x", padx=8, pady=6)
+
+        self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式（开发中）", command=self.on_tun_placeholder)
+        self.tun_check.pack(anchor="w", padx=8, pady=4)
 
         util = ctk.CTkFrame(right, fg_color="transparent")
-        util.pack(fill="x", padx=8, pady=6)
+        util.pack(fill="x", padx=4, pady=6)
         self.clear_log_btn = ctk.CTkButton(util, text="清空日志", width=90, height=28, command=self.clear_log)
         self.clear_log_btn.pack(side="left", padx=2)
         self.update_btn = ctk.CTkButton(util, text="检查更新", width=90, height=28, command=self.check_update_thread)
         self.update_btn.pack(side="left", padx=2)
+
+        util2 = ctk.CTkFrame(right, fg_color="transparent")
+        util2.pack(fill="x", padx=4, pady=4)
+        self.core_update_btn = ctk.CTkButton(util2, text="更新核心", width=90, height=28, command=self.update_core_thread)
+        self.core_update_btn.pack(side="left", padx=2)
+        self.about_btn = ctk.CTkButton(util2, text="关于", width=90, height=28, command=self.show_about)
+        self.about_btn.pack(side="left", padx=2)
 
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
@@ -866,7 +878,7 @@ class App(ctk.CTk):
             self.log("提示：代理可能未真正可用，请更换节点后重试")
 
     def on_refresh_change(self, value=None):
-        self.refresh_label = self.refresh_combo.get() or "不自动更新"
+        self.refresh_label = self.refresh_interval_combo.get() or "不自动更新"
         self.save_settings()
         self.schedule_subscription_refresh()
         self.log(f"订阅定时更新：{self.refresh_label}")
@@ -884,7 +896,7 @@ class App(ctk.CTk):
             return
         self._custom_refresh_hours = h
         try:
-            self.refresh_combo.set("自定义")
+            self.refresh_interval_combo.set("自定义")
         except Exception:
             pass
         self.refresh_label = "自定义"
@@ -904,7 +916,7 @@ class App(ctk.CTk):
 
         label = "不自动更新"
         try:
-            label = self.refresh_combo.get()
+            label = self.refresh_interval_combo.get()
         except Exception:
             pass
         hours = REFRESH_HOURS.get(label, 0)
@@ -962,7 +974,7 @@ class App(ctk.CTk):
             self.log("剪贴板中未识别到有效节点或订阅链接")
             return
         self.nodes = nodes
-        self.refresh_combo(keep_selection=False)
+        self.refresh_node_list(keep_selection=False)
         self.save_settings()
         self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
 
@@ -1130,7 +1142,7 @@ class App(ctk.CTk):
                 "auto_connect": bool(self.autoconnect_check.get()) if hasattr(self, "autoconnect_check") else self.auto_connect,
                 "socks_port": self.get_ports()[0],
                 "http_port": self.get_ports()[1],
-                "refresh_label": self.refresh_combo.get() if hasattr(self, "refresh_combo") else self.refresh_label,
+                "refresh_label": self.refresh_interval_combo.get() if hasattr(self, "refresh_interval_combo") else self.refresh_label,
                 "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
                 "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
                 "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
@@ -1196,8 +1208,8 @@ class App(ctk.CTk):
             rl = data.get("refresh_label") or "不自动更新"
             if rl in REFRESH_OPTIONS:
                 self.refresh_label = rl
-                if hasattr(self, "refresh_combo"):
-                    self.refresh_combo.set(rl)
+                if hasattr(self, "refresh_interval_combo"):
+                    self.refresh_interval_combo.set(rl)
             self.start_minimized = bool(data.get("start_minimized", False))
             if hasattr(self, "minimized_check"):
                 if self.start_minimized:
@@ -1246,7 +1258,7 @@ class App(ctk.CTk):
                     if "latency" not in n:
                         n["latency"] = None
                 self._selected_label = data.get("selected_label") or ""
-                self.refresh_combo(keep_selection=True)
+                self.refresh_node_list(keep_selection=True)
                 self.log(f"已恢复上次数据：{len(self.nodes)} 个节点")
             elif url:
                 self.log("已恢复订阅地址，请点击「加载订阅」")
@@ -1266,13 +1278,13 @@ class App(ctk.CTk):
 
     def apply_node_filter(self):
         self.filter_text = self.filter_entry.get() if hasattr(self, "filter_entry") else ""
-        self.refresh_combo(keep_selection=True)
+        self.refresh_node_list(keep_selection=True)
 
     def clear_node_filter(self):
         if hasattr(self, "filter_entry"):
             self.filter_entry.delete(0, "end")
         self.filter_text = ""
-        self.refresh_combo(keep_selection=False)
+        self.refresh_node_list(keep_selection=False)
         self.log("已清除节点搜索过滤")
 
     def on_lan_option(self):
@@ -1282,7 +1294,7 @@ class App(ctk.CTk):
         if self.allow_lan:
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
-    def refresh_combo(self, keep_selection: bool = True):
+    def refresh_node_list(self, keep_selection: bool = True):
         """刷新左侧节点列表（滚动列表，不再用 ComboBox）。"""
         try:
             nodes = list(self.nodes or [])
@@ -1407,7 +1419,7 @@ class App(ctk.CTk):
 
         if not self.nodes:
             self.log("未解析到有效节点")
-            self.refresh_combo()
+            self.refresh_node_list()
             self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
@@ -1416,7 +1428,7 @@ class App(ctk.CTk):
         def _ui_ok():
             try:
                 self.log(f"解析到 {count} 个节点，正在刷新列表...")
-                self.refresh_combo(keep_selection=False)
+                self.refresh_node_list(keep_selection=False)
                 self.save_settings()
             finally:
                 try:
@@ -1533,7 +1545,7 @@ class App(ctk.CTk):
         for n in ranked[:5]:
             self.log(f"  优: {n['name']} → {n['latency']}ms")
 
-        self.refresh_combo(keep_selection=False)
+        self.refresh_node_list(keep_selection=False)
         self.select_best()
         self.save_settings()
 
@@ -1558,7 +1570,7 @@ class App(ctk.CTk):
             return
         self.current_node = best
         self._selected_label = best.get("_label")
-        self.refresh_combo(keep_selection=True)
+        self.refresh_node_list(keep_selection=True)
         self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
         self.save_settings()
 
