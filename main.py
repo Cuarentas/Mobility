@@ -799,47 +799,33 @@ class App(ctk.CTk):
         self.hotkey_proxy_entry.insert(0, getattr(self, "hotkey_proxy", "ctrl+shift+p"))
         self.hotkey_proxy_entry.pack(padx=8)
         
-        # 右侧按钮：双列对齐；单行按钮与双列总宽一致
+        # 右侧按钮区：统一用 grid 两列，保证左右边对齐
         bh = 30
-        gap = 6
-        # 单列半宽 / 整行宽（与侧栏内容区匹配）
-        half_w = 100
-        full_w = half_w * 2 + gap  # 206
+        btn_box = ctk.CTkFrame(right, fg_color="transparent")
+        btn_box.pack(fill="x", padx=10, pady=(6, 8))
+        btn_box.grid_columnconfigure(0, weight=1, uniform="btn")
+        btn_box.grid_columnconfigure(1, weight=1, uniform="btn")
 
-        def _row(parent):
-            f = ctk.CTkFrame(parent, fg_color="transparent")
-            f.pack(fill="x", padx=8, pady=3)
-            return f
+        self.apply_hotkey_btn = ctk.CTkButton(btn_box, text="应用热键", height=bh, command=self.apply_hotkeys)
+        self.apply_hotkey_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
 
-        # 应用热键：整行
-        self.apply_hotkey_btn = ctk.CTkButton(
-            right, text="应用热键", width=full_w, height=bh, command=self.apply_hotkeys
-        )
-        self.apply_hotkey_btn.pack(padx=8, pady=(6, 3))
+        self.clear_log_btn = ctk.CTkButton(btn_box, text="清空日志", height=bh, command=self.clear_log)
+        self.clear_log_btn.grid(row=1, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.update_btn = ctk.CTkButton(btn_box, text="检查更新", height=bh, command=self.check_update_thread)
+        self.update_btn.grid(row=1, column=1, sticky="ew", pady=3, padx=(3, 0))
 
-        r1 = _row(right)
-        self.clear_log_btn = ctk.CTkButton(r1, text="清空日志", width=half_w, height=bh, command=self.clear_log)
-        self.clear_log_btn.pack(side="left")
-        self.update_btn = ctk.CTkButton(r1, text="检查更新", width=half_w, height=bh, command=self.check_update_thread)
-        self.update_btn.pack(side="left", padx=(gap, 0))
+        self.core_update_btn = ctk.CTkButton(btn_box, text="更新核心", height=bh, command=self.update_core_thread)
+        self.core_update_btn.grid(row=2, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.geo_update_btn = ctk.CTkButton(btn_box, text="更新规则", height=bh, command=self.update_geo_thread)
+        self.geo_update_btn.grid(row=2, column=1, sticky="ew", pady=3, padx=(3, 0))
 
-        r2 = _row(right)
-        self.core_update_btn = ctk.CTkButton(r2, text="更新核心", width=half_w, height=bh, command=self.update_core_thread)
-        self.core_update_btn.pack(side="left")
-        self.geo_update_btn = ctk.CTkButton(r2, text="更新规则", width=half_w, height=bh, command=self.update_geo_thread)
-        self.geo_update_btn.pack(side="left", padx=(gap, 0))
+        self.admin_btn = ctk.CTkButton(btn_box, text="管理员运行", height=bh, command=self.restart_as_admin)
+        self.admin_btn.grid(row=3, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.about_btn = ctk.CTkButton(btn_box, text="关于", height=bh, command=self.show_about)
+        self.about_btn.grid(row=3, column=1, sticky="ew", pady=3, padx=(3, 0))
 
-        r3 = _row(right)
-        self.admin_btn = ctk.CTkButton(r3, text="管理员运行", width=half_w, height=bh, command=self.restart_as_admin)
-        self.admin_btn.pack(side="left")
-        self.about_btn = ctk.CTkButton(r3, text="关于", width=half_w, height=bh, command=self.show_about)
-        self.about_btn.pack(side="left", padx=(gap, 0))
-
-        # 打开发布页：整行，与上面总宽一致
-        self.open_release_btn = ctk.CTkButton(
-            right, text="打开发布页", width=full_w, height=bh, command=self.open_releases_page
-        )
-        self.open_release_btn.pack(padx=8, pady=(3, 8))
+        self.open_release_btn = ctk.CTkButton(btn_box, text="打开发布页", height=bh, command=self.open_releases_page)
+        self.open_release_btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
 
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
