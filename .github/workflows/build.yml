@@ -64,6 +64,17 @@ jobs:
           if (-not (Test-Path "core\geoip.dat")) { throw "geoip.dat download failed" }
           if (-not (Test-Path "core\geosite.dat")) { throw "geosite.dat download failed" }
           Write-Host "geo 数据文件准备就绪"
+
+          Write-Host "下载并内置 wintun.dll（TUN 模式）..."
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "wintun.zip" "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          if (-not (Test-Path "wintun.zip")) { throw "wintun.zip download failed" }
+          if (Test-Path "wintun_extract") { Remove-Item -Recurse -Force "wintun_extract" }
+          Expand-Archive -Path "wintun.zip" -DestinationPath "wintun_extract" -Force
+          $dll = Get-ChildItem -Path "wintun_extract" -Recurse -Filter "wintun.dll" | Where-Object { $_.FullName -match "amd64" } | Select-Object -First 1
+          if (-not $dll) { $dll = Get-ChildItem -Path "wintun_extract" -Recurse -Filter "wintun.dll" | Select-Object -First 1 }
+          if (-not $dll) { throw "wintun.dll not found in zip" }
+          Copy-Item $dll.FullName "core\wintun.dll" -Force
+          Write-Host "wintun.dll 已内置到 core/"
           Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
       - name: Build with PyInstaller (onedir)
@@ -89,11 +100,16 @@ jobs:
           }
           Copy-Item -Path "core\geoip.dat" -Destination "$coreDir\geoip.dat" -Force
           Copy-Item -Path "core\geosite.dat" -Destination "$coreDir\geosite.dat" -Force
+          if (Test-Path "core\wintun.dll") {
+            Copy-Item -Path "core\wintun.dll" -Destination "$coreDir\wintun.dll" -Force
+          } else {
+            throw "缺少文件: wintun.dll"
+          }
 
-          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat")) {
+          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll")) {
             if (-not (Test-Path "$coreDir\$f")) { throw "缺少文件: $f" }
           }
-          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat"
+          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll"
 
           $zipPath = "dist\Mobility.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -207,7 +223,7 @@ jobs:
             ### ✨ 本版本亮点
             
             - 📦 解压即用，无需安装任何运行环境
-            - 📦 **已内置 Xray-core + geoip.dat + geosite.dat**
+            - 📦 **已内置 Xray-core + geoip.dat + geosite.dat + wintun.dll（TUN）**
             - 🔌 支持 vmess / vless / trojan
             - 🌐 自动设置与取消 Windows 系统代理
             
