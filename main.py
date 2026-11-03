@@ -769,6 +769,8 @@ class App(ctk.CTk):
         self.minimized_check.pack(anchor="w", padx=12, pady=3)
         self.lan_check = ctk.CTkCheckBox(right, text="允许局域网", command=self.on_lan_option)
         self.lan_check.pack(anchor="w", padx=12, pady=3)
+        self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
+        self.tun_check.pack(anchor="w", padx=12, pady=3)
 
         # 端口分行显示，避免右侧窄栏裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
@@ -828,11 +830,6 @@ class App(ctk.CTk):
         self.proxy_entry.pack(padx=12, pady=2)
         self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=28, command=self.apply_custom_domains)
         self.domain_apply_btn.pack(fill="x", padx=8, pady=6)
-
-        self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
-        self.tun_check.pack(anchor="w", padx=8, pady=4)
-        ctk.CTkLabel(right, text="需管理员 + wintun.dll", font=("Microsoft YaHei UI", 10),
-                     text_color=("gray45", "gray55")).pack(anchor="w", padx=8)
 
         ctk.CTkLabel(right, text="字体大小", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
         self.font_combo = ctk.CTkComboBox(right, width=180, height=28, values=FONT_SIZE_OPTIONS,
@@ -946,9 +943,55 @@ class App(ctk.CTk):
                 self.tun_enabled = False
                 self.save_settings()
                 return
-        self.tun_enabled = enabled
+            # 需要已选节点
+            node = None
+            try:
+                node = self.get_selected_node()
+            except Exception:
+                node = self.current_node
+            if not node and self.nodes:
+                # 自动选延迟最低或第一个
+                try:
+                    tested = [n for n in self.nodes if isinstance(n.get("latency"), int) and n["latency"] >= 0]
+                    node = min(tested, key=lambda x: x["latency"]) if tested else self.nodes[0]
+                    self.current_node = node
+                except Exception:
+                    node = self.nodes[0]
+                    self.current_node = node
+            if not node:
+                self.log("请先加载并选择节点，再开启 TUN")
+                try:
+                    self.tun_check.deselect()
+                except Exception:
+                    pass
+                self.tun_enabled = False
+                self.save_settings()
+                return
+            self.tun_enabled = True
+            self.save_settings()
+            self.log("TUN 模式：开启，正在自动连接...")
+            # 若已在运行，先停再以 TUN 配置重启
+            if self.is_running:
+                try:
+                    self.stop_proxy()
+                except Exception:
+                    pass
+                self.after(400, self.start_proxy_thread)
+            else:
+                self.start_proxy_thread()
+            return
+
+        # 关闭 TUN
+        self.tun_enabled = False
         self.save_settings()
-        self.log(f"TUN 模式：{'开启' if enabled else '关闭'}（重启代理后生效）")
+        self.log("TUN 模式：关闭")
+        if self.is_running:
+            # 关闭 TUN 后停止全局接管（与 v2rayN 类似）
+            self.log("已关闭 TUN，停止当前连接")
+            try:
+                self.stop_proxy()
+            except Exception:
+                pass
 
     def on_font_size_change(self, value=None):
         try:
@@ -2475,7 +2518,10 @@ class App(ctk.CTk):
                     if hasattr(self, "stat_time_label"):
                         self.stat_time_label.configure(text=f"时长 {self._fmt_duration(dur)}")
                 # traffic
-                tr = self._query_xray_traffic()
+                # TUN 下减少频繁 api 子进程，降低卡顿
+                tr = None
+                if not getattr(self, "tun_enabled", False):
+                    tr = self._query_xray_traffic()
                 now = time.time()
                 if tr:
                     up, down = tr
@@ -2511,7 +2557,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(2000, self.update_home_stats)
+        self.after(3000, self.update_home_stats)
 
     def start_proxy_thread(self):
         if self.is_running:
@@ -2612,7 +2658,9 @@ class App(ctk.CTk):
                 return
 
             _, http_port = self.get_ports()
-            if self.set_system_proxy(True, http_port):
+            if getattr(self, "tun_enabled", False):
+                self.log("TUN 模式已接管流量，跳过系统代理设置")
+            elif self.set_system_proxy(True, http_port):
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
                     text="状态：运行中", text_color="#27ae60"
