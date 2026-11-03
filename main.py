@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.15.0"
+APP_VERSION = "0.16.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -540,6 +540,12 @@ class App(ctk.CTk):
         self._run_started_at = None
         self._bytes_up = 0
         self._bytes_down = 0
+        self._last_up = 0
+        self._last_down = 0
+        self._last_stat_ts = 0.0
+        self._speed_up = 0.0
+        self._speed_down = 0.0
+        self.api_port = 10085
         self._custom_refresh_hours = 0
         self.icons_dir = get_icons_dir()
 
@@ -628,6 +634,21 @@ class App(ctk.CTk):
         self.mode_combo = ctk.CTkComboBox(tools, width=100, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left")
+
+        # ===== 运行状态条 =====
+        stats = ctk.CTkFrame(body, fg_color=("gray90", "gray20"), corner_radius=8, height=48)
+        stats.pack(fill="x", pady=(6, 6))
+        stats.pack_propagate(False)
+        self.stat_up_label = ctk.CTkLabel(stats, text="↑ 0 B/s", font=("Microsoft YaHei UI", 12), text_color="#EA580C")
+        self.stat_up_label.pack(side="left", padx=12)
+        self.stat_down_label = ctk.CTkLabel(stats, text="↓ 0 B/s", font=("Microsoft YaHei UI", 12), text_color="#2563EB")
+        self.stat_down_label.pack(side="left", padx=8)
+        self.stat_total_label = ctk.CTkLabel(stats, text="流量 0 B", font=("Microsoft YaHei UI", 12))
+        self.stat_total_label.pack(side="left", padx=12)
+        self.stat_time_label = ctk.CTkLabel(stats, text="时长 00:00:00", font=("Microsoft YaHei UI", 12))
+        self.stat_time_label.pack(side="left", padx=8)
+        self.stat_mem_label = ctk.CTkLabel(stats, text="内存 --", font=("Microsoft YaHei UI", 12))
+        self.stat_mem_label.pack(side="left", padx=8)
 
         # ===== 中部：节点列表 + 右侧设置 =====
         mid = ctk.CTkFrame(body, fg_color="transparent")
@@ -2195,6 +2216,36 @@ class App(ctk.CTk):
                 "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
             })
 
+        # Stats API（供界面显示实时流量）
+        api_port = int(getattr(self, "api_port", 10085))
+        config["stats"] = {}
+        config["api"] = {
+            "tag": "api",
+            "services": ["StatsService"],
+        }
+        config["policy"] = {
+            "system": {
+                "statsOutboundUplink": True,
+                "statsOutboundDownlink": True,
+            }
+        }
+        config["inbounds"].append({
+            "tag": "api",
+            "listen": "127.0.0.1",
+            "port": api_port,
+            "protocol": "dokodemo-door",
+            "settings": {"address": "127.0.0.1"},
+        })
+        # API 路由
+        rules = config.get("routing", {}).get("rules") or []
+        rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
+        config.setdefault("routing", {})["rules"] = rules
+        # API outbound 使用 freedom 即可，但 tag 需匹配
+        outs = config.get("outbounds") or []
+        if not any(o.get("tag") == "api" for o in outs):
+            outs.append({"tag": "api", "protocol": "freedom"})
+            config["outbounds"] = outs
+
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
@@ -2233,6 +2284,128 @@ class App(ctk.CTk):
             return "\n".join(lines[-8:]) if lines else ""
         except Exception:
             return ""
+
+    def _fmt_bytes(self, n: float) -> str:
+        n = float(n or 0)
+        for u in ("B", "KB", "MB", "GB", "TB"):
+            if abs(n) < 1024:
+                return f"{n:.1f} {u}" if u != "B" else f"{int(n)} {u}"
+            n /= 1024
+        return f"{n:.1f} PB"
+
+    def _fmt_duration(self, secs: float) -> str:
+        secs = int(max(0, secs))
+        h, r = divmod(secs, 3600)
+        m, s = divmod(r, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _query_xray_traffic(self):
+        """尝试通过 xray api 查询流量；失败返回 None。"""
+        try:
+            xray_exe = self.core_dir / "xray.exe"
+            if not xray_exe.exists() or not self.is_running:
+                return None
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            # uplink / downlink for outbound proxy
+            up = down = None
+            for name, pattern in (
+                ("outbound>>>proxy>>>traffic>>>uplink", "up"),
+                ("outbound>>>proxy>>>traffic>>>downlink", "down"),
+            ):
+                r = subprocess.run(
+                    [str(xray_exe), "api", "stats", f"--server=127.0.0.1:{self.api_port}", f"-name={name}"],
+                    capture_output=True, text=True, timeout=2, creationflags=flags,
+                    cwd=str(self.core_dir),
+                )
+                out = (r.stdout or "") + (r.stderr or "")
+                m = re.search(r"value:\s*(\d+)", out) or re.search(r"(\d+)", out)
+                if m:
+                    if "uplink" in name:
+                        up = int(m.group(1))
+                    else:
+                        down = int(m.group(1))
+            if up is None and down is None:
+                return None
+            return up or 0, down or 0
+        except Exception:
+            return None
+
+    def _xray_memory_mb(self) -> str:
+        try:
+            if not self.xray_process or self.xray_process.poll() is not None:
+                return "--"
+            try:
+                import psutil
+                proc = psutil.Process(self.xray_process.pid)
+                rss = proc.memory_info().rss
+                return f"{rss / (1024 * 1024):.0f} MB"
+            except Exception:
+                # fallback tasklist
+                flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                r = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {self.xray_process.pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=2, creationflags=flags,
+                )
+                # "xray.exe","1234","Session","1","12,345 K"
+                line = (r.stdout or "").strip().strip('"')
+                parts = [x.strip().strip('"') for x in (r.stdout or "").split(",")]
+                if len(parts) >= 5:
+                    mem = parts[-1].replace("K", "").replace("k", "").replace(",", "").replace(" ", "")
+                    try:
+                        kb = int(mem)
+                        return f"{kb / 1024:.0f} MB"
+                    except Exception:
+                        pass
+                return "--"
+        except Exception:
+            return "--"
+
+    def update_home_stats(self):
+        try:
+            if self.is_running:
+                self.status_label.configure(text="运行中", text_color="#16A34A")
+                if self._run_started_at:
+                    dur = time.time() - self._run_started_at
+                    if hasattr(self, "stat_time_label"):
+                        self.stat_time_label.configure(text=f"时长 {self._fmt_duration(dur)}")
+                # traffic
+                tr = self._query_xray_traffic()
+                now = time.time()
+                if tr:
+                    up, down = tr
+                    dt = max(0.001, now - (self._last_stat_ts or now))
+                    if self._last_stat_ts:
+                        self._speed_up = max(0, (up - self._last_up) / dt)
+                        self._speed_down = max(0, (down - self._last_down) / dt)
+                    self._last_up, self._last_down = up, down
+                    self._last_stat_ts = now
+                    self._bytes_up, self._bytes_down = up, down
+                    if hasattr(self, "stat_up_label"):
+                        self.stat_up_label.configure(text=f"↑ {self._fmt_bytes(self._speed_up)}/s")
+                        self.stat_down_label.configure(text=f"↓ {self._fmt_bytes(self._speed_down)}/s")
+                        self.stat_total_label.configure(
+                            text=f"流量 {self._fmt_bytes(up + down)}"
+                        )
+                if hasattr(self, "stat_mem_label"):
+                    self.stat_mem_label.configure(text=f"内存 {self._xray_memory_mb()}")
+            else:
+                self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
+                if hasattr(self, "stat_time_label"):
+                    self.stat_time_label.configure(text="时长 00:00:00")
+                if hasattr(self, "stat_up_label"):
+                    self.stat_up_label.configure(text="↑ 0 B/s")
+                    self.stat_down_label.configure(text="↓ 0 B/s")
+                    if self._bytes_up or self._bytes_down:
+                        self.stat_total_label.configure(
+                            text=f"流量 {self._fmt_bytes(self._bytes_up + self._bytes_down)}"
+                        )
+                    else:
+                        self.stat_total_label.configure(text="流量 0 B")
+                if hasattr(self, "stat_mem_label"):
+                    self.stat_mem_label.configure(text="内存 --")
+        except Exception:
+            pass
+        self.after(1000, self.update_home_stats)
 
     def start_proxy_thread(self):
         if self.is_running:
@@ -2337,6 +2510,10 @@ class App(ctk.CTk):
                 if self.allow_lan:
                     self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self._run_started_at = time.time()
+                self._bytes_up = self._bytes_down = 0
+                self._last_up = self._last_down = 0
+                self._last_stat_ts = 0.0
+                self._speed_up = self._speed_down = 0.0
                 mode = self.proxy_mode or ""
                 if "规则" in mode:
                     self.set_tray_state("pac")
