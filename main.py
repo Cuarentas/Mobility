@@ -31,7 +31,7 @@ TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
 PROXY_MODE_DEFAULT = "规则模式"
-REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时"]
+REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时", "自定义"]
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
 THEME_OPTIONS = ["跟随系统", "浅色", "深色"]
 FONT_SIZE_OPTIONS = ["12", "13", "14", "15", "16", "18"]
@@ -639,6 +639,13 @@ class App(ctk.CTk):
         top = ctk.CTkFrame(self, fg_color=("gray90", "gray17"), corner_radius=0, height=52)
         top.pack(fill="x")
         top.pack_propagate(False)
+        # 右侧按钮先 pack，避免长节点名把按钮挤出窗口
+        self.stop_btn = ctk.CTkButton(top, text="停止", width=72, height=32,
+                                      fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy)
+        self.stop_btn.pack(side="right", padx=(4, 12), pady=10)
+        self.start_btn = ctk.CTkButton(top, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn.pack(side="right", padx=4, pady=10)
+
         ctk.CTkLabel(top, text="Mobility", font=("Microsoft YaHei UI", 18, "bold"),
                      text_color=("#2563EB", "#60A5FA")).pack(side="left", padx=16)
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
@@ -651,12 +658,6 @@ class App(ctk.CTk):
             font=("Microsoft YaHei UI", 11), text_color=("gray45", "gray55")
         )
         self.version_label.pack(side="left", padx=8)
-
-        self.stop_btn = ctk.CTkButton(top, text="停止", width=72, height=32,
-                                      fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy)
-        self.stop_btn.pack(side="right", padx=(4, 12), pady=10)
-        self.start_btn = ctk.CTkButton(top, text="启动", width=72, height=32, command=self.start_proxy_thread)
-        self.start_btn.pack(side="right", padx=4, pady=10)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
@@ -792,15 +793,18 @@ class App(ctk.CTk):
         self.theme_combo.set("跟随系统")
         self.theme_combo.pack(padx=12)
 
-        ctk.CTkLabel(right, text="订阅更新", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(8, 2))
-        self.refresh_interval_combo = ctk.CTkComboBox(right, width=180, height=28, values=REFRESH_OPTIONS, state="readonly", command=self.on_refresh_change)
+        ctk.CTkLabel(right, text="订阅更新", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
+        self.refresh_interval_combo = ctk.CTkComboBox(
+            right, width=210, height=28, values=REFRESH_OPTIONS, state="readonly",
+            command=self.on_refresh_change
+        )
         self.refresh_interval_combo.set("不自动更新")
-        self.refresh_interval_combo.pack(padx=12)
+        self.refresh_interval_combo.pack(anchor="w", padx=8)
         cr = ctk.CTkFrame(right, fg_color="transparent")
-        cr.pack(fill="x", padx=12, pady=4)
-        self.refresh_custom_entry = ctk.CTkEntry(cr, width=60, height=26, placeholder_text="小时")
+        cr.pack(fill="x", padx=8, pady=4)
+        self.refresh_custom_entry = ctk.CTkEntry(cr, width=150, height=28, placeholder_text="自定义小时数")
         self.refresh_custom_entry.pack(side="left")
-        ctk.CTkButton(cr, text="应用", width=50, height=26, command=self.apply_custom_refresh).pack(side="left", padx=4)
+        ctk.CTkButton(cr, text="应用", width=54, height=28, command=self.apply_custom_refresh).pack(side="left", padx=(6, 0))
 
         ctk.CTkLabel(right, text="DNS", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(6, 2))
         self.dns_combo = ctk.CTkComboBox(right, width=180, height=28, values=DNS_OPTIONS, state="readonly", command=self.on_dns_change)
@@ -1170,7 +1174,7 @@ class App(ctk.CTk):
         else:
             self.log("系统托盘不可用（缺少 pystray）")
         # 首页状态刷新
-        self.after(500, self.update_home_stats)
+        self.after(1500, self.update_home_stats)
         # 订阅定时更新
         self.schedule_subscription_refresh()
         # 启动后最小化到托盘
@@ -1296,21 +1300,24 @@ class App(ctk.CTk):
             raw = ""
             if hasattr(self, "refresh_custom_entry"):
                 raw = self.refresh_custom_entry.get().strip()
-            h = float(raw)
-            if h <= 0:
-                raise ValueError("must be positive")
+            elif hasattr(self, "custom_refresh_entry"):
+                raw = self.custom_refresh_entry.get().strip()
+            hours = float(raw)
+            if hours <= 0:
+                self.log("请输入大于 0 的小时数")
+                return
+            self.refresh_label = "自定义"
+            self.settings_refresh_hours = hours
+            try:
+                self.refresh_interval_combo.set("自定义")
+            except Exception:
+                pass
+            self.save_settings()
+            self.schedule_subscription_refresh()
+            self.log(f"自定义更新间隔：{hours} 小时")
         except Exception:
-            self.log("请输入有效的小时数（例如 2 或 0.5）")
-            return
-        self._custom_refresh_hours = h
-        try:
-            self.refresh_interval_combo.set("自定义")
-        except Exception:
-            pass
-        self.refresh_label = "自定义"
-        self.save_settings()
-        self.schedule_subscription_refresh()
-        self.log(f"已设置自定义订阅更新：每 {h} 小时")
+            self.log("输入无效，请输入数字（如 0.5、2、36）")
+
 
     def schedule_subscription_refresh(self):
         # 取消旧定时
@@ -1328,8 +1335,8 @@ class App(ctk.CTk):
         except Exception:
             pass
         hours = REFRESH_HOURS.get(label, 0)
-        if hours == -1:
-            hours = getattr(self, "_custom_refresh_hours", 0) or 0
+        if label == "自定义" or hours == -1:
+            hours = float(getattr(self, "settings_refresh_hours", 0) or getattr(self, "_custom_refresh_hours", 0) or 0)
         if not hours or hours <= 0:
             return
         ms = int(float(hours) * 3600 * 1000)
@@ -1607,6 +1614,10 @@ class App(ctk.CTk):
                 self.font_combo.set(str(self.font_size))
             self.hotkey_toggle = data.get("hotkey_toggle") or "ctrl+shift+m"
             self.hotkey_proxy = data.get("hotkey_proxy") or "ctrl+shift+p"
+            try:
+                self.settings_refresh_hours = float(data.get("settings_refresh_hours") or 0)
+            except Exception:
+                self.settings_refresh_hours = 0
             if hasattr(self, "hotkey_toggle_entry"):
                 self.hotkey_toggle_entry.delete(0, "end")
                 self.hotkey_toggle_entry.insert(0, self.hotkey_toggle)
@@ -2370,6 +2381,16 @@ class App(ctk.CTk):
         except Exception:
             return ""
 
+    def _short_node_text(self, node: dict, lat_s: str = "") -> str:
+        name = (node or {}).get("name") or "无"
+        proto = (node or {}).get("protocol") or ""
+        if len(name) > 28:
+            name = name[:26] + "…"
+        base = f"当前节点：[{proto}] {name}"
+        if lat_s:
+            base += f" ({lat_s})"
+        return base
+
     def _fmt_bytes(self, n: float) -> str:
         n = float(n or 0)
         for u in ("B", "KB", "MB", "GB", "TB"):
@@ -2399,7 +2420,7 @@ class App(ctk.CTk):
             ):
                 r = subprocess.run(
                     [str(xray_exe), "api", "stats", f"--server=127.0.0.1:{self.api_port}", f"-name={name}"],
-                    capture_output=True, text=True, timeout=2, creationflags=flags,
+                    capture_output=True, text=True, timeout=1, creationflags=flags,
                     cwd=str(self.core_dir),
                 )
                 out = (r.stdout or "") + (r.stderr or "")
@@ -2490,7 +2511,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(1000, self.update_home_stats)
+        self.after(2000, self.update_home_stats)
 
     def start_proxy_thread(self):
         if self.is_running:
@@ -2524,7 +2545,7 @@ class App(ctk.CTk):
         self.log(f"服务器：{node['address']}:{node['port']}")
         self.log(f"代理模式：{self.proxy_mode}")
         self.after(0, lambda: self.current_label.configure(
-            text=f"当前节点：[{node['protocol']}] {node['name']} ({lat_s})"
+            text=self._short_node_text(node, lat_s)
         ))
 
         xray_exe = self.core_dir / "xray.exe"
