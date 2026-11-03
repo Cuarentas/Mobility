@@ -656,10 +656,10 @@ class App(ctk.CTk):
         # 兼容旧代码：隐藏 combo
         self.node_combo = None
 
-        right_wrap = ctk.CTkFrame(mid, width=230)
+        right_wrap = ctk.CTkFrame(mid, width=250)
         right_wrap.pack(side="right", fill="y")
         right_wrap.pack_propagate(False)
-        right = ctk.CTkScrollableFrame(right_wrap, width=210)
+        right = ctk.CTkScrollableFrame(right_wrap, width=230)
         right.pack(fill="both", expand=True)
         ctk.CTkLabel(right, text="设置", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=8, pady=(6, 6))
 
@@ -675,18 +675,23 @@ class App(ctk.CTk):
         self.lan_check = ctk.CTkCheckBox(right, text="允许局域网", command=self.on_lan_option)
         self.lan_check.pack(anchor="w", padx=12, pady=3)
 
-        pr = ctk.CTkFrame(right, fg_color="transparent")
-        pr.pack(fill="x", padx=12, pady=8)
-        ctk.CTkLabel(pr, text="SOCKS", font=("Microsoft YaHei UI", 11)).pack(side="left")
-        self.socks_entry = ctk.CTkEntry(pr, width=72, height=26)
+        # 端口分行显示，避免右侧窄栏裁切
+        pr1 = ctk.CTkFrame(right, fg_color="transparent")
+        pr1.pack(fill="x", padx=8, pady=(8, 2))
+        ctk.CTkLabel(pr1, text="SOCKS", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
+        self.socks_entry = ctk.CTkEntry(pr1, height=28)
         self.socks_entry.insert(0, "10808")
-        self.socks_entry.pack(side="left", padx=4)
-        ctk.CTkLabel(pr, text="HTTP", font=("Microsoft YaHei UI", 11)).pack(side="left")
-        self.http_entry = ctk.CTkEntry(pr, width=72, height=26)
+        self.socks_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        pr2 = ctk.CTkFrame(right, fg_color="transparent")
+        pr2.pack(fill="x", padx=8, pady=2)
+        ctk.CTkLabel(pr2, text="HTTP", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
+        self.http_entry = ctk.CTkEntry(pr2, height=28)
         self.http_entry.insert(0, "10809")
-        self.http_entry.pack(side="left", padx=4)
+        self.http_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
         self.apply_port_btn = ctk.CTkButton(right, text="应用端口", height=28, command=self.apply_ports)
-        self.apply_port_btn.pack(fill="x", padx=12, pady=2)
+        self.apply_port_btn.pack(fill="x", padx=8, pady=4)
 
         ctk.CTkLabel(right, text="主题", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(8, 2))
         self.theme_combo = ctk.CTkComboBox(right, width=180, height=28, values=THEME_OPTIONS, state="readonly", command=self.on_theme_change)
