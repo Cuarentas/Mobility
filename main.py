@@ -84,22 +84,49 @@ def get_resource_path(relative: str) -> Path:
 
 
 
+def find_xray():
+    """查找 xray.exe 路径"""
+    candidates = [
+        get_base_dir() / "core" / "xray.exe",
+        get_base_dir() / "xray.exe",
+    ]
+    try:
+        candidates.append(get_resource_path("core/xray.exe"))
+    except Exception:
+        pass
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "core" / "xray.exe")
+    for c in candidates:
+        try:
+            if c and Path(c).exists():
+                return Path(c)
+        except Exception:
+            pass
+    return None
+
+
 def get_xray_version(xray_path) -> str:
+    if not xray_path:
+        xray_path = find_xray()
     if not xray_path or not Path(xray_path).exists():
         return "未找到"
     try:
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         r = subprocess.run(
             [str(xray_path), "version"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=8,
             creationflags=flags,
+            cwd=str(Path(xray_path).parent),
         )
         out = (r.stdout or "") + (r.stderr or "")
-        m = re.search(r"Xray\s+([0-9.]+)", out, re.I)
+        m = re.search(r"Xray\s+([0-9]+(?:\.[0-9]+)*)", out, re.I)
         if m:
             return m.group(1)
+        m2 = re.search(r"\b([0-9]+\.[0-9]+\.[0-9]+)\b", out)
+        if m2:
+            return m2.group(1)
         line = out.strip().splitlines()[0] if out.strip() else ""
-        return line[:40] if line else "未知"
+        return line[:48] if line else "未知"
     except Exception:
         return "未知"
 
@@ -771,30 +798,25 @@ class App(ctk.CTk):
         self.hotkey_proxy_entry = ctk.CTkEntry(right, width=180, height=26)
         self.hotkey_proxy_entry.insert(0, getattr(self, "hotkey_proxy", "ctrl+shift+p"))
         self.hotkey_proxy_entry.pack(padx=8)
-        ctk.CTkButton(right, text="应用热键", height=28, command=self.apply_hotkeys).pack(fill="x", padx=8, pady=4)
+        ctk.CTkButton(right, text="应用热键", width=210, height=30, command=self.apply_hotkeys).pack(padx=8, pady=4)
 
-        util = ctk.CTkFrame(right, fg_color="transparent")
-        util.pack(fill="x", padx=4, pady=6)
-        self.clear_log_btn = ctk.CTkButton(util, text="清空日志", width=90, height=28, command=self.clear_log)
-        self.clear_log_btn.pack(side="left", padx=2)
-        self.update_btn = ctk.CTkButton(util, text="检查更新", width=90, height=28, command=self.check_update_thread)
-        self.update_btn.pack(side="left", padx=2)
-
-        util2 = ctk.CTkFrame(right, fg_color="transparent")
-        util2.pack(fill="x", padx=4, pady=4)
-        self.core_update_btn = ctk.CTkButton(util2, text="更新核心", width=90, height=28, command=self.update_core_thread)
-        self.core_update_btn.pack(side="left", padx=2)
-        self.geo_update_btn = ctk.CTkButton(util2, text="更新规则", width=90, height=28, command=self.update_geo_thread)
-        self.geo_update_btn.pack(side="left", padx=2)
-
-        util3 = ctk.CTkFrame(right, fg_color="transparent")
-        util3.pack(fill="x", padx=4, pady=4)
-        self.admin_btn = ctk.CTkButton(util3, text="管理员运行", width=90, height=28, command=self.restart_as_admin)
-        self.admin_btn.pack(side="left", padx=2)
-        self.about_btn = ctk.CTkButton(util3, text="关于", width=90, height=28, command=self.show_about)
-        self.about_btn.pack(side="left", padx=2)
-        self.open_release_btn = ctk.CTkButton(right, text="打开发布页", height=28, command=self.open_releases_page)
-        self.open_release_btn.pack(fill="x", padx=8, pady=4)
+        # 右侧功能按钮统一宽度对齐
+        bw = 210
+        bh = 30
+        self.clear_log_btn = ctk.CTkButton(right, text="清空日志", width=bw, height=bh, command=self.clear_log)
+        self.clear_log_btn.pack(padx=8, pady=(8, 3))
+        self.update_btn = ctk.CTkButton(right, text="检查更新", width=bw, height=bh, command=self.check_update_thread)
+        self.update_btn.pack(padx=8, pady=3)
+        self.core_update_btn = ctk.CTkButton(right, text="更新核心", width=bw, height=bh, command=self.update_core_thread)
+        self.core_update_btn.pack(padx=8, pady=3)
+        self.geo_update_btn = ctk.CTkButton(right, text="更新规则", width=bw, height=bh, command=self.update_geo_thread)
+        self.geo_update_btn.pack(padx=8, pady=3)
+        self.admin_btn = ctk.CTkButton(right, text="管理员运行", width=bw, height=bh, command=self.restart_as_admin)
+        self.admin_btn.pack(padx=8, pady=3)
+        self.about_btn = ctk.CTkButton(right, text="关于", width=bw, height=bh, command=self.show_about)
+        self.about_btn.pack(padx=8, pady=3)
+        self.open_release_btn = ctk.CTkButton(right, text="打开发布页", width=bw, height=bh, command=self.open_releases_page)
+        self.open_release_btn.pack(padx=8, pady=(3, 8))
 
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
@@ -1102,12 +1124,14 @@ class App(ctk.CTk):
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
         if xray_exe.exists():
+            self.xray_path = xray_exe
             self.log("已检测到 Xray-core")
             return
         try:
             bundled = get_resource_path("core/xray.exe")
             if bundled.exists():
                 shutil.copy2(bundled, xray_exe)
+                self.xray_path = xray_exe
                 self.log("已从程序内部提取 Xray-core")
                 return
         except Exception as e:
