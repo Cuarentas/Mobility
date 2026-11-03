@@ -1617,7 +1617,7 @@ class App(ctk.CTk):
                 resp.raise_for_status()
                 nodes = parse_subscription_content(resp.text)
                 for n in nodes:
-                    key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}|{n.get('name')}"
+                    key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}"
                     if key in seen:
                         continue
                     seen.add(key)
