@@ -878,7 +878,7 @@ class App(ctk.CTk):
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
         log_frame.pack(fill="both", expand=False, pady=(4, 0))
         ctk.CTkLabel(log_frame, text="运行日志", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
-        self.log_box = ctk.CTkTextbox(log_frame, height=140, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
 
         self.log("Mobility 已启动（v2rayN 风格布局）")
@@ -2342,17 +2342,22 @@ class App(ctk.CTk):
             config["dns"] = {"servers": dns_servers}
 
         if getattr(self, "tun_enabled", False):
+            # Windows TUN：依赖 core/wintun.dll；auto 自动配路由
             config["inbounds"].append({
                 "tag": "tun-in",
                 "protocol": "tun",
                 "settings": {
-                    "name": "MobilityTUN",
                     "mtu": 1500,
                     "stack": "system",
                     "auto": True,
-                    "strictRoute": False,
+                    "strictRoute": True,
+                    "sniffing": True,
                 },
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "routeOnly": False,
+                },
             })
 
         # Stats API（供界面显示实时流量）
@@ -2658,16 +2663,22 @@ class App(ctk.CTk):
                 return
 
             _, http_port = self.get_ports()
+            proxy_ok = True
             if getattr(self, "tun_enabled", False):
                 self.log("TUN 模式已接管流量，跳过系统代理设置")
-            elif self.set_system_proxy(True, http_port):
+                proxy_ok = True
+            else:
+                proxy_ok = bool(self.set_system_proxy(True, http_port))
+                if proxy_ok:
+                    self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
+
+            if proxy_ok:
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
-                    text="状态：运行中", text_color="#27ae60"
+                    text="运行中", text_color="#16A34A"
                 ))
-                self.log("Xray 已启动")
-                self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
-                if self.allow_lan:
+                self.log("Xray 已启动" + ("（TUN）" if getattr(self, "tun_enabled", False) else ""))
+                if self.allow_lan and not getattr(self, "tun_enabled", False):
                     self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self._run_started_at = time.time()
                 self._bytes_up = self._bytes_down = 0
@@ -2675,7 +2686,9 @@ class App(ctk.CTk):
                 self._last_stat_ts = 0.0
                 self._speed_up = self._speed_down = 0.0
                 mode = self.proxy_mode or ""
-                if "规则" in mode:
+                if getattr(self, "tun_enabled", False):
+                    self.set_tray_state("connected")
+                elif "规则" in mode:
                     self.set_tray_state("pac")
                 else:
                     self.set_tray_state("connected")
