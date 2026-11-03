@@ -34,6 +34,8 @@ PROXY_MODE_DEFAULT = "规则模式"
 REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时"]
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
 THEME_OPTIONS = ["跟随系统", "浅色", "深色"]
+FONT_SIZE_OPTIONS = ["12", "13", "14", "15", "16", "18"]
+FONT_SIZE_DEFAULT = "13"
 THEME_MAP = {"跟随系统": "System", "浅色": "Light", "深色": "Dark"}
 DNS_OPTIONS = ["系统默认", "国内 DNS", "国外 DNS", "自定义"]
 DNS_PRESETS = {
@@ -45,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -512,6 +514,10 @@ class App(ctk.CTk):
         self.subscription_url = ""
         self.subscriptions = []
         self._xray_ver = "未知"
+        self.tun_enabled = False
+        self.font_size = 13
+        self.hotkey_toggle = "ctrl+shift+m"
+        self.hotkey_proxy = "ctrl+shift+p"
         self.proxy_mode = PROXY_MODE_DEFAULT
         self.close_to_tray = True
         self.auto_start = False
@@ -720,8 +726,26 @@ class App(ctk.CTk):
         self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=28, command=self.apply_custom_domains)
         self.domain_apply_btn.pack(fill="x", padx=8, pady=6)
 
-        self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式（开发中）", command=self.on_tun_placeholder)
+        self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
         self.tun_check.pack(anchor="w", padx=8, pady=4)
+        ctk.CTkLabel(right, text="需管理员 + wintun.dll", font=("Microsoft YaHei UI", 10),
+                     text_color=("gray45", "gray55")).pack(anchor="w", padx=8)
+
+        ctk.CTkLabel(right, text="字体大小", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
+        self.font_combo = ctk.CTkComboBox(right, width=180, height=28, values=FONT_SIZE_OPTIONS,
+                                          state="readonly", command=self.on_font_size_change)
+        self.font_combo.set(str(getattr(self, "font_size", 13)))
+        self.font_combo.pack(padx=8)
+
+        ctk.CTkLabel(right, text="热键-显示/隐藏", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 2))
+        self.hotkey_toggle_entry = ctk.CTkEntry(right, width=180, height=26)
+        self.hotkey_toggle_entry.insert(0, getattr(self, "hotkey_toggle", "ctrl+shift+m"))
+        self.hotkey_toggle_entry.pack(padx=8)
+        ctk.CTkLabel(right, text="热键-启停代理", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(4, 2))
+        self.hotkey_proxy_entry = ctk.CTkEntry(right, width=180, height=26)
+        self.hotkey_proxy_entry.insert(0, getattr(self, "hotkey_proxy", "ctrl+shift+p"))
+        self.hotkey_proxy_entry.pack(padx=8)
+        ctk.CTkButton(right, text="应用热键", height=28, command=self.apply_hotkeys).pack(fill="x", padx=8, pady=4)
 
         util = ctk.CTkFrame(right, fg_color="transparent")
         util.pack(fill="x", padx=4, pady=6)
@@ -734,8 +758,17 @@ class App(ctk.CTk):
         util2.pack(fill="x", padx=4, pady=4)
         self.core_update_btn = ctk.CTkButton(util2, text="更新核心", width=90, height=28, command=self.update_core_thread)
         self.core_update_btn.pack(side="left", padx=2)
-        self.about_btn = ctk.CTkButton(util2, text="关于", width=90, height=28, command=self.show_about)
+        self.geo_update_btn = ctk.CTkButton(util2, text="更新规则", width=90, height=28, command=self.update_geo_thread)
+        self.geo_update_btn.pack(side="left", padx=2)
+
+        util3 = ctk.CTkFrame(right, fg_color="transparent")
+        util3.pack(fill="x", padx=4, pady=4)
+        self.admin_btn = ctk.CTkButton(util3, text="管理员运行", width=90, height=28, command=self.restart_as_admin)
+        self.admin_btn.pack(side="left", padx=2)
+        self.about_btn = ctk.CTkButton(util3, text="关于", width=90, height=28, command=self.show_about)
         self.about_btn.pack(side="left", padx=2)
+        self.open_release_btn = ctk.CTkButton(right, text="打开发布页", height=28, command=self.open_releases_page)
+        self.open_release_btn.pack(fill="x", padx=8, pady=4)
 
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
@@ -779,12 +812,130 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def on_tun_placeholder(self):
+    def is_admin(self) -> bool:
         try:
-            self.tun_check.deselect()
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def on_tun_toggle(self):
+        enabled = bool(self.tun_check.get()) if hasattr(self, "tun_check") else False
+        if enabled and not self.is_admin():
+            self.log("启用 TUN 需要管理员权限，请点击「管理员运行」后重试")
+            try:
+                self.tun_check.deselect()
+            except Exception:
+                pass
+            self.tun_enabled = False
+            return
+        if enabled:
+            w1 = get_base_dir() / "wintun.dll"
+            w2 = get_base_dir() / "core" / "wintun.dll"
+            if not w1.exists() and not w2.exists():
+                self.log("未找到 wintun.dll（请放到程序目录或 core 目录），TUN 可能无法启动")
+        self.tun_enabled = enabled
+        self.save_settings()
+        self.log(f"TUN 模式：{'开启' if enabled else '关闭'}（重启代理后生效）")
+
+    def on_font_size_change(self, value=None):
+        try:
+            self.font_size = int(value or self.font_combo.get())
+        except Exception:
+            self.font_size = 13
+        self.save_settings()
+        self.log(f"字体大小：{self.font_size}（日志区已应用，其余部分重启后生效）")
+        try:
+            self.log_box.configure(font=("Consolas", max(10, self.font_size - 1)))
         except Exception:
             pass
-        self.log("TUN 模式开发中，当前版本仅预留开关")
+
+    def apply_hotkeys(self):
+        self.hotkey_toggle = (self.hotkey_toggle_entry.get() or "ctrl+shift+m").strip().lower()
+        self.hotkey_proxy = (self.hotkey_proxy_entry.get() or "ctrl+shift+p").strip().lower()
+        self.save_settings()
+        self.start_hotkey_listener()
+        self.log(f"热键已应用：显示/隐藏={self.hotkey_toggle}，启停={self.hotkey_proxy}")
+
+    def start_hotkey_listener(self):
+        try:
+            import keyboard
+        except Exception:
+            self.log("提示：热键需要 keyboard 库（构建时已尝试打包）")
+            return
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            pass
+        try:
+            keyboard.add_hotkey(self.hotkey_toggle, lambda: self.after(0, self.toggle_window_visibility))
+            keyboard.add_hotkey(self.hotkey_proxy, lambda: self.after(0, self.toggle_proxy_hotkey))
+            self.log("热键监听已启动")
+        except Exception as e:
+            self.log(f"注册热键失败：{e}")
+
+    def toggle_window_visibility(self):
+        try:
+            if self.state() == "withdrawn":
+                self.deiconify()
+                self.lift()
+            else:
+                self.withdraw()
+        except Exception:
+            pass
+
+    def toggle_proxy_hotkey(self):
+        if self.is_running:
+            self.stop_proxy()
+        else:
+            self.start_proxy_thread()
+
+    def update_geo_thread(self):
+        Thread(target=self.update_geo_only, daemon=True).start()
+
+    def update_geo_only(self):
+        self.log("开始更新 Geo 规则文件...")
+        try:
+            core_dir = get_base_dir() / "core"
+            core_dir.mkdir(parents=True, exist_ok=True)
+            for geo_name, geo_url in [
+                ("geoip.dat", "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"),
+                ("geosite.dat", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"),
+            ]:
+                self.log(f"下载 {geo_name} ...")
+                gr = requests.get(geo_url, timeout=90, headers={"User-Agent": "Mobility"})
+                gr.raise_for_status()
+                (core_dir / geo_name).write_bytes(gr.content)
+                self.log(f"{geo_name} 已更新（{len(gr.content)} 字节）")
+            self.log("规则文件更新完成")
+        except Exception as e:
+            self.log(f"更新规则失败：{e}")
+
+    def open_releases_page(self):
+        import webbrowser
+        url = f"https://github.com/{GITHUB_REPO}/releases"
+        try:
+            webbrowser.open(url)
+            self.log(f"已打开：{url}")
+        except Exception as e:
+            self.log(f"打开浏览器失败：{e}")
+
+    def restart_as_admin(self):
+        if self.is_admin():
+            self.log("当前已是管理员权限")
+            return
+        try:
+            if getattr(sys, "frozen", False):
+                exe = sys.executable
+                params = ""
+            else:
+                exe = sys.executable
+                params = f'"{Path(__file__).resolve()}"'
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+            self.log("已请求管理员权限，请在 UAC 确认")
+            self.close_to_tray = False
+            self.on_closing()
+        except Exception as e:
+            self.log(f"请求管理员失败：{e}")
 
     def show_about(self):
         try:
@@ -876,6 +1027,11 @@ class App(ctk.CTk):
                 self.log("发现新版本，请到 GitHub Releases 下载更新")
                 if url:
                     self.log(f"发布页面：{url}")
+                    try:
+                        import webbrowser
+                        webbrowser.open(url)
+                    except Exception:
+                        pass
                 for a in data.get("assets") or []:
                     if a.get("name"):
                         self.log(f"  资源：{a['name']}")
@@ -893,6 +1049,10 @@ class App(ctk.CTk):
         self.load_settings()
         try:
             self.version_label.configure(text=f"v{APP_VERSION} | Xray {self._xray_ver}")
+        except Exception:
+            pass
+        try:
+            self.start_hotkey_listener()
         except Exception:
             pass
         if TRAY_AVAILABLE:
@@ -1271,6 +1431,10 @@ class App(ctk.CTk):
             data = {
                 "subscription_url": self.subscription_url or self.entry.get().strip(),
                 "subscriptions": getattr(self, "subscriptions", []),
+                "tun_enabled": bool(getattr(self, "tun_enabled", False)),
+                "font_size": int(getattr(self, "font_size", 13)),
+                "hotkey_toggle": getattr(self, "hotkey_toggle", "ctrl+shift+m"),
+                "hotkey_proxy": getattr(self, "hotkey_proxy", "ctrl+shift+p"),
                 "nodes": slim_nodes,
                 "selected_label": (self.current_node or {}).get("_label", "") if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
@@ -1315,6 +1479,28 @@ class App(ctk.CTk):
                 self.refresh_sub_select()
             except Exception:
                 pass
+            self.tun_enabled = bool(data.get("tun_enabled", False))
+            if hasattr(self, "tun_check"):
+                try:
+                    if self.tun_enabled:
+                        self.tun_check.select()
+                    else:
+                        self.tun_check.deselect()
+                except Exception:
+                    pass
+            try:
+                self.font_size = int(data.get("font_size") or 13)
+            except Exception:
+                self.font_size = 13
+            if hasattr(self, "font_combo"):
+                self.font_combo.set(str(self.font_size))
+            self.hotkey_toggle = data.get("hotkey_toggle") or "ctrl+shift+m"
+            self.hotkey_proxy = data.get("hotkey_proxy") or "ctrl+shift+p"
+            if hasattr(self, "hotkey_toggle_entry"):
+                self.hotkey_toggle_entry.delete(0, "end")
+                self.hotkey_toggle_entry.insert(0, self.hotkey_toggle)
+                self.hotkey_proxy_entry.delete(0, "end")
+                self.hotkey_proxy_entry.insert(0, self.hotkey_proxy)
             tw = str(data.get("test_workers") or TEST_WORKERS_DEFAULT)
             if tw in TEST_WORKERS_OPTIONS:
                 self.workers_combo.set(tw)
@@ -1989,6 +2175,20 @@ class App(ctk.CTk):
         }
         if dns_servers:
             config["dns"] = {"servers": dns_servers}
+
+        if getattr(self, "tun_enabled", False):
+            config["inbounds"].append({
+                "tag": "tun-in",
+                "protocol": "tun",
+                "settings": {
+                    "name": "MobilityTUN",
+                    "mtu": 1500,
+                    "stack": "system",
+                    "auto": True,
+                    "strictRoute": False,
+                },
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+            })
 
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
