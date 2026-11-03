@@ -105,6 +105,52 @@ def find_xray():
     return None
 
 
+def ensure_wintun(core_dir: Path, log_fn=None) -> bool:
+    """确保 wintun.dll 存在于 core 或程序目录。"""
+    targets = [
+        Path(core_dir) / "wintun.dll",
+        get_base_dir() / "wintun.dll",
+        get_base_dir() / "core" / "wintun.dll",
+    ]
+    for pth in targets:
+        if pth.exists() and pth.stat().st_size > 1000:
+            return True
+    # 从官方包下载（含多架构）
+    url = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+    try:
+        if log_fn:
+            log_fn("正在下载 wintun.dll ...")
+        import tempfile, zipfile
+        r = requests.get(url, timeout=60, headers={"User-Agent": "Mobility"})
+        r.raise_for_status()
+        tmp = Path(tempfile.gettempdir()) / "wintun.zip"
+        tmp.write_bytes(r.content)
+        out = Path(core_dir) / "wintun.dll"
+        Path(core_dir).mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(tmp, "r") as zf:
+            # prefer amd64
+            candidates = [n for n in zf.namelist() if n.lower().endswith("wintun.dll")]
+            pick = None
+            for n in candidates:
+                if "amd64" in n.lower() or "x64" in n.lower():
+                    pick = n
+                    break
+            if not pick and candidates:
+                pick = candidates[0]
+            if not pick:
+                if log_fn:
+                    log_fn("wintun 压缩包内未找到 dll")
+                return False
+            out.write_bytes(zf.read(pick))
+        if log_fn:
+            log_fn(f"wintun.dll 已保存到 {out}")
+        return out.exists()
+    except Exception as e:
+        if log_fn:
+            log_fn(f"下载 wintun 失败：{e}")
+        return False
+
+
 def get_xray_version(xray_path) -> str:
     if not xray_path:
         xray_path = find_xray()
@@ -886,10 +932,16 @@ class App(ctk.CTk):
             self.tun_enabled = False
             return
         if enabled:
-            w1 = get_base_dir() / "wintun.dll"
-            w2 = get_base_dir() / "core" / "wintun.dll"
-            if not w1.exists() and not w2.exists():
-                self.log("未找到 wintun.dll（请放到程序目录或 core 目录），TUN 可能无法启动")
+            ok = ensure_wintun(self.core_dir, log_fn=self.log)
+            if not ok:
+                self.log("无法准备 wintun.dll，已取消 TUN")
+                try:
+                    self.tun_check.deselect()
+                except Exception:
+                    pass
+                self.tun_enabled = False
+                self.save_settings()
+                return
         self.tun_enabled = enabled
         self.save_settings()
         self.log(f"TUN 模式：{'开启' if enabled else '关闭'}（重启代理后生效）")
@@ -2514,20 +2566,26 @@ class App(ctk.CTk):
             if ret is not None:
                 self.log(f"Xray 启动失败，退出码：{ret}")
                 err = self.read_xray_error()
-                if err:
-                    self.log("错误日志：")
-                    for line in err.splitlines():
-                        self.log("  " + line)
-                else:
+                full = err or ""
+                if not full:
                     try:
                         log_handle.close()
-                        txt = self.log_file.read_text(encoding="utf-8", errors="ignore").strip()
-                        if txt:
-                            self.log("Xray 输出：")
-                            for line in txt.splitlines()[-10:]:
-                                self.log("  " + line)
+                        full = self.log_file.read_text(encoding="utf-8", errors="ignore").strip()
+                    except Exception:
+                        full = ""
+                if full:
+                    self.log("Xray 输出：")
+                    for line in full.splitlines()[-12:]:
+                        self.log("  " + line)
+                if "wintun" in full.lower():
+                    self.log("TUN 启动失败：缺少或无法加载 wintun.dll，已自动关闭 TUN")
+                    self.tun_enabled = False
+                    try:
+                        self.after(0, lambda: self.tun_check.deselect())
                     except Exception:
                         pass
+                    self.save_settings()
+                    self.log("请关闭 TUN 后重新启动，或点击 TUN 时自动下载 wintun")
                 self.xray_process = None
                 self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
