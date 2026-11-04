@@ -812,9 +812,10 @@ class App(ctk.CTk):
         self.dns_combo = ctk.CTkComboBox(right, height=28, values=DNS_OPTIONS, state="readonly", command=self.on_dns_change)
         self.dns_combo.set("系统默认")
         self.dns_combo.pack(fill="x", padx=8)
-        self.dns_entry = ctk.CTkEntry(right, width=180, height=26, placeholder_text="自定义 DNS")
+        self.dns_entry = ctk.CTkEntry(right, height=28, placeholder_text="自定义 DNS，如 8.8.8.8,1.1.1.1")
         self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
-        self.dns_entry.pack(padx=12, pady=4)
+        # 仅在「自定义」时显示，避免长短不一
+        # self.dns_entry.pack(fill="x", padx=8, pady=2)
 
         ctk.CTkLabel(right, text="日志级别", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(4, 2))
         self.loglevel_combo = ctk.CTkComboBox(right, height=28, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
@@ -1746,6 +1747,13 @@ class App(ctk.CTk):
             if hasattr(self, "dns_entry"):
                 self.dns_entry.delete(0, "end")
                 self.dns_entry.insert(0, self.dns_custom)
+                try:
+                    if self.dns_mode == "自定义":
+                        self.dns_entry.pack(fill="x", padx=8, pady=2)
+                    else:
+                        self.dns_entry.pack_forget()
+                except Exception:
+                    pass
             raw_lv = data.get("log_level") or "警告"
             # 兼容旧版英文配置
             if raw_lv in LOG_LEVEL_REV:
@@ -2062,6 +2070,13 @@ class App(ctk.CTk):
 
     def on_dns_change(self, value=None):
         self.dns_mode = self.dns_combo.get() or "系统默认"
+        try:
+            if self.dns_mode == "自定义":
+                self.dns_entry.pack(fill="x", padx=8, pady=2)
+            else:
+                self.dns_entry.pack_forget()
+        except Exception:
+            pass
         self.save_settings()
         self.log(f"DNS 模式：{self.dns_mode}（重启代理后生效）")
 
@@ -2533,29 +2548,42 @@ class App(ctk.CTk):
                     dur = time.time() - self._run_started_at
                     if hasattr(self, "stat_time_label"):
                         self.stat_time_label.configure(text=f"时长 {self._fmt_duration(dur)}")
-                # traffic
-                # TUN 下减少频繁 api 子进程，降低卡顿
-                tr = None
-                if not getattr(self, "tun_enabled", False):
-                    tr = self._query_xray_traffic()
-                now = time.time()
-                if tr:
-                    up, down = tr
-                    dt = max(0.001, now - (self._last_stat_ts or now))
-                    if self._last_stat_ts:
-                        self._speed_up = max(0, (up - self._last_up) / dt)
-                        self._speed_down = max(0, (down - self._last_down) / dt)
-                    self._last_up, self._last_down = up, down
-                    self._last_stat_ts = now
-                    self._bytes_up, self._bytes_down = up, down
+                # TUN 模式：只更新时长，避免频繁子进程导致界面卡顿
+                if getattr(self, "tun_enabled", False):
                     if hasattr(self, "stat_up_label"):
-                        self.stat_up_label.configure(text=f"↑ {self._fmt_bytes(self._speed_up)}/s")
-                        self.stat_down_label.configure(text=f"↓ {self._fmt_bytes(self._speed_down)}/s")
-                        self.stat_total_label.configure(
-                            text=f"流量 {self._fmt_bytes(up + down)}"
-                        )
-                if hasattr(self, "stat_mem_label"):
-                    self.stat_mem_label.configure(text=f"内存 {self._xray_memory_mb()}")
+                        self.stat_up_label.configure(text="↑ TUN")
+                        self.stat_down_label.configure(text="↓ TUN")
+                    if hasattr(self, "stat_mem_label"):
+                        self.stat_mem_label.configure(text="内存 --")
+                else:
+                    tr = self._query_xray_traffic()
+                    now = time.time()
+                    if tr:
+                        up, down = tr
+                        if self._last_stat_ts:
+                            dt = max(0.001, now - self._last_stat_ts)
+                            self._speed_up = max(0.0, (up - self._last_up) / dt)
+                            self._speed_down = max(0.0, (down - self._last_down) / dt)
+                        self._last_up, self._last_down = up, down
+                        self._last_stat_ts = now
+                        self._bytes_up, self._bytes_down = up, down
+                        if hasattr(self, "stat_up_label"):
+                            up_mbps = (self._speed_up * 8) / 1_000_000
+                            down_mbps = (self._speed_down * 8) / 1_000_000
+                            self.stat_up_label.configure(
+                                text=f"↑ {self._fmt_bytes(self._speed_up)}/s ({up_mbps:.2f} Mbps)"
+                            )
+                            self.stat_down_label.configure(
+                                text=f"↓ {self._fmt_bytes(self._speed_down)}/s ({down_mbps:.2f} Mbps)"
+                            )
+                            self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(up + down)}")
+                    # 内存改为每 15 秒采样一次
+                    if not hasattr(self, "_last_mem_ts"):
+                        self._last_mem_ts = 0
+                    if time.time() - self._last_mem_ts > 15:
+                        self._last_mem_ts = time.time()
+                        if hasattr(self, "stat_mem_label"):
+                            self.stat_mem_label.configure(text=f"内存 {self._xray_memory_mb()}")
             else:
                 self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
                 if hasattr(self, "stat_time_label"):
@@ -2573,7 +2601,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(3000, self.update_home_stats)
+        self.after(5000, self.update_home_stats)
 
     def start_proxy_thread(self):
         if self.is_running:
