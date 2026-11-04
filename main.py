@@ -760,17 +760,17 @@ class App(ctk.CTk):
 
         self.tray_check = ctk.CTkCheckBox(right, text="关闭到托盘", command=self.on_tray_option)
         self.tray_check.select()
-        self.tray_check.pack(anchor="w", padx=12, pady=3)
+        self.tray_check.pack(anchor="w", padx=8, pady=3)
         self.autostart_check = ctk.CTkCheckBox(right, text="开机自启", command=self.on_autostart_option)
-        self.autostart_check.pack(anchor="w", padx=12, pady=3)
+        self.autostart_check.pack(anchor="w", padx=8, pady=3)
         self.autoconnect_check = ctk.CTkCheckBox(right, text="启动自动连接", command=self.on_autoconnect_option)
-        self.autoconnect_check.pack(anchor="w", padx=12, pady=3)
+        self.autoconnect_check.pack(anchor="w", padx=8, pady=3)
         self.minimized_check = ctk.CTkCheckBox(right, text="启动后最小化", command=self.on_minimized_option)
-        self.minimized_check.pack(anchor="w", padx=12, pady=3)
+        self.minimized_check.pack(anchor="w", padx=8, pady=3)
         self.lan_check = ctk.CTkCheckBox(right, text="允许局域网", command=self.on_lan_option)
-        self.lan_check.pack(anchor="w", padx=12, pady=3)
+        self.lan_check.pack(anchor="w", padx=8, pady=3)
         self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
-        self.tun_check.pack(anchor="w", padx=12, pady=3)
+        self.tun_check.pack(anchor="w", padx=8, pady=3)
 
         # 端口分行显示，避免右侧窄栏裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
@@ -787,64 +787,64 @@ class App(ctk.CTk):
         self.http_entry.insert(0, "10809")
         self.http_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        self.apply_port_btn = ctk.CTkButton(right, text="应用端口", height=28, command=self.apply_ports)
+        self.apply_port_btn = ctk.CTkButton(right, text="应用端口", height=30, command=self.apply_ports)
         self.apply_port_btn.pack(fill="x", padx=8, pady=4)
 
-        ctk.CTkLabel(right, text="主题", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(8, 2))
-        self.theme_combo = ctk.CTkComboBox(right, width=180, height=28, values=THEME_OPTIONS, state="readonly", command=self.on_theme_change)
+        ctk.CTkLabel(right, text="主题", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
+        self.theme_combo = ctk.CTkComboBox(right, height=28, values=THEME_OPTIONS, state="readonly", command=self.on_theme_change)
         self.theme_combo.set("跟随系统")
-        self.theme_combo.pack(padx=12)
+        self.theme_combo.pack(fill="x", padx=8)
 
         ctk.CTkLabel(right, text="订阅更新", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
         self.refresh_interval_combo = ctk.CTkComboBox(
-            right, width=210, height=28, values=REFRESH_OPTIONS, state="readonly",
+            right, height=28, values=REFRESH_OPTIONS, state="readonly",
             command=self.on_refresh_change
         )
         self.refresh_interval_combo.set("不自动更新")
-        self.refresh_interval_combo.pack(anchor="w", padx=8)
+        self.refresh_interval_combo.pack(fill="x", padx=8)
         cr = ctk.CTkFrame(right, fg_color="transparent")
         cr.pack(fill="x", padx=8, pady=4)
-        self.refresh_custom_entry = ctk.CTkEntry(cr, width=150, height=28, placeholder_text="自定义小时数")
-        self.refresh_custom_entry.pack(side="left")
+        self.refresh_custom_entry = ctk.CTkEntry(cr, height=28, placeholder_text="自定义小时数")
+        self.refresh_custom_entry.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(cr, text="应用", width=54, height=28, command=self.apply_custom_refresh).pack(side="left", padx=(6, 0))
 
-        ctk.CTkLabel(right, text="DNS", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(6, 2))
-        self.dns_combo = ctk.CTkComboBox(right, width=180, height=28, values=DNS_OPTIONS, state="readonly", command=self.on_dns_change)
+        ctk.CTkLabel(right, text="DNS", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(6, 2))
+        self.dns_combo = ctk.CTkComboBox(right, height=28, values=DNS_OPTIONS, state="readonly", command=self.on_dns_change)
         self.dns_combo.set("系统默认")
-        self.dns_combo.pack(padx=12)
+        self.dns_combo.pack(fill="x", padx=8)
         self.dns_entry = ctk.CTkEntry(right, width=180, height=26, placeholder_text="自定义 DNS")
         self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
         self.dns_entry.pack(padx=12, pady=4)
 
-        ctk.CTkLabel(right, text="日志级别", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=12, pady=(4, 2))
-        self.loglevel_combo = ctk.CTkComboBox(right, width=180, height=28, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
+        ctk.CTkLabel(right, text="日志级别", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(4, 2))
+        self.loglevel_combo = ctk.CTkComboBox(right, height=28, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
         self.loglevel_combo.set("警告")
-        self.loglevel_combo.pack(padx=12)
+        self.loglevel_combo.pack(fill="x", padx=8)
 
         # 域名分流（精简）
-        ctk.CTkLabel(right, text="直连域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=12, pady=(8, 0))
-        self.direct_entry = ctk.CTkEntry(right, width=180, height=26, placeholder_text="baidu.com,*.qq.com")
-        self.direct_entry.pack(padx=12, pady=2)
-        ctk.CTkLabel(right, text="代理域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=12)
-        self.proxy_entry = ctk.CTkEntry(right, width=180, height=26, placeholder_text="google.com")
-        self.proxy_entry.pack(padx=12, pady=2)
-        self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=28, command=self.apply_custom_domains)
+        ctk.CTkLabel(right, text="直连域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 0))
+        self.direct_entry = ctk.CTkEntry(right, height=28, placeholder_text="baidu.com,*.qq.com")
+        self.direct_entry.pack(fill="x", padx=8, pady=2)
+        ctk.CTkLabel(right, text="代理域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8)
+        self.proxy_entry = ctk.CTkEntry(right, height=28, placeholder_text="google.com")
+        self.proxy_entry.pack(fill="x", padx=8, pady=2)
+        self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=30, command=self.apply_custom_domains)
         self.domain_apply_btn.pack(fill="x", padx=8, pady=6)
 
         ctk.CTkLabel(right, text="字体大小", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
-        self.font_combo = ctk.CTkComboBox(right, width=180, height=28, values=FONT_SIZE_OPTIONS,
+        self.font_combo = ctk.CTkComboBox(right, height=28, values=FONT_SIZE_OPTIONS,
                                           state="readonly", command=self.on_font_size_change)
         self.font_combo.set(str(getattr(self, "font_size", 13)))
-        self.font_combo.pack(padx=8)
+        self.font_combo.pack(fill="x", padx=8)
 
         ctk.CTkLabel(right, text="热键-显示/隐藏", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 2))
-        self.hotkey_toggle_entry = ctk.CTkEntry(right, width=180, height=26)
+        self.hotkey_toggle_entry = ctk.CTkEntry(right, height=28)
         self.hotkey_toggle_entry.insert(0, getattr(self, "hotkey_toggle", "ctrl+shift+m"))
-        self.hotkey_toggle_entry.pack(padx=8)
+        self.hotkey_toggle_entry.pack(fill="x", padx=8)
         ctk.CTkLabel(right, text="热键-启停代理", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(4, 2))
-        self.hotkey_proxy_entry = ctk.CTkEntry(right, width=180, height=26)
+        self.hotkey_proxy_entry = ctk.CTkEntry(right, height=28)
         self.hotkey_proxy_entry.insert(0, getattr(self, "hotkey_proxy", "ctrl+shift+p"))
-        self.hotkey_proxy_entry.pack(padx=8)
+        self.hotkey_proxy_entry.pack(fill="x", padx=8)
         
         # 右侧按钮区：统一用 grid 两列，保证左右边对齐
         bh = 30
@@ -1234,6 +1234,11 @@ class App(ctk.CTk):
         if xray_exe.exists():
             self.xray_path = xray_exe
             self.log("已检测到 Xray-core")
+            # 确保 wintun 与 xray 同目录
+            try:
+                ensure_wintun(self.core_dir, log_fn=None)
+            except Exception:
+                pass
             return
         try:
             bundled = get_resource_path("core/xray.exe")
@@ -2342,16 +2347,15 @@ class App(ctk.CTk):
             config["dns"] = {"servers": dns_servers}
 
         if getattr(self, "tun_enabled", False):
-            # Windows TUN：依赖 core/wintun.dll；auto 自动配路由
+            # Windows TUN（wintun）：auto 配地址/路由；strictRoute 过严易导致断网故关闭
             config["inbounds"].append({
                 "tag": "tun-in",
                 "protocol": "tun",
                 "settings": {
-                    "mtu": 1500,
+                    "mtu": 1400,
                     "stack": "system",
                     "auto": True,
-                    "strictRoute": True,
-                    "sniffing": True,
+                    "strictRoute": False,
                 },
                 "sniffing": {
                     "enabled": True,
@@ -2359,6 +2363,13 @@ class App(ctk.CTk):
                     "routeOnly": False,
                 },
             })
+            # TUN 下强制可用 DNS，避免解析失败导致“没网”
+            if not config.get("dns"):
+                config["dns"] = {
+                    "servers": ["8.8.8.8", "1.1.1.1", "localhost"],
+                    "queryStrategy": "UseIP",
+                }
+
 
         # Stats API（供界面显示实时流量）
         api_port = int(getattr(self, "api_port", 10085))
@@ -2665,8 +2676,12 @@ class App(ctk.CTk):
             _, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                self.log("TUN 模式已接管流量，跳过系统代理设置")
-                proxy_ok = True
+                self.log("TUN 已启用（同时设置系统代理作为浏览器后备）")
+                # 双保险：TUN 负责全局，系统代理保证浏览器可用
+                if self.set_system_proxy(True, http_port):
+                    self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
+                else:
+                    self.log("系统代理设置失败，仅依赖 TUN")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
