@@ -814,8 +814,7 @@ class App(ctk.CTk):
         self.dns_combo.pack(fill="x", padx=8)
         self.dns_entry = ctk.CTkEntry(right, height=28, placeholder_text="自定义 DNS，如 8.8.8.8,1.1.1.1")
         self.dns_entry.insert(0, "8.8.8.8,1.1.1.1")
-        # 仅在「自定义」时显示，避免长短不一
-        # self.dns_entry.pack(fill="x", padx=8, pady=2)
+        # 默认隐藏，选择「自定义」时插到 DNS 下拉框下方
 
         ctk.CTkLabel(right, text="日志级别", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(4, 2))
         self.loglevel_combo = ctk.CTkComboBox(right, height=28, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
@@ -1748,12 +1747,18 @@ class App(ctk.CTk):
                 self.dns_entry.delete(0, "end")
                 self.dns_entry.insert(0, self.dns_custom)
                 try:
-                    if self.dns_mode == "自定义":
-                        self.dns_entry.pack(fill="x", padx=8, pady=2)
-                    else:
-                        self.dns_entry.pack_forget()
+                    self.dns_entry.pack_forget()
                 except Exception:
                     pass
+                try:
+                    if self.dns_mode == "自定义":
+                        self.dns_entry.pack(fill="x", padx=8, pady=2, after=self.dns_combo)
+                except Exception:
+                    if self.dns_mode == "自定义":
+                        try:
+                            self.dns_entry.pack(fill="x", padx=8, pady=2)
+                        except Exception:
+                            pass
             raw_lv = data.get("log_level") or "警告"
             # 兼容旧版英文配置
             if raw_lv in LOG_LEVEL_REV:
@@ -2071,12 +2076,22 @@ class App(ctk.CTk):
     def on_dns_change(self, value=None):
         self.dns_mode = self.dns_combo.get() or "系统默认"
         try:
-            if self.dns_mode == "自定义":
-                self.dns_entry.pack(fill="x", padx=8, pady=2)
-            else:
-                self.dns_entry.pack_forget()
+            self.dns_entry.pack_forget()
         except Exception:
             pass
+        try:
+            if self.dns_mode == "自定义":
+                # 紧跟在 DNS 下拉框后面，避免跑到面板底部
+                self.dns_entry.pack(fill="x", padx=8, pady=2, after=self.dns_combo)
+                self.dns_entry.configure(state="normal")
+            else:
+                self.dns_entry.configure(state="disabled")
+        except Exception as e:
+            try:
+                if self.dns_mode == "自定义":
+                    self.dns_entry.pack(fill="x", padx=8, pady=2)
+            except Exception:
+                pass
         self.save_settings()
         self.log(f"DNS 模式：{self.dns_mode}（重启代理后生效）")
 
