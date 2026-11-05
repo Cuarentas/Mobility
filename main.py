@@ -686,6 +686,12 @@ class App(ctk.CTk):
         self.refresh_all_btn.pack(side="left", padx=2)
         self.clip_btn = ctk.CTkButton(sub, text="剪贴板", width=64, height=32, command=self.import_clipboard_thread)
         self.clip_btn.pack(side="left", padx=2)
+        self.qr_btn = ctk.CTkButton(sub, text="扫码", width=56, height=32, fg_color="#7C3AED",
+                                    command=self.scan_screen_qr_thread)
+        self.qr_btn.pack(side="left", padx=2)
+        self.show_qr_btn = ctk.CTkButton(sub, text="生成码", width=56, height=32, fg_color="#DB2777",
+                                         command=self.show_node_qr)
+        self.show_qr_btn.pack(side="left", padx=2)
 
         # ===== 工具行 =====
         tools = ctk.CTkFrame(body, fg_color="transparent")
@@ -1442,6 +1448,207 @@ class App(ctk.CTk):
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
         self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
+
+    def scan_screen_qr_thread(self):
+        Thread(target=self.scan_screen_qr, daemon=True).start()
+
+    def scan_screen_qr(self):
+        """截取屏幕并识别二维码，导入节点或订阅链接。"""
+        self.log("正在截取屏幕并识别二维码...")
+        try:
+            from PIL import ImageGrab
+        except Exception:
+            self.log("缺少 Pillow，无法截屏")
+            return
+        img = None
+        try:
+            img = ImageGrab.grab()
+        except Exception as e:
+            self.log(f"截屏失败：{e}")
+            return
+
+        texts = []
+        # 优先 pyzbar
+        try:
+            from pyzbar.pyzbar import decode as zbar_decode
+            res = zbar_decode(img)
+            for r in res:
+                try:
+                    texts.append(r.data.decode("utf-8", errors="ignore"))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 备选 opencv
+        if not texts:
+            try:
+                import numpy as np
+                import cv2
+                arr = np.array(img.convert("RGB"))
+                arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                det = cv2.QRCodeDetector()
+                # multi
+                ok, decoded, _, _ = det.detectAndDecodeMulti(arr)
+                if ok and decoded:
+                    for s in decoded:
+                        if s:
+                            texts.append(s)
+                if not texts:
+                    data, _, _ = det.detectAndDecode(arr)
+                    if data:
+                        texts.append(data)
+            except Exception:
+                pass
+
+        if not texts:
+            self.log("未识别到二维码。请把二维码完整显示在屏幕上后重试")
+            return
+
+        self.log(f"识别到 {len(texts)} 个二维码")
+        all_nodes = []
+        for i, text in enumerate(texts):
+            text = (text or "").strip()
+            if not text:
+                continue
+            self.log(f"二维码{i+1}：{text[:80]}{'...' if len(text) > 80 else ''}")
+            if text.startswith(("http://", "https://")):
+                try:
+                    self.after(0, lambda u=text: (self.entry.delete(0, "end"), self.entry.insert(0, u)))
+                    self.subscription_url = text
+                    if not any(s.get("url") == text for s in self.subscriptions):
+                        try:
+                            from urllib.parse import urlparse
+                            nm = (urlparse(text).netloc or "")[:20] or f"扫码订阅{len(self.subscriptions)+1}"
+                        except Exception:
+                            nm = f"扫码订阅{len(self.subscriptions)+1}"
+                        self.subscriptions.append({"name": nm, "url": text})
+                    resp = requests.get(text, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
+                    resp.raise_for_status()
+                    nodes = parse_subscription_content(resp.text)
+                    all_nodes.extend(nodes)
+                    self.log(f"  订阅解析：{len(nodes)} 个节点")
+                except Exception as e:
+                    self.log(f"  订阅拉取失败：{e}")
+                continue
+            nodes = parse_subscription_content(text)
+            if not nodes and "://" in text:
+                node = parse_link(text)
+                if node:
+                    nodes = [node]
+            if nodes:
+                all_nodes.extend(nodes)
+                self.log(f"  解析节点：{len(nodes)}")
+            else:
+                self.log("  无法识别为节点或订阅")
+
+        if not all_nodes:
+            self.log("二维码中未得到有效节点")
+            return
+
+        # 合并去重
+        seen = set()
+        merged = []
+        for n in (self.nodes or []) + all_nodes:
+            key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(n)
+        self.nodes = merged
+
+        def _ui():
+            self.refresh_node_list(keep_selection=False)
+            try:
+                self.refresh_sub_select()
+            except Exception:
+                pass
+            self.save_settings()
+            self.log(f"扫码导入完成，当前共 {len(self.nodes)} 个节点")
+        self.after(0, _ui)
+
+    def show_node_qr(self):
+        """为当前节点或订阅链接生成二维码，方便手机扫描。"""
+        content = ""
+        title = "二维码"
+        node = None
+        try:
+            node = self.get_selected_node()
+        except Exception:
+            node = self.current_node
+        if node and node.get("raw"):
+            content = node.get("raw") or ""
+            title = f"节点：{node.get('name') or ''}"
+        if not content:
+            url = ""
+            try:
+                url = self.entry.get().strip()
+            except Exception:
+                pass
+            if not url:
+                url = self.subscription_url or ""
+            if url.startswith(("http://", "https://")):
+                content = url
+                title = "订阅链接"
+            elif url and "://" in url:
+                content = url
+                title = "节点链接"
+        if not content:
+            self.log("请先选择节点，或在订阅框填入链接后再生成二维码")
+            return
+        try:
+            import qrcode
+            from PIL import Image, ImageTk
+        except Exception:
+            self.log("缺少 qrcode 库，请重新构建后使用")
+            return
+        try:
+            qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=2)
+            qr.add_data(content)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        except Exception as e:
+            self.log(f"生成二维码失败：{e}")
+            return
+
+        # 弹窗显示
+        try:
+            import tkinter as tk
+            win = ctk.CTkToplevel(self)
+            win.title(title[:40] or "二维码")
+            win.geometry("360x420")
+            win.attributes("-topmost", True)
+            ctk.CTkLabel(win, text=title[:48], font=("Microsoft YaHei UI", 13, "bold")).pack(pady=(12, 6))
+            # resize for display
+            disp = img.resize((280, 280), Image.Resampling.NEAREST)
+            photo = ImageTk.PhotoImage(disp)
+            lbl = tk.Label(win, image=photo, bg="white")
+            lbl.image = photo
+            lbl.pack(pady=8)
+            hint = content if len(content) <= 60 else content[:57] + "..."
+            ctk.CTkLabel(win, text=hint, font=("Consolas", 10), text_color=("gray40", "gray60"), wraplength=320).pack(padx=12)
+            btn_row = ctk.CTkFrame(win, fg_color="transparent")
+            btn_row.pack(pady=10)
+
+            def _save():
+                try:
+                    from tkinter import filedialog
+                    path = filedialog.asksaveasfilename(
+                        defaultextension=".png",
+                        filetypes=[("PNG", "*.png")],
+                        initialfile="mobility-qr.png",
+                    )
+                    if path:
+                        img.save(path)
+                        self.log(f"二维码已保存：{path}")
+                except Exception as e:
+                    self.log(f"保存失败：{e}")
+
+            ctk.CTkButton(btn_row, text="保存图片", width=100, command=_save).pack(side="left", padx=6)
+            ctk.CTkButton(btn_row, text="关闭", width=80, command=win.destroy).pack(side="left", padx=6)
+            self.log(f"已生成二维码（{title}）")
+        except Exception as e:
+            self.log(f"显示二维码窗口失败：{e}")
 
     def copy_selected_node(self):
         node = self.get_selected_node()
@@ -2423,6 +2630,7 @@ class App(ctk.CTk):
                     "stack": "system",
                     "auto": True,
                     "strictRoute": False,
+                    "endpointIndependentNat": True,
                 },
                 "sniffing": {
                     "enabled": True,
@@ -2776,9 +2984,12 @@ class App(ctk.CTk):
             _, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # 仅 TUN，不再叠系统代理，减轻卡顿
-                self.set_system_proxy(False)
-                self.log("TUN 已启用（未叠加系统代理，降低卡顿）")
+                # TUN + 系统代理双开：纯 TUN 在部分环境无法让浏览器走通
+                self.log("TUN 已启用，并设置系统代理以保证浏览器可访问")
+                if self.set_system_proxy(True, http_port):
+                    self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
+                else:
+                    self.log("系统代理设置失败，仅依赖 TUN（若无法上网请检查管理员/wintun）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
