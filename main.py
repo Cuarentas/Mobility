@@ -977,6 +977,13 @@ class App(ctk.CTk):
                 return
             self.tun_enabled = True
             self.save_settings()
+            # 暂停全局热键，减少钩子带来的卡顿
+            try:
+                import keyboard
+                keyboard.unhook_all_hotkeys()
+                self.log("TUN 性能模式：已暂时关闭热键监听")
+            except Exception:
+                pass
             self.log("TUN 模式：开启，正在自动连接...")
             # 若已在运行，先停再以 TUN 配置重启
             if self.is_running:
@@ -993,6 +1000,10 @@ class App(ctk.CTk):
         self.tun_enabled = False
         self.save_settings()
         self.log("TUN 模式：关闭")
+        try:
+            self.start_hotkey_listener()
+        except Exception:
+            pass
         if self.is_running:
             # 关闭 TUN 后停止全局接管（与 v2rayN 类似）
             self.log("已关闭 TUN，停止当前连接")
@@ -1161,10 +1172,24 @@ class App(ctk.CTk):
 
 
     def log(self, msg: str):
-        def _do():
-            self.log_box.insert("end", msg + "\n")
-            self.log_box.see("end")
-        self.after(0, _do)
+        try:
+            # 限制日志行数，避免 Text 过长卡顿
+            self.log_box.insert("end", str(msg) + "\n")
+            # 每 20 行才 see 一次
+            self._log_see_i = getattr(self, "_log_see_i", 0) + 1
+            if self._log_see_i >= 20:
+                self._log_see_i = 0
+                self.log_box.see("end")
+                try:
+                    end_idx = self.log_box.index("end-1c")
+                    # 超过 800 行裁剪
+                    if float(str(end_idx).split(".")[0]) > 800:
+                        self.log_box.delete("1.0", "200.0")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
     def clear_log(self):
         self.log_box.delete("1.0", "end")
@@ -1454,17 +1479,46 @@ class App(ctk.CTk):
 
     def scan_screen_qr(self):
         """截取屏幕并识别二维码，导入节点或订阅链接。"""
-        self.log("正在截取屏幕并识别二维码...")
+        status = {"win": None, "label": None}
+
+        def _open_ui():
+            try:
+                win = ctk.CTkToplevel(self)
+                win.title("屏幕扫码")
+                win.geometry("360x160")
+                win.attributes("-topmost", True)
+                ctk.CTkLabel(win, text="屏幕扫码", font=("Microsoft YaHei UI", 14, "bold")).pack(pady=(12, 6))
+                lab = ctk.CTkLabel(win, text="请将二维码完整显示在屏幕上…\n正在截屏识别", font=("Microsoft YaHei UI", 12))
+                lab.pack(pady=8)
+                status["win"] = win
+                status["label"] = lab
+            except Exception:
+                pass
+        self.after(0, _open_ui)
+        time.sleep(0.25)
+
+        def _set(msg):
+            self.log(msg)
+            def _u():
+                try:
+                    if status.get("label"):
+                        status["label"].configure(text=msg)
+                except Exception:
+                    pass
+            self.after(0, _u)
+
+        _set("正在截取屏幕…")
         try:
             from PIL import ImageGrab
         except Exception:
-            self.log("缺少 Pillow，无法截屏")
+            _set("缺少 Pillow，无法截屏")
             return
         img = None
         try:
             img = ImageGrab.grab()
+            _set("截屏完成，正在识别二维码…")
         except Exception as e:
-            self.log(f"截屏失败：{e}")
+            _set(f"截屏失败：{e}")
             return
 
         texts = []
@@ -1543,7 +1597,14 @@ class App(ctk.CTk):
                 self.log("  无法识别为节点或订阅")
 
         if not all_nodes:
-            self.log("二维码中未得到有效节点")
+            _set("二维码中未得到有效节点")
+            def _close_empty():
+                try:
+                    if status.get("win"):
+                        status["win"].destroy()
+                except Exception:
+                    pass
+            self.after(1500, _close_empty)
             return
 
         # 合并去重
@@ -1565,6 +1626,18 @@ class App(ctk.CTk):
                 pass
             self.save_settings()
             self.log(f"扫码导入完成，当前共 {len(self.nodes)} 个节点")
+            try:
+                if status.get("label"):
+                    status["label"].configure(text=f"完成：导入后共 {len(self.nodes)} 个节点")
+            except Exception:
+                pass
+            def _close_ok():
+                try:
+                    if status.get("win"):
+                        status["win"].destroy()
+                except Exception:
+                    pass
+            self.after(1200, _close_ok)
         self.after(0, _ui)
 
     def show_node_qr(self):
@@ -2855,33 +2928,44 @@ class App(ctk.CTk):
     def update_home_stats(self):
         try:
             if self.is_running:
-                self.status_label.configure(text="运行中", text_color="#16A34A")
-                if self._run_started_at:
-                    dur = time.time() - self._run_started_at
-                    if hasattr(self, "stat_time_label"):
-                        self.stat_time_label.configure(text=f"时长 {self._fmt_duration(dur)}")
-                # 流量/内存放到后台线程采样，避免卡住 UI（TUN 同样显示）
+                try:
+                    self.status_label.configure(text="运行中", text_color="#16A34A")
+                except Exception:
+                    pass
+                if self._run_started_at and hasattr(self, "stat_time_label"):
+                    self.stat_time_label.configure(
+                        text=f"时长 {self._fmt_duration(time.time() - self._run_started_at)}"
+                    )
+                # TUN 性能模式：不采样流量/内存，杜绝子进程拖慢界面
+                if getattr(self, "tun_enabled", False):
+                    if hasattr(self, "stat_up_label"):
+                        self.stat_up_label.configure(text="↑ TUN")
+                        self.stat_down_label.configure(text="↓ TUN")
+                    if hasattr(self, "stat_mem_label"):
+                        self.stat_mem_label.configure(text="内存 (已省)")
+                    self.after(10000, self.update_home_stats)
+                    return
                 if not getattr(self, "_stats_busy", False):
                     self._stats_busy = True
                     Thread(target=self._sample_stats_worker, daemon=True).start()
             else:
-                self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
+                try:
+                    self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
+                except Exception:
+                    pass
                 if hasattr(self, "stat_time_label"):
                     self.stat_time_label.configure(text="时长 00:00:00")
                 if hasattr(self, "stat_up_label"):
                     self.stat_up_label.configure(text="↑ 0 B/s")
                     self.stat_down_label.configure(text="↓ 0 B/s")
-                    if self._bytes_up or self._bytes_down:
-                        self.stat_total_label.configure(
-                            text=f"流量 {self._fmt_bytes(self._bytes_up + self._bytes_down)}"
-                        )
-                    else:
-                        self.stat_total_label.configure(text="流量 0 B")
+                    total = (getattr(self, "_bytes_up", 0) or 0) + (getattr(self, "_bytes_down", 0) or 0)
+                    self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(total)}")
                 if hasattr(self, "stat_mem_label"):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(5000, self.update_home_stats)
+        self.after(8000, self.update_home_stats)
+
 
     def start_proxy_thread(self):
         if self.is_running:
