@@ -680,6 +680,8 @@ class App(ctk.CTk):
         self.add_sub_btn.pack(side="left", padx=2)
         self.del_sub_btn = ctk.CTkButton(sub, text="删除", width=56, height=32, fg_color="#DC2626", command=self.remove_subscription)
         self.del_sub_btn.pack(side="left", padx=2)
+        self.rename_sub_btn = ctk.CTkButton(sub, text="改名", width=56, height=32, fg_color="#0EA5E9", command=self.rename_subscription)
+        self.rename_sub_btn.pack(side="left", padx=2)
         self.refresh_all_btn = ctk.CTkButton(sub, text="更新全部", width=72, height=32, fg_color="#7C3AED", command=self.refresh_all_subs_thread)
         self.refresh_all_btn.pack(side="left", padx=2)
         self.clip_btn = ctk.CTkButton(sub, text="剪贴板", width=64, height=32, command=self.import_clipboard_thread)
@@ -1962,6 +1964,41 @@ class App(ctk.CTk):
         self.save_settings()
         self.log(f"已删除订阅：{name}")
 
+    def rename_subscription(self):
+        name = self.sub_select.get() if hasattr(self, "sub_select") else ""
+        if not name or name == "（无订阅）":
+            self.log("请先选择要改名的订阅")
+            return
+        try:
+            import tkinter.simpledialog as simpledialog
+            new_name = simpledialog.askstring("订阅改名", f"当前名称：{name}\n请输入新名称：", parent=self)
+        except Exception:
+            new_name = None
+        if not new_name:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            self.log("名称不能为空")
+            return
+        # 重名检查
+        for s in self.subscriptions:
+            n = s.get("name") or (s.get("url") or "")[:24]
+            if n == new_name and n != name:
+                self.log("已存在同名订阅")
+                return
+        for s in self.subscriptions:
+            n = s.get("name") or (s.get("url") or "")[:24]
+            if n == name:
+                s["name"] = new_name
+                self.log(f"订阅已改名：{name} → {new_name}")
+                break
+        self.refresh_sub_select()
+        try:
+            self.sub_select.set(new_name)
+        except Exception:
+            pass
+        self.save_settings()
+
     def refresh_all_subs_thread(self):
         Thread(target=self.refresh_all_subs, daemon=True).start()
 
@@ -2555,6 +2592,58 @@ class App(ctk.CTk):
         except Exception:
             return "--"
 
+    def _sample_stats_worker(self):
+        try:
+            tr = self._query_xray_traffic()
+            now = time.time()
+            speed_up = getattr(self, "_speed_up", 0.0)
+            speed_down = getattr(self, "_speed_down", 0.0)
+            total = (getattr(self, "_bytes_up", 0) or 0) + (getattr(self, "_bytes_down", 0) or 0)
+            if tr:
+                up, down = tr
+                last_ts = getattr(self, "_last_stat_ts", 0) or 0
+                if last_ts:
+                    dt = max(0.001, now - last_ts)
+                    speed_up = max(0.0, (up - getattr(self, "_last_up", 0)) / dt)
+                    speed_down = max(0.0, (down - getattr(self, "_last_down", 0)) / dt)
+                self._last_up, self._last_down = up, down
+                self._last_stat_ts = now
+                self._bytes_up, self._bytes_down = up, down
+                self._speed_up, self._speed_down = speed_up, speed_down
+                total = up + down
+            mem = "--"
+            # 内存最多 15 秒刷新一次
+            if not hasattr(self, "_last_mem_ts"):
+                self._last_mem_ts = 0
+            if now - self._last_mem_ts > 15:
+                self._last_mem_ts = now
+                mem = self._xray_memory_mb()
+                self._last_mem_text = mem
+            else:
+                mem = getattr(self, "_last_mem_text", "--")
+
+            def _apply():
+                try:
+                    if hasattr(self, "stat_up_label"):
+                        up_mbps = (speed_up * 8) / 1_000_000
+                        down_mbps = (speed_down * 8) / 1_000_000
+                        self.stat_up_label.configure(
+                            text=f"↑ {self._fmt_bytes(speed_up)}/s ({up_mbps:.2f} Mbps)"
+                        )
+                        self.stat_down_label.configure(
+                            text=f"↓ {self._fmt_bytes(speed_down)}/s ({down_mbps:.2f} Mbps)"
+                        )
+                        self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(total)}")
+                    if hasattr(self, "stat_mem_label"):
+                        self.stat_mem_label.configure(text=f"内存 {mem}")
+                except Exception:
+                    pass
+                finally:
+                    self._stats_busy = False
+            self.after(0, _apply)
+        except Exception:
+            self._stats_busy = False
+
     def update_home_stats(self):
         try:
             if self.is_running:
@@ -2563,42 +2652,10 @@ class App(ctk.CTk):
                     dur = time.time() - self._run_started_at
                     if hasattr(self, "stat_time_label"):
                         self.stat_time_label.configure(text=f"时长 {self._fmt_duration(dur)}")
-                # TUN 模式：只更新时长，避免频繁子进程导致界面卡顿
-                if getattr(self, "tun_enabled", False):
-                    if hasattr(self, "stat_up_label"):
-                        self.stat_up_label.configure(text="↑ TUN")
-                        self.stat_down_label.configure(text="↓ TUN")
-                    if hasattr(self, "stat_mem_label"):
-                        self.stat_mem_label.configure(text="内存 --")
-                else:
-                    tr = self._query_xray_traffic()
-                    now = time.time()
-                    if tr:
-                        up, down = tr
-                        if self._last_stat_ts:
-                            dt = max(0.001, now - self._last_stat_ts)
-                            self._speed_up = max(0.0, (up - self._last_up) / dt)
-                            self._speed_down = max(0.0, (down - self._last_down) / dt)
-                        self._last_up, self._last_down = up, down
-                        self._last_stat_ts = now
-                        self._bytes_up, self._bytes_down = up, down
-                        if hasattr(self, "stat_up_label"):
-                            up_mbps = (self._speed_up * 8) / 1_000_000
-                            down_mbps = (self._speed_down * 8) / 1_000_000
-                            self.stat_up_label.configure(
-                                text=f"↑ {self._fmt_bytes(self._speed_up)}/s ({up_mbps:.2f} Mbps)"
-                            )
-                            self.stat_down_label.configure(
-                                text=f"↓ {self._fmt_bytes(self._speed_down)}/s ({down_mbps:.2f} Mbps)"
-                            )
-                            self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(up + down)}")
-                    # 内存改为每 15 秒采样一次
-                    if not hasattr(self, "_last_mem_ts"):
-                        self._last_mem_ts = 0
-                    if time.time() - self._last_mem_ts > 15:
-                        self._last_mem_ts = time.time()
-                        if hasattr(self, "stat_mem_label"):
-                            self.stat_mem_label.configure(text=f"内存 {self._xray_memory_mb()}")
+                # 流量/内存放到后台线程采样，避免卡住 UI（TUN 同样显示）
+                if not getattr(self, "_stats_busy", False):
+                    self._stats_busy = True
+                    Thread(target=self._sample_stats_worker, daemon=True).start()
             else:
                 self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
                 if hasattr(self, "stat_time_label"):
@@ -2719,12 +2776,9 @@ class App(ctk.CTk):
             _, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                self.log("TUN 已启用（同时设置系统代理作为浏览器后备）")
-                # 双保险：TUN 负责全局，系统代理保证浏览器可用
-                if self.set_system_proxy(True, http_port):
-                    self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
-                else:
-                    self.log("系统代理设置失败，仅依赖 TUN")
+                # 仅 TUN，不再叠系统代理，减轻卡顿
+                self.set_system_proxy(False)
+                self.log("TUN 已启用（未叠加系统代理，降低卡顿）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
