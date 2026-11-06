@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.16.0"
+APP_VERSION = "0.16.15"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -791,14 +791,14 @@ class App(ctk.CTk):
         # 端口分行显示，避免右侧窄栏裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
         pr1.pack(fill="x", padx=8, pady=(8, 2))
-        ctk.CTkLabel(pr1, text="SOCKS", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
+        ctk.CTkLabel(pr1, text="SOCKS", width=52, font=("Microsoft YaHei UI", 12)).pack(side="left")
         self.socks_entry = ctk.CTkEntry(pr1, height=28, font=("Consolas", 12))
         self.socks_entry.insert(0, "10808")
         self.socks_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         pr2 = ctk.CTkFrame(right, fg_color="transparent")
         pr2.pack(fill="x", padx=8, pady=2)
-        ctk.CTkLabel(pr2, text="HTTP", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
+        ctk.CTkLabel(pr2, text="HTTP", width=52, font=("Microsoft YaHei UI", 12)).pack(side="left")
         self.http_entry = ctk.CTkEntry(pr2, height=28, font=("Consolas", 12))
         self.http_entry.insert(0, "10809")
         self.http_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
@@ -910,6 +910,14 @@ class App(ctk.CTk):
         self._log_lines = []
         self._log_autoscroll = True
         self.log("Mobility 已启动")
+        try:
+            # 强制刷新右侧栏，减轻首次绘制发虚
+            self.update_idletasks()
+            if hasattr(self, "socks_entry"):
+                self.socks_entry.update()
+                self.http_entry.update()
+        except Exception:
+            pass
 
     def clear_node_list_ui(self):
         for w in getattr(self, "_node_buttons", []) or []:
@@ -1196,19 +1204,24 @@ class App(ctk.CTk):
             if not hasattr(self, "_log_lines"):
                 self._log_lines = []
             self._log_lines.append(str(msg))
+            if not hasattr(self, "_log_lines"):
+                self._log_lines = []
+            self._log_lines.append(str(msg))
+            if len(self._log_lines) > 1000:
+                self._log_lines = self._log_lines[-800:]
             self.log_box.insert("end", str(msg) + "\n")
-            # 每 20 行才 see 一次
-            self._log_see_i = getattr(self, "_log_see_i", 0) + 1
-            if self._log_see_i >= 20:
-                self._log_see_i = 0
+            # 自动滚动开启时，每次都滚到末尾
+            if getattr(self, "_log_autoscroll", True):
                 self.log_box.see("end")
-                try:
-                    end_idx = self.log_box.index("end-1c")
-                    # 超过 800 行裁剪
-                    if float(str(end_idx).split(".")[0]) > 800:
-                        self.log_box.delete("1.0", "200.0")
-                except Exception:
-                    pass
+            try:
+                end_idx = self.log_box.index("end-1c")
+                if float(str(end_idx).split(".")[0]) > 800:
+                    self.log_box.delete("1.0", "200.0")
+                    # 同步裁剪缓存
+                    if hasattr(self, "_log_lines") and len(self._log_lines) > 800:
+                        self._log_lines = self._log_lines[-600:]
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2722,7 +2735,8 @@ class App(ctk.CTk):
         config = {
             "log": {
                 "loglevel": log_level,
-                "access": str(self.core_dir / "access.log"),
+                # 关闭 access 日志，显著降低磁盘与内存开销
+                "access": "none",
                 "error": str(self.core_dir / "error.log"),
             },
             "inbounds": [
@@ -2758,10 +2772,10 @@ class App(ctk.CTk):
                 "protocol": "tun",
                 "settings": {
                     "mtu": 1400,
-                    "stack": "system",
+                    # gvisor 用户态栈，Windows 上通常比 system 更省、更稳
+                    "stack": "gvisor",
                     "auto": True,
                     "strictRoute": False,
-                    "endpointIndependentNat": True,
                 },
                 "sniffing": {
                     "enabled": True,
@@ -2777,35 +2791,31 @@ class App(ctk.CTk):
                 }
 
 
-        # Stats API（供界面显示实时流量）
-        api_port = int(getattr(self, "api_port", 10085))
-        config["stats"] = {}
-        config["api"] = {
-            "tag": "api",
-            "services": ["StatsService"],
-        }
-        config["policy"] = {
-            "system": {
-                "statsOutboundUplink": True,
-                "statsOutboundDownlink": True,
+        # 仅在开启「实时统计」时启用 Stats API，避免常驻占用
+        if getattr(self, "live_stats_enabled", False):
+            api_port = int(getattr(self, "api_port", 10085))
+            config["stats"] = {}
+            config["api"] = {"tag": "api", "services": ["StatsService"]}
+            config["policy"] = {
+                "system": {
+                    "statsOutboundUplink": True,
+                    "statsOutboundDownlink": True,
+                }
             }
-        }
-        config["inbounds"].append({
-            "tag": "api",
-            "listen": "127.0.0.1",
-            "port": api_port,
-            "protocol": "dokodemo-door",
-            "settings": {"address": "127.0.0.1"},
-        })
-        # API 路由
-        rules = config.get("routing", {}).get("rules") or []
-        rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
-        config.setdefault("routing", {})["rules"] = rules
-        # API outbound 使用 freedom 即可，但 tag 需匹配
-        outs = config.get("outbounds") or []
-        if not any(o.get("tag") == "api" for o in outs):
-            outs.append({"tag": "api", "protocol": "freedom"})
-            config["outbounds"] = outs
+            config["inbounds"].append({
+                "tag": "api",
+                "listen": "127.0.0.1",
+                "port": api_port,
+                "protocol": "dokodemo-door",
+                "settings": {"address": "127.0.0.1"},
+            })
+            rules = config.get("routing", {}).get("rules") or []
+            rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
+            config.setdefault("routing", {})["rules"] = rules
+            outs = config.get("outbounds") or []
+            if not any(o.get("tag") == "api" for o in outs):
+                outs.append({"tag": "api", "protocol": "freedom"})
+                config["outbounds"] = outs
 
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
