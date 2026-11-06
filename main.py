@@ -588,6 +588,7 @@ class App(ctk.CTk):
         self.subscriptions = []
         self._xray_ver = "未知"
         self.tun_enabled = False
+        self.live_stats_enabled = False  # 实时网速/内存，默认关闭
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
         self.hotkey_proxy = "ctrl+shift+p"
@@ -731,6 +732,13 @@ class App(ctk.CTk):
         self.stat_time_label.pack(side="left", padx=8)
         self.stat_mem_label = ctk.CTkLabel(stats, text="内存 --", font=("Microsoft YaHei UI", 12))
         self.stat_mem_label.pack(side="left", padx=8)
+        # 实时统计开关：默认关闭，用户需要时再开（尤其 TUN 下更省资源）
+        self.live_stats_var = ctk.BooleanVar(value=False)
+        self.live_stats_sw = ctk.CTkSwitch(
+            stats, text="实时统计", variable=self.live_stats_var, width=70,
+            command=self.on_live_stats_toggle
+        )
+        self.live_stats_sw.pack(side="right", padx=12)
 
         # ===== 中部：节点列表 + 右侧设置 =====
         mid = ctk.CTkFrame(body, fg_color="transparent")
@@ -784,14 +792,14 @@ class App(ctk.CTk):
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
         pr1.pack(fill="x", padx=8, pady=(8, 2))
         ctk.CTkLabel(pr1, text="SOCKS", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
-        self.socks_entry = ctk.CTkEntry(pr1, height=28)
+        self.socks_entry = ctk.CTkEntry(pr1, height=28, font=("Consolas", 12))
         self.socks_entry.insert(0, "10808")
         self.socks_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         pr2 = ctk.CTkFrame(right, fg_color="transparent")
         pr2.pack(fill="x", padx=8, pady=2)
         ctk.CTkLabel(pr2, text="HTTP", width=48, font=("Microsoft YaHei UI", 11)).pack(side="left")
-        self.http_entry = ctk.CTkEntry(pr2, height=28)
+        self.http_entry = ctk.CTkEntry(pr2, height=28, font=("Consolas", 12))
         self.http_entry.insert(0, "10809")
         self.http_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
@@ -885,12 +893,23 @@ class App(ctk.CTk):
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
         log_frame.pack(fill="both", expand=False, pady=(4, 0))
-        ctk.CTkLabel(log_frame, text="运行日志", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+        log_head = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_head.pack(fill="x")
+        ctk.CTkLabel(log_head, text="运行日志", font=("Microsoft YaHei UI", 12, "bold")).pack(side="left")
+        log_tools = ctk.CTkFrame(log_head, fg_color="transparent")
+        log_tools.pack(side="right")
+        self.log_filter_entry = ctk.CTkEntry(log_tools, width=160, height=26, placeholder_text="过滤器(支持正则)")
+        self.log_filter_entry.pack(side="left", padx=(0, 4))
+        self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
+        ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
+        ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
+        self.log_autoscroll_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(log_tools, text="自动滚动", variable=self.log_autoscroll_var, width=70, command=self._on_log_autoscroll).pack(side="left", padx=(8, 0))
         self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
-
-        self.log("Mobility 已启动（v2rayN 风格布局）")
-        self.log("请加载订阅，节点会显示在左侧列表中")
+        self._log_lines = []
+        self._log_autoscroll = True
+        self.log("Mobility 已启动")
 
     def clear_node_list_ui(self):
         for w in getattr(self, "_node_buttons", []) or []:
@@ -981,7 +1000,7 @@ class App(ctk.CTk):
             try:
                 import keyboard
                 keyboard.unhook_all_hotkeys()
-                self.log("TUN 性能模式：已暂时关闭热键监听")
+                self.log("TUN 已开启（已优化性能）")
             except Exception:
                 pass
             self.log("TUN 模式：开启，正在自动连接...")
@@ -1005,7 +1024,7 @@ class App(ctk.CTk):
         except Exception:
             pass
         if self.is_running:
-            # 关闭 TUN 后停止全局接管（与 v2rayN 类似）
+            # 关闭 TUN 后停止全局接管
             self.log("已关闭 TUN，停止当前连接")
             try:
                 self.stop_proxy()
@@ -1044,7 +1063,7 @@ class App(ctk.CTk):
         try:
             keyboard.add_hotkey(self.hotkey_toggle, lambda: self.after(0, self.toggle_window_visibility))
             keyboard.add_hotkey(self.hotkey_proxy, lambda: self.after(0, self.toggle_proxy_hotkey))
-            self.log("热键监听已启动")
+            pass  # hotkeys ready
         except Exception as e:
             self.log(f"注册热键失败：{e}")
 
@@ -1174,6 +1193,9 @@ class App(ctk.CTk):
     def log(self, msg: str):
         try:
             # 限制日志行数，避免 Text 过长卡顿
+            if not hasattr(self, "_log_lines"):
+                self._log_lines = []
+            self._log_lines.append(str(msg))
             self.log_box.insert("end", str(msg) + "\n")
             # 每 20 行才 see 一次
             self._log_see_i = getattr(self, "_log_see_i", 0) + 1
@@ -1190,6 +1212,35 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+
+
+    def apply_log_filter(self):
+        try:
+            filt = (self.log_filter_entry.get() or "").strip().lower()
+            if not getattr(self, "_log_lines", None):
+                self._log_lines = self.log_box.get("1.0", "end-1c").splitlines()
+            self.log_box.delete("1.0", "end")
+            for line in self._log_lines:
+                if not filt or filt in line.lower():
+                    self.log_box.insert("end", line + "\n")
+            if getattr(self, "_log_autoscroll", True):
+                self.log_box.see("end")
+        except Exception:
+            pass
+
+    def copy_log(self):
+        try:
+            text = self.log_box.get("1.0", "end-1c")
+            self.clipboard_clear()
+            self.clipboard_append(text)
+        except Exception:
+            pass
+
+    def _on_log_autoscroll(self):
+        try:
+            self._log_autoscroll = bool(self.log_autoscroll_var.get())
+        except Exception:
+            self._log_autoscroll = True
 
     def clear_log(self):
         self.log_box.delete("1.0", "end")
@@ -1246,7 +1297,7 @@ class App(ctk.CTk):
             pass
         if TRAY_AVAILABLE:
             self.setup_tray()
-            self.log("系统托盘已启用（关闭窗口可最小化到托盘）")
+            pass  # tray ready
         else:
             self.log("系统托盘不可用（缺少 pystray）")
         # 首页状态刷新
@@ -1266,7 +1317,7 @@ class App(ctk.CTk):
         xray_exe = self.core_dir / "xray.exe"
         if xray_exe.exists():
             self.xray_path = xray_exe
-            self.log("已检测到 Xray-core")
+            self.log("已检测到核心文件")
             # 确保 wintun 与 xray 同目录
             try:
                 ensure_wintun(self.core_dir, log_fn=None)
@@ -1278,16 +1329,16 @@ class App(ctk.CTk):
             if bundled.exists():
                 shutil.copy2(bundled, xray_exe)
                 self.xray_path = xray_exe
-                self.log("已从程序内部提取 Xray-core")
+                self.log("已提取内置核心")
                 return
         except Exception as e:
             self.log(f"提取内置核心失败: {e}")
         local_core = self.base_dir / "core" / "xray.exe"
         if local_core.exists() and local_core != xray_exe:
             shutil.copy2(local_core, xray_exe)
-            self.log("已使用目录内 Xray-core")
+            self.log("已使用目录内核心")
             return
-        self.log("未找到 Xray-core，请确保 core/xray.exe 存在")
+        self.log("未找到核心文件，请确保 core 目录完整")
 
     def on_mode_change(self, value=None):
         self.proxy_mode = self.mode_combo.get() or PROXY_MODE_DEFAULT
@@ -1880,6 +1931,7 @@ class App(ctk.CTk):
                 "subscription_url": self.subscription_url or self.entry.get().strip(),
                 "subscriptions": getattr(self, "subscriptions", []),
                 "tun_enabled": bool(getattr(self, "tun_enabled", False)),
+                "live_stats_enabled": bool(getattr(self, "live_stats_enabled", False)),
                 "font_size": int(getattr(self, "font_size", 13)),
                 "hotkey_toggle": getattr(self, "hotkey_toggle", "ctrl+shift+m"),
                 "hotkey_proxy": getattr(self, "hotkey_proxy", "ctrl+shift+p"),
@@ -1928,6 +1980,12 @@ class App(ctk.CTk):
             except Exception:
                 pass
             self.tun_enabled = bool(data.get("tun_enabled", False))
+            self.live_stats_enabled = bool(data.get("live_stats_enabled", False))
+            try:
+                if hasattr(self, "live_stats_var"):
+                    self.live_stats_var.set(self.live_stats_enabled)
+            except Exception:
+                pass
             if hasattr(self, "tun_check"):
                 try:
                     if self.tun_enabled:
@@ -2925,6 +2983,24 @@ class App(ctk.CTk):
         except Exception:
             self._stats_busy = False
 
+    def on_live_stats_toggle(self):
+        try:
+            self.live_stats_enabled = bool(self.live_stats_var.get())
+        except Exception:
+            self.live_stats_enabled = False
+        if self.live_stats_enabled:
+            self.log("实时统计：已开启")
+        else:
+            self.log("实时统计：已关闭")
+            try:
+                if hasattr(self, "stat_up_label"):
+                    self.stat_up_label.configure(text="↑ --")
+                    self.stat_down_label.configure(text="↓ --")
+                if hasattr(self, "stat_mem_label"):
+                    self.stat_mem_label.configure(text="内存 --")
+            except Exception:
+                pass
+
     def update_home_stats(self):
         try:
             if self.is_running:
@@ -2936,18 +3012,20 @@ class App(ctk.CTk):
                     self.stat_time_label.configure(
                         text=f"时长 {self._fmt_duration(time.time() - self._run_started_at)}"
                     )
-                # TUN 性能模式：不采样流量/内存，杜绝子进程拖慢界面
-                if getattr(self, "tun_enabled", False):
-                    if hasattr(self, "stat_up_label"):
-                        self.stat_up_label.configure(text="↑ TUN")
-                        self.stat_down_label.configure(text="↓ TUN")
-                    if hasattr(self, "stat_mem_label"):
-                        self.stat_mem_label.configure(text="内存 (已省)")
-                    self.after(10000, self.update_home_stats)
-                    return
-                if not getattr(self, "_stats_busy", False):
-                    self._stats_busy = True
-                    Thread(target=self._sample_stats_worker, daemon=True).start()
+                if getattr(self, "live_stats_enabled", False):
+                    if not getattr(self, "_stats_busy", False):
+                        self._stats_busy = True
+                        Thread(target=self._sample_stats_worker, daemon=True).start()
+                else:
+                    # 未开启实时统计时只更新时长
+                    try:
+                        if hasattr(self, "stat_up_label"):
+                            self.stat_up_label.configure(text="↑ --")
+                            self.stat_down_label.configure(text="↓ --")
+                        if hasattr(self, "stat_mem_label"):
+                            self.stat_mem_label.configure(text="内存 --")
+                    except Exception:
+                        pass
             else:
                 try:
                     self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
@@ -2964,7 +3042,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(8000, self.update_home_stats)
+        self.after(12000 if getattr(self, "tun_enabled", False) else 8000, self.update_home_stats)
 
 
     def start_proxy_thread(self):
@@ -3006,7 +3084,7 @@ class App(ctk.CTk):
         if not xray_exe.exists():
             self.prepare_core()
             if not xray_exe.exists():
-                self.log("错误：找不到 Xray-core")
+                self.log("错误：找不到核心文件")
                 self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
@@ -3039,7 +3117,7 @@ class App(ctk.CTk):
             time.sleep(1.2)
             ret = self.xray_process.poll()
             if ret is not None:
-                self.log(f"Xray 启动失败，退出码：{ret}")
+                self.log(f"代理启动失败，退出码：{ret}")
                 err = self.read_xray_error()
                 full = err or ""
                 if not full:
@@ -3049,7 +3127,7 @@ class App(ctk.CTk):
                     except Exception:
                         full = ""
                 if full:
-                    self.log("Xray 输出：")
+                    self.log("核心输出：")
                     for line in full.splitlines()[-12:]:
                         self.log("  " + line)
                 if "wintun" in full.lower():
@@ -3084,7 +3162,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", text_color="#16A34A"
                 ))
-                self.log("Xray 已启动" + ("（TUN）" if getattr(self, "tun_enabled", False) else ""))
+                self.log("代理已启动" + ("（TUN）" if getattr(self, "tun_enabled", False) else ""))
                 if self.allow_lan and not getattr(self, "tun_enabled", False):
                     self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self._run_started_at = time.time()
