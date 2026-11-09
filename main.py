@@ -192,12 +192,29 @@ def ensure_singbox(core_dir: Path, log_fn=None):
             return dest
         except Exception:
             pass
-    # 下载最新 windows amd64
-    url = "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip"
+    # 官方资源名含版本号，先走 API 再下载
     try:
         if log_fn:
             log_fn("正在下载 sing-box 核心 ...")
         import tempfile, zipfile
+        api = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+        meta = requests.get(api, timeout=30, headers={"User-Agent": "Mobility"}).json()
+        url = None
+        for a in meta.get("assets") or []:
+            name = a.get("name") or ""
+            if name.endswith("windows-amd64.zip") and "cgo" not in name:
+                url = a.get("browser_download_url")
+                break
+        if not url:
+            for a in meta.get("assets") or []:
+                name = (a.get("name") or "").lower()
+                if "windows" in name and "amd64" in name and name.endswith(".zip"):
+                    url = a.get("browser_download_url")
+                    break
+        if not url:
+            if log_fn:
+                log_fn("未找到 sing-box windows-amd64 资源")
+            return None
         r = requests.get(url, timeout=120, headers={"User-Agent": "Mobility"})
         r.raise_for_status()
         tmp = Path(tempfile.gettempdir()) / "singbox.zip"
