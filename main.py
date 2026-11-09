@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.0"
+APP_VERSION = "0.17.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -681,6 +681,7 @@ class App(ctk.CTk):
         self.subscriptions = []
         self._xray_ver = "未知"
         self.tun_enabled = False
+        self.proxy_core = "Xray"
         self.live_stats_enabled = False  # 实时网速/内存，默认关闭
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
@@ -800,6 +801,15 @@ class App(ctk.CTk):
         self.copy_btn.pack(side="left", padx=2)
         self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
         self.ping_btn.pack(side="left", padx=2)
+        ctk.CTkLabel(tools, text="更换核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
+        self.core_combo = ctk.CTkComboBox(
+            tools, width=100, height=30,
+            values=["Xray", "sing-box"],
+            state="readonly",
+            command=self.on_core_change,
+        )
+        self.core_combo.set(getattr(self, "proxy_core", None) or "Xray")
+        self.core_combo.pack(side="left", padx=2)
         ctk.CTkLabel(tools, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
         self.workers_combo = ctk.CTkComboBox(tools, width=70, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
@@ -993,20 +1003,20 @@ class App(ctk.CTk):
         log_head = ctk.CTkFrame(log_frame, fg_color="transparent")
         log_head.pack(fill="x")
         ctk.CTkLabel(log_head, text="运行日志", font=("Microsoft YaHei UI", 12, "bold")).pack(side="left")
-        log_tools = ctk.CTkFrame(log_head, fg_color="transparent")
-        log_tools.pack(side="right")
-        self.log_filter_entry = ctk.CTkEntry(log_tools, width=160, height=26, placeholder_text="过滤器(支持正则)")
-        self.log_filter_entry.pack(side="left", padx=(0, 4))
-        self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
-        ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
-        ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
+        # 先 pack 右侧开关，保证与上方「实时统计」右边缘对齐
         self.log_autoscroll_var = ctk.BooleanVar(value=True)
-        # 与上方「实时统计」右对齐
         self.log_autoscroll_sw = ctk.CTkSwitch(
             log_head, text="自动滚动", variable=self.log_autoscroll_var, width=90,
             command=self._on_log_autoscroll
         )
         self.log_autoscroll_sw.pack(side="right", padx=10)
+        log_tools = ctk.CTkFrame(log_head, fg_color="transparent")
+        log_tools.pack(side="right", padx=(0, 4))
+        self.log_filter_entry = ctk.CTkEntry(log_tools, width=160, height=26, placeholder_text="过滤器(支持正则)")
+        self.log_filter_entry.pack(side="left", padx=(0, 4))
+        self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
+        ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
+        ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
         self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
@@ -1058,6 +1068,17 @@ class App(ctk.CTk):
             return bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
             return False
+
+    def on_core_change(self, value=None):
+        try:
+            self.proxy_core = (value or self.core_combo.get() or "Xray").strip()
+        except Exception:
+            self.proxy_core = "Xray"
+        self.log(f"当前代理核心：{self.proxy_core}")
+        self.save_settings()
+        # 切换核心后若在运行则提示重启
+        if self.is_running:
+            self.log("核心已切换，请停止后重新启动以生效")
 
     def on_tun_toggle(self):
         enabled = bool(self.tun_check.get()) if hasattr(self, "tun_check") else False
@@ -3361,16 +3382,30 @@ class App(ctk.CTk):
                     pass
                 sb_cfg = self.create_singbox_tun_config(socks_port)
                 flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                sb_log = self.core_dir / "singbox.log"
+                try:
+                    sb_log_handle = open(sb_log, "w", encoding="utf-8", errors="ignore")
+                except Exception:
+                    sb_log_handle = subprocess.DEVNULL
                 self.singbox_process = subprocess.Popen(
                     [str(sb), "run", "-c", str(sb_cfg)],
                     cwd=str(self.core_dir),
                     creationflags=flags,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=sb_log_handle,
+                    stderr=subprocess.STDOUT,
                 )
-                time.sleep(0.8)
+                time.sleep(1.2)
                 if self.singbox_process.poll() is not None:
-                    self.log("sing-box TUN 启动失败，请确认管理员权限与 wintun.dll")
+                    self.log("sing-box TUN 启动失败，请确认：①管理员运行 ②core\\wintun.dll 存在")
+                    try:
+                        if sb_log.exists():
+                            txt = sb_log.read_text(encoding="utf-8", errors="ignore").strip()
+                            if txt:
+                                self.log("sing-box 输出：")
+                                for ln in txt.splitlines()[-10:]:
+                                    self.log("  " + ln[:220])
+                    except Exception:
+                        pass
                     try:
                         self.xray_process.terminate()
                     except Exception:
