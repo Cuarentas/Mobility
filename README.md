@@ -4,8 +4,8 @@
 
 **Windows 便携版 · 多核心代理客户端**
 
-[![Release](https://img.shields.io/github/v/release/your-org/Mobility?style=flat-square)](../../releases)
-[![Downloads](https://img.shields.io/github/downloads/your-org/Mobility/total?style=flat-square)](../../releases)
+[![Release](https://img.shields.io/github/v/release/Cuarentas/Mobility?style=flat-square)](../../releases)
+[![Downloads](https://img.shields.io/github/downloads/Cuarentas/Mobility/total?style=flat-square)](../../releases)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
 解压即用 · 多核心内置 · 订阅测速 · 系统代理 / TUN
