@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.4"
+APP_VERSION = "0.17.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1077,11 +1077,10 @@ class App(ctk.CTk):
         except Exception:
             self.proxy_core = "Xray"
         self.log(f"当前代理核心：{self.proxy_core}")
-        # 当前版本：协议出站统一走 Xray；TUN 流量接管走 sing-box
-        # （完整 sing-box 出站将在后续版本按协议映射实现）
-        self.log("说明：协议出站使用 Xray；开启 TUN 时由 sing-box 负责流量接管")
         if self.proxy_core == "sing-box":
-            self.log("提示：完整 sing-box 出站尚未启用，当前与 Xray 共用同一代理链路")
+            self.log("已切换：协议出站 + TUN 均由 sing-box 负责")
+        else:
+            self.log("已切换：协议出站由 Xray 负责；TUN 时由 sing-box 协助接管")
         self.save_settings()
         # 切换核心后若在运行则提示重启
         if self.is_running:
@@ -3221,6 +3220,152 @@ class App(ctk.CTk):
 
 
 
+
+    def node_to_singbox_outbound(self, node: dict) -> dict:
+        """把节点转成 sing-box 出站配置。"""
+        proto = (node.get("protocol") or "").lower()
+        server = node.get("address") or ""
+        port = int(node.get("port") or 443)
+        network = (node.get("network") or "tcp").lower()
+        tls_enabled = False
+        if proto == "trojan":
+            tls_enabled = True
+        elif proto in ("vless", "vmess"):
+            sec = (node.get("security") or node.get("tls") or "").lower()
+            tls_enabled = sec in ("tls", "reality", "xtls")
+        elif node.get("tls"):
+            tls_enabled = str(node.get("tls")).lower() in ("tls", "true", "1")
+
+        outbound = {
+            "type": proto if proto != "shadowsocks" else "shadowsocks",
+            "tag": "proxy",
+            "server": server,
+            "server_port": port,
+        }
+
+        if proto == "trojan":
+            outbound["password"] = node.get("password") or ""
+        elif proto == "vmess":
+            outbound["uuid"] = node.get("uuid") or ""
+            outbound["alter_id"] = int(node.get("alterId") or 0)
+            outbound["security"] = node.get("security") or "auto"
+        elif proto == "vless":
+            outbound["uuid"] = node.get("uuid") or ""
+            outbound["flow"] = node.get("flow") or ""
+            outbound["packet_encoding"] = ""
+        elif proto == "shadowsocks":
+            outbound["method"] = node.get("method") or "aes-256-gcm"
+            outbound["password"] = node.get("password") or ""
+        else:
+            raise ValueError(f"sing-box 暂不支持协议：{proto}")
+
+        # TLS
+        if tls_enabled:
+            tls = {
+                "enabled": True,
+                "server_name": node.get("sni") or node.get("host") or server,
+                "insecure": True,
+            }
+            if (node.get("security") or "").lower() == "reality" or node.get("pbk"):
+                tls["reality"] = {
+                    "enabled": True,
+                    "public_key": node.get("pbk") or "",
+                    "short_id": node.get("sid") or "",
+                }
+                if node.get("fp"):
+                    tls["utls"] = {"enabled": True, "fingerprint": node.get("fp") or "chrome"}
+            elif node.get("fp"):
+                tls["utls"] = {"enabled": True, "fingerprint": node.get("fp") or "chrome"}
+            outbound["tls"] = tls
+
+        # Transport
+        if network == "ws":
+            outbound["transport"] = {
+                "type": "ws",
+                "path": node.get("path") or "/",
+                "headers": {"Host": node.get("host") or node.get("sni") or server},
+            }
+        elif network == "grpc":
+            outbound["transport"] = {
+                "type": "grpc",
+                "service_name": node.get("serviceName") or node.get("path") or "",
+            }
+        elif network == "h2" or network == "http":
+            outbound["transport"] = {
+                "type": "http",
+                "path": node.get("path") or "/",
+                "host": [node.get("host") or node.get("sni") or server],
+            }
+
+        return outbound
+
+    def create_singbox_full_config(self, node: dict, socks_port: int, http_port: int, enable_tun: bool) -> Path:
+        """sing-box 完整配置：mixed 入站 + 可选 TUN + 节点出站。"""
+        outbound = self.node_to_singbox_outbound(node)
+        inbounds = [
+            {
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": "127.0.0.1",
+                "listen_port": int(http_port),
+            }
+        ]
+        # SOCKS 单独端口（与界面 SOCKS 一致）
+        if int(socks_port) != int(http_port):
+            inbounds.append({
+                "type": "socks",
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": int(socks_port),
+            })
+
+        if enable_tun:
+            inbounds.append({
+                "type": "tun",
+                "tag": "tun-in",
+                "interface_name": "Mobility0",
+                "address": ["172.19.0.1/30"],
+                "mtu": 1400,
+                "auto_route": True,
+                "strict_route": False,
+                "stack": "mixed",
+                "route_exclude_address": [
+                    "127.0.0.0/8",
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                ],
+            })
+
+        mode = self.proxy_mode or "规则模式"
+        rules = [{"action": "sniff"}]
+        if "全局" in mode:
+            final = "proxy"
+        elif "直连" in mode:
+            final = "direct"
+        else:
+            # 规则：私网直连，其余代理（简化）
+            rules.append({"ip_is_private": True, "outbound": "direct"})
+            final = "proxy"
+
+        cfg = {
+            "log": {"level": "warn", "timestamp": True},
+            "inbounds": inbounds,
+            "outbounds": [
+                outbound,
+                {"type": "direct", "tag": "direct"},
+            ],
+            "route": {
+                "auto_detect_interface": True,
+                "final": final,
+                "rules": rules,
+            },
+        }
+        path = self.core_dir / "singbox-full.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return path
+
     def create_singbox_tun_config(self, socks_port: int, http_port: int = None) -> Path:
         """生成 sing-box 1.13+ 兼容的 TUN 配置（无 legacy inbound 字段）。"""
         if http_port is None:
@@ -3326,6 +3471,77 @@ class App(ctk.CTk):
             text=self._short_node_text(node, lat_s)
         ))
 
+        core_name = (getattr(self, "proxy_core", None) or "Xray").strip()
+        try:
+            if hasattr(self, "core_combo"):
+                core_name = (self.core_combo.get() or core_name).strip()
+                self.proxy_core = core_name
+        except Exception:
+            pass
+
+        socks_port, http_port = self.get_ports()
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+        # ========== sing-box 核心：独立完整配置 ==========
+        if core_name.lower().startswith("sing"):
+            sb = ensure_singbox(self.core_dir, log_fn=self.log)
+            if not sb:
+                self.log("错误：找不到 sing-box 核心")
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                return
+            if getattr(self, "tun_enabled", False):
+                try:
+                    ensure_wintun(self.core_dir, log_fn=self.log)
+                except Exception:
+                    pass
+            try:
+                sb_cfg = self.create_singbox_full_config(
+                    node, socks_port, http_port, bool(getattr(self, "tun_enabled", False))
+                )
+                self.log("sing-box 配置已生成")
+            except Exception as e:
+                self.log(f"生成 sing-box 配置失败：{e}")
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                return
+            try:
+                sb_log = self.core_dir / "singbox.log"
+                sb_log_handle = open(sb_log, "w", encoding="utf-8", errors="ignore")
+                self.singbox_process = subprocess.Popen(
+                    [str(sb), "run", "-c", str(sb_cfg)],
+                    cwd=str(self.core_dir),
+                    creationflags=flags,
+                    stdout=sb_log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+                time.sleep(1.2)
+                if self.singbox_process.poll() is not None:
+                    self.log("sing-box 启动失败")
+                    try:
+                        txt = sb_log.read_text(encoding="utf-8", errors="ignore")
+                        for ln in txt.strip().splitlines()[-12:]:
+                            self.log("  " + ln[:220])
+                    except Exception:
+                        pass
+                    self.singbox_process = None
+                    self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                    return
+                # 系统代理指向 sing-box mixed/http 端口
+                if self.set_system_proxy(True, http_port):
+                    self.log(f"系统代理已设置 127.0.0.1:{http_port}")
+                self.is_running = True
+                self.after(0, lambda: self.status_label.configure(text="运行中", text_color="#16A34A"))
+                tun_s = " + TUN" if getattr(self, "tun_enabled", False) else ""
+                self.log(f"代理已启动（sing-box{tun_s}）")
+                self._run_started_at = time.time()
+                self.set_tray_state("connected")
+                self.save_settings()
+            except Exception as e:
+                self.log(f"启动 sing-box 失败：{e}")
+                self.singbox_process = None
+            self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+            return
+
+        # ========== Xray 核心（默认） ==========
         xray_exe = self.core_dir / "xray.exe"
         if not xray_exe.exists():
             self.prepare_core()
