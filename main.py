@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.0"
+APP_VERSION = "0.18.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -333,6 +333,55 @@ def ensure_mihomo(core_dir: Path, log_fn=None):
         if log_fn:
             log_fn(f"下载 mihomo 失败：{e}")
         return None
+
+
+def get_core_binary_version(exe_path, name_hint="") -> str:
+    """尝试读取核心 exe 版本号。"""
+    if not exe_path:
+        return "未安装"
+    try:
+        path = Path(exe_path)
+        if not path.exists():
+            return "未安装"
+    except Exception:
+        return "未安装"
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        # 常见：version / -version / -v
+        for args in ([str(path), "version"], [str(path), "-version"], [str(path), "-v"]):
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=5, creationflags=flags)
+                out = (r.stdout or "") + (r.stderr or "")
+                out = out.strip()
+                if not out:
+                    continue
+                # Xray: Xray 1.8.x / 26.x
+                m = re.search(r"Xray\s+([0-9.]+)", out, re.I)
+                if m:
+                    return m.group(1)
+                # sing-box: version x.y.z
+                m = re.search(r"version\s+([0-9.]+)", out, re.I)
+                if m:
+                    return m.group(1)
+                m = re.search(r"sing-box\s+.*?([0-9]+\.[0-9]+\.[0-9]+)", out, re.I)
+                if m:
+                    return m.group(1)
+                # mihomo / clash meta
+                m = re.search(r"(?:Mihomo|Clash)\s*(?:Meta)?\s*v?([0-9.]+)", out, re.I)
+                if m:
+                    return m.group(1)
+                m = re.search(r"\bv?([0-9]+\.[0-9]+\.[0-9]+)\b", out)
+                if m:
+                    return m.group(1)
+                # 取第一行截断
+                line = out.splitlines()[0].strip()
+                return line[:32] if line else "未知"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return "未知"
+
 
 def get_xray_version(xray_path) -> str:
     if not xray_path:
@@ -895,18 +944,9 @@ class App(ctk.CTk):
         self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
         self.ping_btn.pack(side="left", padx=2)
 
-        # 右侧选项区
+        # 右侧选项区（核心由设置「按协议映射」决定，此处不再放核心下拉）
         right_opts = ctk.CTkFrame(tools, fg_color="transparent")
         right_opts.pack(side="right", padx=(8, 0))
-        ctk.CTkLabel(right_opts, text="核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(0, 2))
-        self.core_combo = ctk.CTkComboBox(
-            right_opts, width=100, height=30,
-            values=CORE_OPTIONS,
-            state="readonly",
-            command=self.on_core_change,
-        )
-        self.core_combo.set(getattr(self, "proxy_core", None) or "Xray")
-        self.core_combo.pack(side="left", padx=2)
         ctk.CTkLabel(right_opts, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
         self.workers_combo = ctk.CTkComboBox(right_opts, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
@@ -1188,11 +1228,61 @@ class App(ctk.CTk):
         except Exception:
             return False
 
+    def refresh_version_label(self, core_name: str = None):
+        """顶部显示：软件版本 + 当前核心名称与版本。"""
+        try:
+            if not core_name:
+                node = None
+                try:
+                    node = self.get_selected_node()
+                except Exception:
+                    node = getattr(self, "current_node", None)
+                if node:
+                    core_name = self.resolve_core_for_node(node)
+                else:
+                    core_name = getattr(self, "proxy_core", None) or "Xray"
+            core_name = str(core_name).strip() or "Xray"
+            low = core_name.lower()
+            if low.startswith("sing"):
+                path = self.core_dir / "sing-box.exe"
+                for c in [path, get_base_dir() / "core" / "sing-box.exe", get_base_dir() / "sing-box.exe"]:
+                    if c.exists():
+                        path = c
+                        break
+                ver = get_core_binary_version(path, "sing-box")
+                label = f"v{APP_VERSION} | sing-box {ver}"
+            elif low.startswith("mihomo") or low == "clash":
+                path = self.core_dir / "mihomo.exe"
+                for c in [path, get_base_dir() / "core" / "mihomo.exe", get_base_dir() / "mihomo.exe"]:
+                    if c.exists():
+                        path = c
+                        break
+                ver = get_core_binary_version(path, "mihomo")
+                label = f"v{APP_VERSION} | Mihomo {ver}"
+            else:
+                path = getattr(self, "xray_path", None) or find_xray()
+                ver = get_xray_version(path)
+                self._xray_ver = ver
+                label = f"v{APP_VERSION} | Xray {ver}"
+            if hasattr(self, "version_label"):
+                self.version_label.configure(text=label)
+        except Exception:
+            try:
+                if hasattr(self, "version_label"):
+                    self.version_label.configure(text=f"v{APP_VERSION}")
+            except Exception:
+                pass
+
     def on_core_map_change(self, proto: str, value=None):
         if not getattr(self, "core_map", None):
             self.core_map = dict(DEFAULT_CORE_MAP)
         self.core_map[proto] = (value or "Xray").strip()
         self.save_settings()
+        self.log(f"协议 {proto} → 核心 {self.core_map[proto]}")
+        try:
+            self.refresh_version_label()
+        except Exception:
+            pass
 
     def resolve_core_for_node(self, node: dict) -> str:
         proto = (node.get("protocol") or "").lower()
@@ -1580,9 +1670,12 @@ class App(ctk.CTk):
             self._xray_ver = "未知"
         self.load_settings()
         try:
-            self.version_label.configure(text=f"v{APP_VERSION} | Xray {self._xray_ver}")
+            self.refresh_version_label()
         except Exception:
-            pass
+            try:
+                self.version_label.configure(text=f"v{APP_VERSION} | Xray {self._xray_ver}")
+            except Exception:
+                pass
         try:
             self.start_hotkey_listener()
         except Exception:
@@ -2314,6 +2407,10 @@ class App(ctk.CTk):
             try:
                 if hasattr(self, "core_combo"):
                     self.core_combo.set(self.proxy_core if self.proxy_core in CORE_OPTIONS else "Xray")
+            except Exception:
+                pass
+            try:
+                self.refresh_version_label()
             except Exception:
                 pass
             try:
@@ -3769,14 +3866,18 @@ class App(ctk.CTk):
         self.after(0, lambda: self.current_label.configure(
             text=self._short_node_text(node, lat_s)
         ))
-
         try:
-            if hasattr(self, "core_combo"):
-                self.proxy_core = (self.core_combo.get() or getattr(self, "proxy_core", None) or "Xray").strip()
+            self.after(0, lambda: self.refresh_version_label())
         except Exception:
             pass
+
         core_name = self.resolve_core_for_node(node)
+        self.proxy_core = core_name
         self.log(f"节点协议 [{node.get('protocol')}] → 核心 {core_name}")
+        try:
+            self.after(0, lambda: self.refresh_version_label(core_name))
+        except Exception:
+            pass
 
         socks_port, http_port = self.get_ports()
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
