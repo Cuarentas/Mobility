@@ -888,11 +888,11 @@ class App(ctk.CTk):
         self.title_label = ctk.CTkLabel(
             top, text="Mobility", font=("Microsoft YaHei UI", 18, "bold"),
             text_color=("#2563EB", "#60A5FA"))
-        self.title_label.pack(side="left", padx=(16, 4))
+        self.title_label.pack(side="left", padx=(16, 10))
         self.app_ver_label = ctk.CTkLabel(
             top, text=f"v{APP_VERSION}", font=("Microsoft YaHei UI", 12),
             text_color=("gray40", "gray60"))
-        self.app_ver_label.pack(side="left", padx=(0, 10))
+        self.app_ver_label.pack(side="left", padx=(4, 10))
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
         self.status_label.pack(side="left", padx=8)
         self.current_label = ctk.CTkLabel(top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
@@ -1116,7 +1116,7 @@ class App(ctk.CTk):
         btn_box.grid_columnconfigure(0, weight=1, uniform="btn")
         btn_box.grid_columnconfigure(1, weight=1, uniform="btn")
 
-        self.core_type_btn = ctk.CTkButton(btn_box, text="核心类型设置", height=bh, command=self.open_core_type_dialog)
+        self.core_type_btn = ctk.CTkButton(btn_box, text="核心设置", height=bh, command=self.open_core_type_dialog)
         self.core_type_btn.grid(row=0, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.hotkey_setting_btn = ctk.CTkButton(btn_box, text="热键设置", height=bh, command=self.open_hotkey_dialog)
         self.hotkey_setting_btn.grid(row=0, column=1, sticky="ew", pady=3, padx=(3, 0))
@@ -1267,7 +1267,7 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        ctk.CTkLabel(win, text="核心类型设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
+        ctk.CTkLabel(win, text="核心设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
             anchor="w", padx=20, pady=(16, 8)
         )
         ctk.CTkLabel(
