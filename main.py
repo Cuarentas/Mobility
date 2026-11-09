@@ -168,6 +168,11 @@ def find_singbox():
         get_base_dir() / "core" / "sing-box.exe",
         get_base_dir() / "sing-box.exe",
     ]
+    try:
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "core" / "sing-box.exe")
+    except Exception:
+        pass
     for c in candidates:
         try:
             if c.exists():
@@ -996,7 +1001,12 @@ class App(ctk.CTk):
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
         self.log_autoscroll_var = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(log_tools, text="自动滚动", variable=self.log_autoscroll_var, width=90, command=self._on_log_autoscroll).pack(side="left", padx=(8, 0))
+        # 与上方「实时统计」右对齐
+        self.log_autoscroll_sw = ctk.CTkSwitch(
+            log_head, text="自动滚动", variable=self.log_autoscroll_var, width=90,
+            command=self._on_log_autoscroll
+        )
+        self.log_autoscroll_sw.pack(side="right", padx=10)
         self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
@@ -1096,13 +1106,6 @@ class App(ctk.CTk):
                 return
             self.tun_enabled = True
             self.save_settings()
-            # 暂停全局热键，减少钩子带来的卡顿
-            try:
-                import keyboard
-                keyboard.unhook_all_hotkeys()
-                self.log("TUN 已开启（已优化性能）")
-            except Exception:
-                pass
             self.log("TUN 模式：开启，正在自动连接...")
             # 若已在运行，先停再以 TUN 配置重启
             if self.is_running:
@@ -1124,12 +1127,15 @@ class App(ctk.CTk):
         except Exception:
             pass
         if self.is_running:
-            # 关闭 TUN 后停止全局接管
             self.log("已关闭 TUN，停止当前连接")
             try:
                 self.stop_proxy()
             except Exception:
                 pass
+        try:
+            self.start_btn.configure(state="normal")
+        except Exception:
+            pass
 
     def on_font_size_change(self, value=None):
         try:
@@ -3420,6 +3426,10 @@ class App(ctk.CTk):
         self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
 
     def stop_proxy(self):
+        try:
+            self.stop_singbox()
+        except Exception:
+            pass
         if self.xray_process:
             try:
                 self.xray_process.terminate()
@@ -3431,16 +3441,29 @@ class App(ctk.CTk):
                     pass
             self.xray_process = None
 
-        self.set_system_proxy(False)
+        try:
+            self.set_system_proxy(False)
+        except Exception:
+            pass
         self.is_running = False
         self._run_started_at = None
         try:
-            self.status_label.configure(text="未连接")
-            self.current_label.configure(text="未选择节点")
+            self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
         except Exception:
             pass
-        self.set_tray_state("disconnected")
+        try:
+            self.set_tray_state("disconnected")
+        except Exception:
+            pass
         self.log("代理已停止，系统代理已关闭")
+        # 恢复启动按钮
+        try:
+            self.after(0, lambda: self.start_btn.configure(state="normal"))
+        except Exception:
+            try:
+                self.start_btn.configure(state="normal")
+            except Exception:
+                pass
 
     def on_closing(self):
         # 关闭到托盘
