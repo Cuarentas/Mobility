@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.3"
+APP_VERSION = "0.17.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -788,9 +788,9 @@ class App(ctk.CTk):
                                          command=self.show_node_qr)
         self.show_qr_btn.pack(side="left", padx=2)
 
-        # ===== 工具行 1：节点操作 =====
+        # ===== 工具行：左侧操作按钮，右侧核心/并发/模式（填满空白） =====
         tools = ctk.CTkFrame(body, fg_color="transparent")
-        tools.pack(fill="x", pady=(0, 4))
+        tools.pack(fill="x", pady=(0, 6))
         self.test_btn = ctk.CTkButton(tools, text="测速全部", width=80, height=30, fg_color="#7C3AED", command=self.test_all_thread)
         self.test_btn.pack(side="left", padx=2)
         self.test_filter_btn = ctk.CTkButton(tools, text="测速筛选", width=80, height=30, fg_color="#8B5CF6", command=self.test_filtered_thread)
@@ -802,24 +802,24 @@ class App(ctk.CTk):
         self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
         self.ping_btn.pack(side="left", padx=2)
 
-        # ===== 工具行 2：核心 / 并发 / 模式（单独一行，避免被挤扁） =====
-        tools2 = ctk.CTkFrame(body, fg_color="transparent")
-        tools2.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(tools2, text="更换核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(2, 2))
+        # 右侧选项区
+        right_opts = ctk.CTkFrame(tools, fg_color="transparent")
+        right_opts.pack(side="right", padx=(8, 0))
+        ctk.CTkLabel(right_opts, text="核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(0, 2))
         self.core_combo = ctk.CTkComboBox(
-            tools2, width=110, height=30,
+            right_opts, width=100, height=30,
             values=["Xray", "sing-box"],
             state="readonly",
             command=self.on_core_change,
         )
         self.core_combo.set(getattr(self, "proxy_core", None) or "Xray")
         self.core_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(tools2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(12, 2))
-        self.workers_combo = ctk.CTkComboBox(tools2, width=80, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        ctk.CTkLabel(right_opts, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
+        self.workers_combo = ctk.CTkComboBox(right_opts, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(tools2, text="模式", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(12, 2))
-        self.mode_combo = ctk.CTkComboBox(tools2, width=120, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
+        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
+        self.mode_combo = ctk.CTkComboBox(right_opts, width=110, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=2)
 
@@ -1077,10 +1077,11 @@ class App(ctk.CTk):
         except Exception:
             self.proxy_core = "Xray"
         self.log(f"当前代理核心：{self.proxy_core}")
-        if self.proxy_core == "Xray":
-            self.log("说明：协议代理使用 Xray；若开启 TUN，流量接管仍由 sing-box 负责")
-        else:
-            self.log("说明：当前选择 sing-box（TUN 与接管均由 sing-box）")
+        # 当前版本：协议出站统一走 Xray；TUN 流量接管走 sing-box
+        # （完整 sing-box 出站将在后续版本按协议映射实现）
+        self.log("说明：协议出站使用 Xray；开启 TUN 时由 sing-box 负责流量接管")
+        if self.proxy_core == "sing-box":
+            self.log("提示：完整 sing-box 出站尚未启用，当前与 Xray 共用同一代理链路")
         self.save_settings()
         # 切换核心后若在运行则提示重启
         if self.is_running:
@@ -3237,8 +3238,14 @@ class App(ctk.CTk):
                     "address": ["172.19.0.1/30"],
                     "mtu": 1400,
                     "auto_route": True,
-                    "strict_route": True,
+                    "strict_route": False,
                     "stack": "mixed",
+                    "route_exclude_address": [
+                        "127.0.0.0/8",
+                        "10.0.0.0/8",
+                        "172.16.0.0/12",
+                        "192.168.0.0/16",
+                    ],
                     "platform": {
                         "http_proxy": {
                             "enabled": True,
