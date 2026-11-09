@@ -106,15 +106,26 @@ def find_xray():
 
 
 def ensure_wintun(core_dir: Path, log_fn=None) -> bool:
-    """确保 wintun.dll 存在于 core 或程序目录。"""
+    """确保 wintun.dll 与 xray.exe 同目录（Windows system 栈必需）。"""
+    core_dir = Path(core_dir)
+    core_dir.mkdir(parents=True, exist_ok=True)
+    dest = core_dir / "wintun.dll"
     targets = [
-        Path(core_dir) / "wintun.dll",
+        dest,
         get_base_dir() / "wintun.dll",
         get_base_dir() / "core" / "wintun.dll",
     ]
     for pth in targets:
         if pth.exists() and pth.stat().st_size > 1000:
-            return True
+            if pth.resolve() != dest.resolve():
+                try:
+                    import shutil
+                    shutil.copy2(pth, dest)
+                    if log_fn:
+                        log_fn(f"已复制 wintun.dll → {dest}")
+                except Exception:
+                    pass
+            return dest.exists()
     # 从官方包下载（含多架构）
     url = "https://www.wintun.net/builds/wintun-0.14.1.zip"
     try:
@@ -2770,34 +2781,47 @@ class App(ctk.CTk):
             config["dns"] = {"servers": dns_servers}
 
         if getattr(self, "tun_enabled", False):
-            # Windows TUN（wintun）：auto 配地址/路由；strictRoute 过严易导致断网故关闭
+            # Windows 官方推荐：system 栈 + wintun.dll（与 xray.exe 同目录）
+            # gvisor 在 Windows 上对全局流量接管不可靠，易导致“有进程无网”
             config["inbounds"].append({
                 "tag": "tun-in",
                 "protocol": "tun",
+                "port": 0,
                 "settings": {
-                    "mtu": 1400,
-                    "stack": "gvisor",
+                    "mtu": 1500,
+                    "stack": "system",
                     "auto": True,
                     "strictRoute": False,
                 },
                 "sniffing": {
                     "enabled": True,
-                    "destOverride": ["http", "tls"],
-                    "routeOnly": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "routeOnly": False,
                 },
             })
-            # TUN 时限制日志级别，降低开销
             try:
                 if config.get("log", {}).get("loglevel") in ("debug", "info"):
                     config["log"]["loglevel"] = "warning"
             except Exception:
                 pass
-            # TUN 下强制可用 DNS，避免解析失败导致“没网”
-            if not config.get("dns"):
-                config["dns"] = {
-                    "servers": ["8.8.8.8", "1.1.1.1", "localhost"],
-                    "queryStrategy": "UseIP",
-                }
+            # TUN 必须有可用 DNS，否则表现为完全没网
+            config["dns"] = {
+                "servers": [
+                    "8.8.8.8",
+                    "1.1.1.1",
+                    "localhost",
+                ],
+                "queryStrategy": "UseIPv4",
+            }
+            # 私网直连，避免把局域网也送进代理
+            rules = config.get("routing", {}).get("rules") or []
+            rules.insert(0, {
+                "type": "field",
+                "inboundTag": ["tun-in"],
+                "ip": ["geoip:private"],
+                "outboundTag": "direct",
+            })
+            config.setdefault("routing", {})["rules"] = rules
 
 
         # Stats API 常驻（占用很小）；界面是否轮询由「实时统计」开关控制
@@ -3147,6 +3171,11 @@ class App(ctk.CTk):
 
         try:
             log_handle = open(self.log_file, "w", encoding="utf-8")
+            if getattr(self, "tun_enabled", False):
+                try:
+                    ensure_wintun(self.core_dir, log_fn=self.log)
+                except Exception:
+                    pass
             self.xray_process = subprocess.Popen(
                 [str(xray_exe), "run", "-c", str(config_path)],
                 cwd=str(self.core_dir),
@@ -3192,7 +3221,7 @@ class App(ctk.CTk):
                     self.set_system_proxy(False)
                 except Exception:
                     pass
-                self.log("TUN 已启用（未叠加系统代理，降低占用）")
+                self.log("TUN 已启用（system 栈 + wintun，未叠加系统代理）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
