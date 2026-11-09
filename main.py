@@ -2776,17 +2776,22 @@ class App(ctk.CTk):
                 "protocol": "tun",
                 "settings": {
                     "mtu": 1400,
-                    # gvisor 用户态栈，Windows 上通常比 system 更省、更稳
                     "stack": "gvisor",
                     "auto": True,
                     "strictRoute": False,
                 },
                 "sniffing": {
                     "enabled": True,
-                    "destOverride": ["http", "tls", "quic"],
-                    "routeOnly": False,
+                    "destOverride": ["http", "tls"],
+                    "routeOnly": True,
                 },
             })
+            # TUN 时限制日志级别，降低开销
+            try:
+                if config.get("log", {}).get("loglevel") in ("debug", "info"):
+                    config["log"]["loglevel"] = "warning"
+            except Exception:
+                pass
             # TUN 下强制可用 DNS，避免解析失败导致“没网”
             if not config.get("dns"):
                 config["dns"] = {
@@ -2795,31 +2800,32 @@ class App(ctk.CTk):
                 }
 
 
-        # 仅在开启「实时统计」时启用 Stats API，避免常驻占用
-        if getattr(self, "live_stats_enabled", False):
-            api_port = int(getattr(self, "api_port", 10085))
-            config["stats"] = {}
-            config["api"] = {"tag": "api", "services": ["StatsService"]}
-            config["policy"] = {
-                "system": {
-                    "statsOutboundUplink": True,
-                    "statsOutboundDownlink": True,
-                }
+        # Stats API 常驻（占用很小）；界面是否轮询由「实时统计」开关控制
+        api_port = int(getattr(self, "api_port", 10085))
+        config["stats"] = {}
+        config["api"] = {"tag": "api", "services": ["StatsService"]}
+        config["policy"] = {
+            "system": {
+                "statsOutboundUplink": True,
+                "statsOutboundDownlink": True,
+                "statsInboundUplink": True,
+                "statsInboundDownlink": True,
             }
-            config["inbounds"].append({
-                "tag": "api",
-                "listen": "127.0.0.1",
-                "port": api_port,
-                "protocol": "dokodemo-door",
-                "settings": {"address": "127.0.0.1"},
-            })
-            rules = config.get("routing", {}).get("rules") or []
-            rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
-            config.setdefault("routing", {})["rules"] = rules
-            outs = config.get("outbounds") or []
-            if not any(o.get("tag") == "api" for o in outs):
-                outs.append({"tag": "api", "protocol": "freedom"})
-                config["outbounds"] = outs
+        }
+        config["inbounds"].append({
+            "tag": "api",
+            "listen": "127.0.0.1",
+            "port": api_port,
+            "protocol": "dokodemo-door",
+            "settings": {"address": "127.0.0.1"},
+        })
+        rules = config.get("routing", {}).get("rules") or []
+        rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
+        config.setdefault("routing", {})["rules"] = rules
+        outs = config.get("outbounds") or []
+        if not any(o.get("tag") == "api" for o in outs):
+            outs.append({"tag": "api", "protocol": "freedom"})
+            config["outbounds"] = outs
 
         config_path = self.core_dir / "config.json"
         with open(config_path, "w", encoding="utf-8") as f:
@@ -2885,65 +2891,81 @@ class App(ctk.CTk):
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def _query_xray_traffic(self):
-        """尝试通过 xray api 查询流量；失败返回 None。"""
+        """返回 (uplink_bytes, downlink_bytes) 或 None。"""
         try:
+            if not self.xray_process or self.xray_process.poll() is not None:
+                return None
             xray_exe = self.core_dir / "xray.exe"
-            if not xray_exe.exists() or not self.is_running:
+            if not xray_exe.exists():
                 return None
             flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            # uplink / downlink for outbound proxy
-            up = down = None
-            for name, pattern in (
-                ("outbound>>>proxy>>>traffic>>>uplink", "up"),
-                ("outbound>>>proxy>>>traffic>>>downlink", "down"),
-            ):
-                r = subprocess.run(
-                    [str(xray_exe), "api", "stats", f"--server=127.0.0.1:{self.api_port}", f"-name={name}"],
-                    capture_output=True, text=True, timeout=1, creationflags=flags,
-                    cwd=str(self.core_dir),
-                )
-                out = (r.stdout or "") + (r.stderr or "")
-                m = re.search(r"value:\s*(\d+)", out) or re.search(r"(\d+)", out)
-                if m:
-                    if "uplink" in name:
-                        up = int(m.group(1))
-                    else:
-                        down = int(m.group(1))
-            if up is None and down is None:
-                return None
-            return up or 0, down or 0
+            api_port = int(getattr(self, "api_port", 10085))
+
+            def _one(name: str) -> int:
+                try:
+                    r = subprocess.run(
+                        [str(xray_exe), "api", "stats", f"--server=127.0.0.1:{api_port}", f"-name={name}"],
+                        capture_output=True, text=True, timeout=1.5,
+                        creationflags=flags, cwd=str(self.core_dir),
+                    )
+                    out = (r.stdout or "") + (r.stderr or "")
+                    # value: 12345
+                    for line in out.splitlines():
+                        line = line.strip()
+                        if "value:" in line.lower() or line.isdigit():
+                            num = "".join(ch for ch in line if ch.isdigit() or ch == "-")
+                            if num:
+                                return max(0, int(num))
+                    # JSON-ish
+                    import re as _re
+                    ms = _re.findall(r"(\d+)", out)
+                    if ms:
+                        return max(0, int(ms[-1]))
+                except Exception:
+                    return 0
+                return 0
+
+            # 优先 outbound proxy；TUN 下同时累加 inbound tun-in
+            up = _one("outbound>>>proxy>>>uplink")
+            down = _one("outbound>>>proxy>>>downlink")
+            if getattr(self, "tun_enabled", False):
+                up = max(up, _one("inbound>>>tun-in>>>uplink"))
+                down = max(down, _one("inbound>>>tun-in>>>downlink"))
+            return up, down
         except Exception:
             return None
+
 
     def _xray_memory_mb(self) -> str:
         try:
             if not self.xray_process or self.xray_process.poll() is not None:
                 return "--"
+            pid = self.xray_process.pid
+            mb = None
             try:
                 import psutil
-                proc = psutil.Process(self.xray_process.pid)
-                rss = proc.memory_info().rss
-                return f"{rss / (1024 * 1024):.0f} MB"
+                proc = psutil.Process(pid)
+                # 仅当前 xray 进程，不含子进程合计膨胀
+                mb = proc.memory_info().rss / (1024 * 1024)
             except Exception:
-                # fallback tasklist
                 flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
                 r = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {self.xray_process.pid}", "/FO", "CSV", "/NH"],
-                    capture_output=True, text=True, timeout=2, creationflags=flags,
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=1, creationflags=flags,
                 )
-                # "xray.exe","1234","Session","1","12,345 K"
-                line = (r.stdout or "").strip().strip('"')
                 parts = [x.strip().strip('"') for x in (r.stdout or "").split(",")]
                 if len(parts) >= 5:
                     mem = parts[-1].replace("K", "").replace("k", "").replace(",", "").replace(" ", "")
                     try:
-                        kb = int(mem)
-                        return f"{kb / 1024:.0f} MB"
+                        mb = int(mem) / 1024
                     except Exception:
                         pass
+            if mb is None:
                 return "--"
+            return f"{mb:.0f} MB"
         except Exception:
             return "--"
+
 
     def _sample_stats_worker(self):
         try:
@@ -3004,6 +3026,11 @@ class App(ctk.CTk):
             self.live_stats_enabled = False
         if self.live_stats_enabled:
             self.log("实时统计：已开启")
+            if self.is_running:
+                # 立即采一次
+                if not getattr(self, "_stats_busy", False):
+                    self._stats_busy = True
+                    Thread(target=self._sample_stats_worker, daemon=True).start()
         else:
             self.log("实时统计：已关闭")
             try:
@@ -3160,12 +3187,12 @@ class App(ctk.CTk):
             _, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # TUN + 系统代理双开：纯 TUN 在部分环境无法让浏览器走通
-                self.log("TUN 已启用，并设置系统代理以保证浏览器可访问")
-                if self.set_system_proxy(True, http_port):
-                    self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
-                else:
-                    self.log("系统代理设置失败，仅依赖 TUN（若无法上网请检查管理员/wintun）")
+                # 仅 TUN，不叠加系统代理，避免双通道导致高占用与风扇狂转
+                try:
+                    self.set_system_proxy(False)
+                except Exception:
+                    pass
+                self.log("TUN 已启用（未叠加系统代理，降低占用）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
