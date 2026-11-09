@@ -91,6 +91,24 @@ jobs:
           $sb = Get-ChildItem -Path "singbox_extract" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
           if (-not $sb) { throw "sing-box.exe not found after extract" }
           Copy-Item $sb.FullName "core\sing-box.exe" -Force
+          
+          Write-Host "下载并内置 Mihomo ..."
+          $mapi = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+          $mrel = Invoke-RestMethod -Uri $mapi -Headers @{ "User-Agent" = "Mobility-Build" }
+          $masset = $mrel.assets | Where-Object { $_.name -match '^mihomo-windows-amd64-v[\d.]+\.zip$' } | Select-Object -First 1
+          if (-not $masset) { $masset = $mrel.assets | Where-Object { $_.name -match 'windows-amd64' -and $_.name -like '*.zip' -and $_.name -notmatch 'compatible' } | Select-Object -First 1 }
+          if (-not $masset) { throw "mihomo windows-amd64 asset not found" }
+          Write-Host "mihomo asset: $($masset.name)"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "mihomo.zip" $masset.browser_download_url
+          if (-not (Test-Path "mihomo.zip")) { throw "mihomo.zip download failed" }
+          if (Test-Path "mihomo_extract") { Remove-Item -Recurse -Force "mihomo_extract" }
+          Expand-Archive -Path "mihomo.zip" -DestinationPath "mihomo_extract" -Force
+          $mh = Get-ChildItem -Path "mihomo_extract" -Recurse -Filter "*.exe" | Where-Object { $_.Name -match 'mihomo' } | Select-Object -First 1
+          if (-not $mh) { $mh = Get-ChildItem -Path "mihomo_extract" -Recurse -Filter "*.exe" | Select-Object -First 1 }
+          if (-not $mh) { throw "mihomo.exe not found after extract" }
+          Copy-Item $mh.FullName "core\mihomo.exe" -Force
+          Write-Host "mihomo.exe 已内置到 core/ ($($mh.Length) bytes)"
+
           Write-Host "sing-box.exe 已内置到 core/ ($($sb.Length) bytes)"
           Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
@@ -127,11 +145,16 @@ jobs:
           } else {
             throw "缺少文件: sing-box.exe"
           }
+          if (Test-Path "core\mihomo.exe") {
+            Copy-Item -Path "core\mihomo.exe" -Destination "$coreDir\mihomo.exe" -Force
+          } else {
+            throw "缺少文件: mihomo.exe"
+          }
 
-          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll", "sing-box.exe")) {
+          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll", "sing-box.exe", "mihomo.exe")) {
             if (-not (Test-Path "$coreDir\$f")) { throw "缺少文件: $f" }
           }
-          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll / sing-box.exe"
+          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll / sing-box.exe / mihomo.exe"
 
           $zipPath = "dist\Mobility.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
