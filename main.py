@@ -30,7 +30,7 @@ TEST_WORKERS_DEFAULT = 32
 TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
-CORE_OPTIONS = ["Xray", "sing-box"]
+CORE_OPTIONS = ["Xray", "sing-box", "Mihomo"]
 CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http"]
 DEFAULT_CORE_MAP = {p: "Xray" for p in CORE_PROTOCOLS}
 PROXY_MODE_DEFAULT = "规则模式"
@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.6"
+APP_VERSION = "0.18.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -244,6 +244,94 @@ def ensure_singbox(core_dir: Path, log_fn=None):
     except Exception as e:
         if log_fn:
             log_fn(f"下载 sing-box 失败：{e}")
+        return None
+
+
+def find_mihomo():
+    candidates = [
+        get_base_dir() / "core" / "mihomo.exe",
+        get_base_dir() / "mihomo.exe",
+    ]
+    try:
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "core" / "mihomo.exe")
+    except Exception:
+        pass
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+    return None
+
+
+def ensure_mihomo(core_dir: Path, log_fn=None):
+    """确保 mihomo.exe 存在；缺失时从 GitHub 下载。"""
+    core_dir = Path(core_dir)
+    core_dir.mkdir(parents=True, exist_ok=True)
+    dest = core_dir / "mihomo.exe"
+    if dest.exists() and dest.stat().st_size > 1000:
+        return dest
+    existing = find_mihomo()
+    if existing and existing.resolve() != dest.resolve():
+        try:
+            import shutil
+            shutil.copy2(existing, dest)
+            return dest
+        except Exception:
+            pass
+    try:
+        if log_fn:
+            log_fn("正在下载 Mihomo 核心 ...")
+        import tempfile, zipfile
+        api = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+        meta = requests.get(api, timeout=30, headers={"User-Agent": "Mobility"}).json()
+        url = None
+        # 优先：mihomo-windows-amd64-vX.Y.Z.zip（非 compatible / 非 go1xx）
+        assets = meta.get("assets") or []
+        for a in assets:
+            name = a.get("name") or ""
+            if re.match(r"mihomo-windows-amd64-v[\d.]+\.zip$", name):
+                url = a.get("browser_download_url")
+                break
+        if not url:
+            for a in assets:
+                name = (a.get("name") or "").lower()
+                if "windows-amd64" in name and name.endswith(".zip") and "compatible" not in name:
+                    url = a.get("browser_download_url")
+                    break
+        if not url:
+            if log_fn:
+                log_fn("未找到 mihomo windows-amd64 资源")
+            return None
+        r = requests.get(url, timeout=120, headers={"User-Agent": "Mobility"})
+        r.raise_for_status()
+        tmp = Path(tempfile.gettempdir()) / "mihomo.zip"
+        tmp.write_bytes(r.content)
+        with zipfile.ZipFile(tmp, "r") as zf:
+            pick = None
+            for n in zf.namelist():
+                low = n.lower()
+                if low.endswith(".exe") and "mihomo" in low:
+                    pick = n
+                    break
+            if not pick:
+                for n in zf.namelist():
+                    if n.lower().endswith(".exe"):
+                        pick = n
+                        break
+            if not pick:
+                if log_fn:
+                    log_fn("mihomo 压缩包内未找到 exe")
+                return None
+            dest.write_bytes(zf.read(pick))
+        if log_fn:
+            log_fn(f"mihomo 已保存到 {dest}")
+        return dest if dest.exists() else None
+    except Exception as e:
+        if log_fn:
+            log_fn(f"下载 mihomo 失败：{e}")
         return None
 
 def get_xray_version(xray_path) -> str:
@@ -676,6 +764,7 @@ class App(ctk.CTk):
 
         self.xray_process = None
         self.singbox_process = None
+        self.mihomo_process = None
         self.is_running = False
         self.is_testing = False
         self.nodes: list[dict] = []
@@ -812,7 +901,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(right_opts, text="核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(0, 2))
         self.core_combo = ctk.CTkComboBox(
             right_opts, width=100, height=30,
-            values=["Xray", "sing-box"],
+            values=CORE_OPTIONS,
             state="readonly",
             command=self.on_core_change,
         )
@@ -1356,7 +1445,7 @@ class App(ctk.CTk):
                         self.log(f"{geo_name} 已更新")
                 except Exception as ge:
                     self.log(f"{geo_name} 更新失败：{ge}")
-            # 同步更新 sing-box
+            # 同步更新 sing-box / mihomo
             try:
                 self.log("更新 sing-box ...")
                 dest = self.core_dir / "sing-box.exe"
@@ -1368,6 +1457,17 @@ class App(ctk.CTk):
                 ensure_singbox(self.core_dir, log_fn=self.log)
             except Exception as se:
                 self.log(f"sing-box 更新失败：{se}")
+            try:
+                self.log("更新 Mihomo ...")
+                dest = self.core_dir / "mihomo.exe"
+                if dest.exists():
+                    try:
+                        dest.unlink()
+                    except Exception:
+                        pass
+                ensure_mihomo(self.core_dir, log_fn=self.log)
+            except Exception as me:
+                self.log(f"Mihomo 更新失败：{me}")
             self.log("核心/规则文件更新完成（建议重启软件）")
             try:
                 self.xray_path = find_xray()
@@ -3361,6 +3461,143 @@ class App(ctk.CTk):
 
         return outbound
 
+
+    def node_to_mihomo_proxy(self, node: dict) -> dict:
+        """节点转 Mihomo/Clash Meta 代理项。"""
+        proto = (node.get("protocol") or "").lower()
+        name = node.get("name") or "node"
+        server = node.get("address") or ""
+        port = int(node.get("port") or 443)
+        network = (node.get("network") or "tcp").lower()
+        proxy = {"name": name, "server": server, "port": port}
+
+        if proto == "trojan":
+            proxy["type"] = "trojan"
+            proxy["password"] = node.get("password") or ""
+            proxy["sni"] = node.get("sni") or node.get("host") or server
+            proxy["skip-cert-verify"] = True
+            if network == "ws":
+                proxy["network"] = "ws"
+                proxy["ws-opts"] = {
+                    "path": node.get("path") or "/",
+                    "headers": {"Host": node.get("host") or node.get("sni") or server},
+                }
+            elif network == "grpc":
+                proxy["network"] = "grpc"
+                proxy["grpc-opts"] = {"grpc-service-name": node.get("serviceName") or ""}
+        elif proto == "vmess":
+            proxy["type"] = "vmess"
+            proxy["uuid"] = node.get("uuid") or ""
+            proxy["alterId"] = int(node.get("alterId") or 0)
+            proxy["cipher"] = node.get("security") or "auto"
+            tls_on = str(node.get("tls") or "").lower() in ("tls", "true", "1")
+            if tls_on or (node.get("security") or "").lower() == "tls":
+                proxy["tls"] = True
+                proxy["servername"] = node.get("sni") or node.get("host") or server
+                proxy["skip-cert-verify"] = True
+            if network == "ws":
+                proxy["network"] = "ws"
+                proxy["ws-opts"] = {
+                    "path": node.get("path") or "/",
+                    "headers": {"Host": node.get("host") or server},
+                }
+            elif network == "grpc":
+                proxy["network"] = "grpc"
+                proxy["grpc-opts"] = {"grpc-service-name": node.get("serviceName") or ""}
+        elif proto == "vless":
+            proxy["type"] = "vless"
+            proxy["uuid"] = node.get("uuid") or ""
+            proxy["flow"] = node.get("flow") or ""
+            sec = (node.get("security") or "").lower()
+            if sec in ("tls", "reality"):
+                proxy["tls"] = True
+                proxy["servername"] = node.get("sni") or node.get("host") or server
+                proxy["skip-cert-verify"] = True
+                if node.get("fp"):
+                    proxy["client-fingerprint"] = node.get("fp")
+                if sec == "reality" or node.get("pbk"):
+                    proxy["reality-opts"] = {
+                        "public-key": node.get("pbk") or "",
+                        "short-id": node.get("sid") or "",
+                    }
+            if network == "ws":
+                proxy["network"] = "ws"
+                proxy["ws-opts"] = {
+                    "path": node.get("path") or "/",
+                    "headers": {"Host": node.get("host") or server},
+                }
+            elif network == "grpc":
+                proxy["network"] = "grpc"
+                proxy["grpc-opts"] = {"grpc-service-name": node.get("serviceName") or ""}
+        elif proto in ("shadowsocks", "ss"):
+            proxy["type"] = "ss"
+            proxy["cipher"] = node.get("method") or "aes-256-gcm"
+            proxy["password"] = node.get("password") or ""
+        else:
+            raise ValueError(f"Mihomo 暂不支持协议：{proto}")
+        return proxy
+
+    def create_mihomo_config(self, node: dict, socks_port: int, http_port: int, enable_tun: bool) -> Path:
+        """生成 Mihomo (Clash Meta) 配置。"""
+        proxy = self.node_to_mihomo_proxy(node)
+        mode = self.proxy_mode or "规则模式"
+        if "全局" in mode:
+            clash_mode = "global"
+        elif "直连" in mode:
+            clash_mode = "direct"
+        else:
+            clash_mode = "rule"
+
+        cfg = {
+            "mixed-port": int(http_port),
+            "socks-port": int(socks_port),
+            "allow-lan": bool(getattr(self, "allow_lan", False)),
+            "mode": clash_mode,
+            "log-level": "warning",
+            "ipv6": False,
+            "external-controller": "",
+            "dns": {
+                "enable": True,
+                "enhanced-mode": "fake-ip",
+                "nameserver": ["8.8.8.8", "1.1.1.1"],
+                "fallback": ["1.0.0.1"],
+            },
+            "proxies": [proxy],
+            "proxy-groups": [
+                {"name": "PROXY", "type": "select", "proxies": [proxy["name"]]},
+            ],
+            "rules": [
+                "GEOIP,lan,DIRECT",
+                "MATCH,PROXY",
+            ],
+        }
+        if enable_tun:
+            cfg["tun"] = {
+                "enable": True,
+                "stack": "mixed",
+                "auto-route": True,
+                "auto-detect-interface": True,
+                "dns-hijack": ["any:53"],
+            }
+        path = self.core_dir / "mihomo.yaml"
+        # Mihomo 支持 JSON；用 JSON 避免依赖 PyYAML
+        path_json = self.core_dir / "mihomo.json"
+        with open(path_json, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return path_json
+
+    def stop_mihomo(self):
+        if getattr(self, "mihomo_process", None):
+            try:
+                self.mihomo_process.terminate()
+                try:
+                    self.mihomo_process.wait(timeout=2)
+                except Exception:
+                    self.mihomo_process.kill()
+            except Exception:
+                pass
+            self.mihomo_process = None
+
     def create_singbox_full_config(self, node: dict, socks_port: int, http_port: int, enable_tun: bool) -> Path:
         """sing-box 完整配置：mixed 入站 + 可选 TUN + 节点出站。"""
         outbound = self.node_to_singbox_outbound(node)
@@ -3794,6 +4031,10 @@ class App(ctk.CTk):
     def stop_proxy(self):
         try:
             self.stop_singbox()
+        except Exception:
+            pass
+        try:
+            self.stop_mihomo()
         except Exception:
             pass
         if self.xray_process:
