@@ -2786,12 +2786,12 @@ class App(ctk.CTk):
             config["inbounds"].append({
                 "tag": "tun-in",
                 "protocol": "tun",
-                "port": 0,
                 "settings": {
-                    "mtu": 1500,
+                    "name": "Mobility0",
+                    "mtu": 1400,
                     "stack": "system",
                     "auto": True,
-                    "strictRoute": False,
+                    "strictRoute": True,
                 },
                 "sniffing": {
                     "enabled": True,
@@ -2806,12 +2806,14 @@ class App(ctk.CTk):
                 pass
             # TUN 必须有可用 DNS，否则表现为完全没网
             config["dns"] = {
+                "hosts": {"dns.google": "8.8.8.8"},
                 "servers": [
                     "8.8.8.8",
                     "1.1.1.1",
                     "localhost",
                 ],
                 "queryStrategy": "UseIPv4",
+                "disableCache": False,
             }
             # 私网直连，避免把局域网也送进代理
             rules = config.get("routing", {}).get("rules") or []
@@ -3184,7 +3186,23 @@ class App(ctk.CTk):
                 stderr=log_handle,
             )
 
-            time.sleep(1.2)
+            time.sleep(1.5)
+            # TUN 启动后检查 error.log 是否有接口错误
+            if getattr(self, "tun_enabled", False):
+                try:
+                    errp = self.core_dir / "error.log"
+                    if errp.exists():
+                        err_txt = errp.read_text(encoding="utf-8", errors="ignore")
+                        low = err_txt.lower()
+                        if "failed" in low or "error" in low or "wintun" in low:
+                            # 只打最后几行，避免刷屏
+                            lines = [ln for ln in err_txt.strip().splitlines() if ln.strip()][-8:]
+                            if lines:
+                                self.log("核心日志（TUN）：")
+                                for ln in lines:
+                                    self.log("  " + ln[:200])
+                except Exception:
+                    pass
             ret = self.xray_process.poll()
             if ret is not None:
                 self.log(f"代理启动失败，退出码：{ret}")
@@ -3216,12 +3234,12 @@ class App(ctk.CTk):
             _, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # 仅 TUN，不叠加系统代理，避免双通道导致高占用与风扇狂转
-                try:
-                    self.set_system_proxy(False)
-                except Exception:
-                    pass
-                self.log("TUN 已启用（system 栈 + wintun，未叠加系统代理）")
+                # 实测：纯 TUN 在部分 Windows 上浏览器仍不通；
+                # 采用 TUN + 系统代理保证可访问，并通过降低核心优先级减轻卡顿
+                if self.set_system_proxy(True, http_port):
+                    self.log(f"TUN 已启用；系统代理 127.0.0.1:{http_port}（兼容浏览器）")
+                else:
+                    self.log("系统代理设置失败，仅依赖 TUN（若无法上网请检查管理员权限）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
@@ -3229,6 +3247,26 @@ class App(ctk.CTk):
 
             if proxy_ok:
                 self.is_running = True
+                # TUN 时降低 xray 进程优先级，减轻风扇与卡顿
+                if getattr(self, "tun_enabled", False) and self.xray_process:
+                    try:
+                        import ctypes
+                        BELOW_NORMAL = 0x00004000
+                        handle = ctypes.windll.kernel32.OpenProcess(0x0200 | 0x0400, False, self.xray_process.pid)
+                        if handle:
+                            ctypes.windll.kernel32.SetPriorityClass(handle, BELOW_NORMAL)
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                            self.log("已降低核心进程优先级以减轻卡顿")
+                    except Exception:
+                        pass
+                # TUN 时默认关闭实时统计，避免额外开销
+                if getattr(self, "tun_enabled", False):
+                    try:
+                        self.live_stats_enabled = False
+                        if hasattr(self, "live_stats_var"):
+                            self.live_stats_var.set(False)
+                    except Exception:
+                        pass
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", text_color="#16A34A"
                 ))
