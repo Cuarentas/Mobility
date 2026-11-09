@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.2"
+APP_VERSION = "0.18.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -886,9 +886,13 @@ class App(ctk.CTk):
         self.start_btn.pack(side="right", padx=4, pady=10)
 
         self.title_label = ctk.CTkLabel(
-            top, text=f"Mobility v{APP_VERSION}", font=("Microsoft YaHei UI", 18, "bold"),
+            top, text="Mobility", font=("Microsoft YaHei UI", 18, "bold"),
             text_color=("#2563EB", "#60A5FA"))
-        self.title_label.pack(side="left", padx=16)
+        self.title_label.pack(side="left", padx=(16, 4))
+        self.app_ver_label = ctk.CTkLabel(
+            top, text=f"v{APP_VERSION}", font=("Microsoft YaHei UI", 12),
+            text_color=("gray40", "gray60"))
+        self.app_ver_label.pack(side="left", padx=(0, 10))
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
         self.status_label.pack(side="left", padx=8)
         self.current_label = ctk.CTkLabel(top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
@@ -1086,26 +1090,8 @@ class App(ctk.CTk):
         self.loglevel_combo.set("警告")
         self.loglevel_combo.pack(fill="x", padx=8)
 
-        # 按协议映射核心（类似 v2rayN）
-        ctk.CTkLabel(right, text="核心类型（按协议）", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=8, pady=(10, 4))
+        # 核心类型改为二级对话框
         self.core_proto_combos = {}
-        proto_labels = {
-            "vmess": "VMess", "vless": "VLESS", "trojan": "Trojan",
-            "shadowsocks": "Shadowsocks", "socks": "Socks", "http": "HTTP",
-        }
-        for proto in CORE_PROTOCOLS:
-            row = ctk.CTkFrame(right, fg_color="transparent")
-            row.pack(fill="x", padx=8, pady=1)
-            ctk.CTkLabel(row, text=proto_labels.get(proto, proto), width=90, anchor="w",
-                         font=("Microsoft YaHei UI", 11)).pack(side="left")
-            cb = ctk.CTkComboBox(
-                row, width=100, height=26, values=CORE_OPTIONS, state="readonly",
-                font=("Microsoft YaHei UI", 11),
-                command=lambda v, p=proto: self.on_core_map_change(p, v),
-            )
-            cb.set((getattr(self, "core_map", {}) or {}).get(proto, "Xray"))
-            cb.pack(side="right")
-            self.core_proto_combos[proto] = cb
 
         # 域名分流（精简）
         ctk.CTkLabel(right, text="直连域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 0))
@@ -1130,8 +1116,10 @@ class App(ctk.CTk):
         btn_box.grid_columnconfigure(0, weight=1, uniform="btn")
         btn_box.grid_columnconfigure(1, weight=1, uniform="btn")
 
+        self.core_type_btn = ctk.CTkButton(btn_box, text="核心类型设置", height=bh, command=self.open_core_type_dialog)
+        self.core_type_btn.grid(row=0, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.hotkey_setting_btn = ctk.CTkButton(btn_box, text="热键设置", height=bh, command=self.open_hotkey_dialog)
-        self.hotkey_setting_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
+        self.hotkey_setting_btn.grid(row=0, column=1, sticky="ew", pady=3, padx=(3, 0))
 
         self.clear_log_btn = ctk.CTkButton(btn_box, text="清空日志", height=bh, command=self.clear_log)
         self.clear_log_btn.grid(row=1, column=0, sticky="ew", pady=3, padx=(0, 3))
@@ -1267,6 +1255,95 @@ class App(ctk.CTk):
                     self.version_label.configure(text="")
             except Exception:
                 pass
+
+    def open_core_type_dialog(self):
+        """二级窗口：按协议映射核心（类似 v2rayN）。"""
+        win = ctk.CTkToplevel(self)
+        win.title("核心类型设置")
+        win.geometry("420x420")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(win, text="核心类型设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 8)
+        )
+        ctk.CTkLabel(
+            win,
+            text="为每种协议指定默认核心，启动时按节点协议自动选用。",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=20)
+
+        proto_labels = {
+            "vmess": "VMess",
+            "vless": "VLESS",
+            "trojan": "Trojan",
+            "shadowsocks": "Shadowsocks",
+            "socks": "Socks",
+            "http": "HTTP",
+        }
+        combos = {}
+        if not getattr(self, "core_map", None):
+            self.core_map = dict(DEFAULT_CORE_MAP)
+
+        for proto in CORE_PROTOCOLS:
+            row = ctk.CTkFrame(form, fg_color="transparent")
+            row.pack(fill="x", pady=5)
+            ctk.CTkLabel(
+                row, text=proto_labels.get(proto, proto), width=110, anchor="w",
+                font=("Microsoft YaHei UI", 12),
+            ).pack(side="left")
+            cb = ctk.CTkComboBox(
+                row, width=160, height=30, values=CORE_OPTIONS, state="readonly",
+                font=("Microsoft YaHei UI", 12),
+            )
+            cb.set(self.core_map.get(proto, "Xray"))
+            cb.pack(side="right")
+            combos[proto] = cb
+
+        self.core_proto_combos = combos
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
+
+        def do_reset():
+            for proto, cb in combos.items():
+                cb.set("Xray")
+
+        def do_ok():
+            if not getattr(self, "core_map", None):
+                self.core_map = dict(DEFAULT_CORE_MAP)
+            for proto, cb in combos.items():
+                val = (cb.get() or "Xray").strip()
+                self.core_map[proto] = val if val in CORE_OPTIONS else "Xray"
+            self.save_settings()
+            try:
+                self.refresh_version_label()
+            except Exception:
+                pass
+            self.log("核心类型映射已保存")
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        def do_cancel():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        ctk.CTkButton(btn_row, text="重置", width=90, command=do_reset).pack(side="left")
+        ctk.CTkButton(btn_row, text="取消", width=90, command=do_cancel).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="确定", width=90, fg_color="#2563EB", command=do_ok).pack(side="right")
 
     def on_core_map_change(self, proto: str, value=None):
         if not getattr(self, "core_map", None):
