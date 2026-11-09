@@ -162,279 +162,28 @@ jobs:
           $zipInfo = Get-Item $zipPath
           Write-Host "打包完成: $($zipInfo.Name)  大小: $([math]::Round($zipInfo.Length / 1MB, 2)) MB"
 
+
       - name: Update README to match current package
+        id: readme
         shell: pwsh
         run: |
-          $readme = @"
-          <div align="center">
-
-          # Mobility
-
-          **Windows 便携版 · 多核心代理客户端**
-
-          [![Release](https://img.shields.io/github/v/release/OWNER/REPO?style=flat-square)](../../releases)
-          [![Downloads](https://img.shields.io/github/downloads/OWNER/REPO/total?style=flat-square)](../../releases)
-          [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-
-          解压即用 · 多核心内置 · 订阅测速 · 系统代理 / TUN
-
-          [下载最新版](../../releases/latest) · [提交问题](../../issues/new/choose) · [贡献指南](CONTRIBUTING.md)
-
-          </div>
-
-          ---
-
-          ## 目录
-
-          - [简介](#简介)
-          - [功能特性](#功能特性)
-          - [内置组件](#内置组件)
-          - [快速开始](#快速开始)
-          - [界面与使用说明](#界面与使用说明)
-          - [核心与协议映射](#核心与协议映射)
-          - [代理模式与路由](#代理模式与路由)
-          - [TUN 模式](#tun-模式)
-          - [订阅与节点](#订阅与节点)
-          - [目录结构](#目录结构)
-          - [系统要求](#系统要求)
-          - [常见问题](#常见问题)
-          - [构建与发布](#构建与发布)
-          - [反馈与贡献](#反馈与贡献)
-          - [免责声明](#免责声明)
-
-          ---
-
-          ## 简介
-
-          **Mobility** 是面向 Windows 的绿色便携代理客户端，目标是在尽量少的配置步骤下完成：
-
-          1. 导入订阅 / 节点  
-          2. 测速并选择可用节点  
-          3. 一键启动本地代理（系统代理或 TUN）  
-
-          构建流水线会在打包阶段自动下载并写入 **Xray-core**、**sing-box**、**Mihomo** 以及 **geoip / geosite / wintun**，用户无需再单独寻找核心文件。
-
-          ---
-
-          ## 功能特性
-
-          ### 代理与核心
-
-          | 能力 | 说明 |
-          | --- | --- |
-          | 多核心 | Xray / sing-box / Mihomo，可按协议分别指定 |
-          | 协议 | VMess、VLESS、Trojan、Shadowsocks 等 |
-          | 入站 | 本地 SOCKS / HTTP（端口可配置） |
-          | 系统代理 | 启动时写入、停止时还原 Windows 代理设置 |
-          | TUN | 系统级流量接管（需管理员权限） |
-          | 路由模式 | 规则模式 / 全局模式 / 直连模式 |
-          | 自定义域名 | 直连域名、代理域名列表（支持简单通配） |
-
-          ### 订阅与节点
-
-          | 能力 | 说明 |
-          | --- | --- |
-          | 多订阅 | 添加、删除、重命名、全部更新 |
-          | 导入 | 订阅 URL、剪贴板节点、屏幕扫码、生成节点二维码 |
-          | 测速 | 全部测速 / 筛选测速，并发路数可调 |
-          | 选最快 | 按延迟自动选中最优节点 |
-          | 连通性 | 节点 TCP + 可选经代理访问常见站点 |
-          | 搜索 | 按名称 / 地址 / 协议过滤节点列表 |
-          | 持久化 | 订阅与节点本地保存，重启后恢复 |
-
-          ### 体验与系统集成
-
-          | 能力 | 说明 |
-          | --- | --- |
-          | 托盘 | 关闭到托盘、托盘图标状态 |
-          | 热键 | 显示/隐藏窗口、启停代理（可自定义） |
-          | 开机自启 / 启动后连接 / 启动后最小化 | 设置面板开关 |
-          | 主题与字体 | 外观主题、界面字体大小 |
-          | 日志 | 首页运行日志、过滤、复制、清空、自动滚动 |
-          | 更新 | 检查软件更新；可手动更新核心文件 |
-
-          ---
-
-          ## 内置组件
-
-          每次 GitHub Actions 构建会从官方 Release 拉取并打入安装包：
-
-          | 文件 | 来源与用途 |
-          | --- | --- |
-          | `core/xray.exe` | [XTLS/Xray-core](https://github.com/XTLS/Xray-core) — 默认协议出站 |
-          | `core/sing-box.exe` | [SagerNet/sing-box](https://github.com/SagerNet/sing-box) — TUN / 完整出站 |
-          | `core/mihomo.exe` | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) — Clash Meta 兼容 |
-          | `core/geoip.dat` | [v2fly/geoip](https://github.com/v2fly/geoip) — IP 分流数据 |
-          | `core/geosite.dat` | [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) — 域名分流数据 |
-          | `core/wintun.dll` | WireGuard 用户态驱动 — Windows TUN |
-
-          > 请勿单独移动 `Mobility.exe` 而丢掉 `core` 目录，否则无法启动核心。
-
-          ---
-
-          ## 快速开始
-
-          1. 打开 [Releases](../../releases) ，下载 **Mobility.zip**  
-          2. 解压到任意目录（建议路径中避免过于特殊的权限限制）  
-          3. 双击运行 `Mobility.exe`  
-          4. 在订阅栏粘贴订阅地址 → **加载**，或使用剪贴板 / 扫码导入节点  
-          5. （可选）**测速全部** → **选最快**  
-          6. 点击 **启动**；需要全局接管时勾选 **TUN 模式**（管理员运行）  
-
-          ---
-
-          ## 界面与使用说明
-
-          - **顶部**：运行状态、当前节点摘要、软件版本与**当前核心版本**、启动 / 停止  
-          - **订阅栏**：多订阅切换、URL、加载 / 添加 / 删除 / 重命名 / 更新全部  
-          - **工具栏**：测速、选最快、复制节点、连通性；右侧为并发与代理模式  
-          - **节点列表**：搜索、选中高亮；右侧为设置（托盘、自启、端口、协议核心映射等）  
-          - **运行日志**：实时输出；支持过滤、复制、清空、自动滚动  
-
-          标题栏版本示例：
-
-          - `v0.18.x | Xray 26.x`  
-          - `v0.18.x | sing-box 1.x`  
-          - `v0.18.x | Mihomo 1.x`  
-
-          会随**当前节点协议所映射的核心**变化。
-
-          ---
-
-          ## 核心与协议映射
-
-          在右侧 **设置 → 核心类型（按协议）** 中，可为下列协议分别选择核心：
-
-          - VMess  
-          - VLESS  
-          - Trojan  
-          - Shadowsocks  
-          - Socks  
-          - HTTP  
-
-          可选核心：**Xray** / **sing-box** / **Mihomo**。
-
-          启动时逻辑：
-
-          1. 读取当前选中节点的协议  
-          2. 查询该协议映射的核心  
-          3. 生成对应配置并拉起进程  
-          4. 标题栏刷新为该核心的版本号  
-
-          ---
-
-          ## 代理模式与路由
-
-          | 模式 | 行为概要 |
-          | --- | --- |
-          | 规则模式 | 按路由规则分流（含自定义直连/代理域名，结合 geo 数据） |
-          | 全局模式 | 尽可能将流量送入代理出站 |
-          | 直连模式 | 不走代理出站（便于排查） |
-
-          可在设置中维护 **直连域名** 与 **代理域名** 列表，修改后需重新启动代理生效。
-
-          ---
-
-          ## TUN 模式
-
-          - 勾选 **TUN 模式** 并启动后，尝试通过虚拟网卡接管系统流量  
-          - **需要管理员权限**；包内已带 `wintun.dll`  
-          - 为兼容浏览器，仍可能同时设置系统代理  
-          - 若仅 TUN 异常，可先关闭 TUN，仅使用系统代理排查节点与核心  
-
-          ---
-
-          ## 订阅与节点
-
-          - **多订阅**：彼此独立管理，支持合并去重策略  
-          - **更新**：手动「更新全部」，或设置定时/自定义间隔  
-          - **测速并发**：界面可选 8～256 路（过大可能受网络与机器性能限制）  
-          - **二维码**：支持扫码导入与为当前节点生成二维码便于手机扫描  
-
-          ---
-
-          ## 目录结构
-
-          ```text
-          Mobility/
-          ├── Mobility.exe          # 主程序
-          ├── core/
-          │   ├── xray.exe
-          │   ├── sing-box.exe
-          │   ├── mihomo.exe
-          │   ├── geoip.dat
-          │   ├── geosite.dat
-          │   └── wintun.dll
-          └── （运行后）配置、订阅缓存、日志等
-          ```
-
-          ---
-
-          ## 系统要求
-
-          - Windows 10 / 11（**64 位**）  
-          - 使用 TUN 时：管理员权限  
-          - 建议将安装目录加入杀毒软件白名单，避免核心被隔离  
-
-          ---
-
-          ## 常见问题
-
-          **Q: 启动后浏览器无法上网？**  
-          A: 确认节点延迟与连通性；尝试更换节点或代理模式；查看运行日志中的核心报错。
-
-          **Q: TUN 无效或提示 wintun？**  
-          A: 以管理员运行；确认 `core/wintun.dll` 存在且未被删除。
-
-          **Q: 标题栏一直显示某个核心？**  
-          A: 显示的是**当前节点协议所映射的核心**；请到设置中修改对应协议的映射。
-
-          **Q: 能否只更新某一个核心？**  
-          A: 可使用设置中的「更新核心」；亦可用官方发布包中的单文件替换 `core` 目录下对应 exe。
-
-          ---
-
-          ## 构建与发布
-
-          本仓库通过 **GitHub Actions + PyInstaller** 在 `windows-latest` 上构建：
-
-          1. 安装依赖并打包 `Mobility.exe`  
-          2. 下载 Xray / sing-box / Mihomo / geo 数据 / wintun  
-          3. 组装为 `Mobility.zip`  
-          4. 更新 README 并创建 GitHub Release  
-
-          手动触发：Actions → **Build Portable** → **Run workflow**，填写版本号（如 `0.18.1`）。
-
-          ---
-
-          ## 反馈与贡献
-
-          - 缺陷与需求：请使用 [Issue 模板](../../issues/new/choose)  
-          - 代码贡献：请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 后提交 PR  
-
-          ---
-
-          ## 免责声明
-
-          本软件仅供学习、研究网络与代理技术使用。请确保你的使用行为符合所在地法律法规以及相关服务条款。作者不对任何滥用或由此产生的后果承担责任。
-"@
-          $readme = ($readme -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
-          $readme = $readme.Trim() + "`n"
+          $b64 = "PGRpdiBhbGlnbj0iY2VudGVyIj4KCiMgTW9iaWxpdHkKCioqV2luZG93cyDkvr/mkLrniYggwrcg5aSa5qC45b+D5Luj55CG5a6i5oi356uvKioKClshW1JlbGVhc2VdKGh0dHBzOi8vaW1nLnNoaWVsZHMuaW8vZ2l0aHViL3YvcmVsZWFzZS9DdWFyZW50YXMvTW9iaWxpdHk/c3R5bGU9ZmxhdC1zcXVhcmUpXSguLi8uLi9yZWxlYXNlcykKWyFbRG93bmxvYWRzXShodHRwczovL2ltZy5zaGllbGRzLmlvL2dpdGh1Yi9kb3dubG9hZHMvQ3VhcmVudGFzL01vYmlsaXR5L3RvdGFsP3N0eWxlPWZsYXQtc3F1YXJlKV0oLi4vLi4vcmVsZWFzZXMpClshW0xpY2Vuc2VdKGh0dHBzOi8vaW1nLnNoaWVsZHMuaW8vYmFkZ2UvbGljZW5zZS1NSVQtYmx1ZT9zdHlsZT1mbGF0LXNxdWFyZSldKExJQ0VOU0UpCgrop6PljovljbPnlKggwrcg5aSa5qC45b+D5YaF572uIMK3IOiuoumYhea1i+mAnyDCtyDns7vnu5/ku6PnkIYgLyBUVU4KClvkuIvovb3mnIDmlrDniYhdKC4uLy4uL3JlbGVhc2VzL2xhdGVzdCkgwrcgW+aPkOS6pOmXrumimF0oLi4vLi4vaXNzdWVzL25ldy9jaG9vc2UpIMK3IFvotKHnjK7mjIfljZddKENPTlRSSUJVVElORy5tZCkKCjwvZGl2PgoKLS0tCgojIyDnm67lvZUKCi0gW+eugOS7i10oI+eugOS7iykKLSBb5Yqf6IO954m55oCnXSgj5Yqf6IO954m55oCnKQotIFvlhoXnva7nu4Tku7ZdKCPlhoXnva7nu4Tku7YpCi0gW+W/q+mAn+W8gOWni10oI+W/q+mAn+W8gOWniykKLSBb55WM6Z2i5LiO5L2/55So6K+05piOXSgj55WM6Z2i5LiO5L2/55So6K+05piOKQotIFvmoLjlv4PkuI7ljY/orq7mmKDlsIRdKCPmoLjlv4PkuI7ljY/orq7mmKDlsIQpCi0gW+S7o+eQhuaooeW8j+S4jui3r+eUsV0oI+S7o+eQhuaooeW8j+S4jui3r+eUsSkKLSBbVFVOIOaooeW8j10oI3R1bi3mqKHlvI8pCi0gW+iuoumYheS4juiKgueCuV0oI+iuoumYheS4juiKgueCuSkKLSBb55uu5b2V57uT5p6EXSgj55uu5b2V57uT5p6EKQotIFvns7vnu5/opoHmsYJdKCPns7vnu5/opoHmsYIpCi0gW+W4uOingemXrumimF0oI+W4uOingemXrumimCkKLSBb5p6E5bu65LiO5Y+R5biDXSgj5p6E5bu65LiO5Y+R5biDKQotIFvlj43ppojkuI7otKHnjK5dKCPlj43ppojkuI7otKHnjK4pCi0gW+WFjei0o+WjsOaYjl0oI+WFjei0o+WjsOaYjikKCi0tLQoKIyMg566A5LuLCgoqKk1vYmlsaXR5Kiog5piv6Z2i5ZCRIFdpbmRvd3Mg55qE57u/6Imy5L6/5pC65Luj55CG5a6i5oi356uv77yM55uu5qCH5piv5Zyo5bC96YeP5bCR55qE6YWN572u5q2l6aqk5LiL5a6M5oiQ77yaCgoxLiDlr7zlhaXorqLpmIUgLyDoioLngrkgIAoyLiDmtYvpgJ/lubbpgInmi6nlj6/nlKjoioLngrkgIAozLiDkuIDplK7lkK/liqjmnKzlnLDku6PnkIbvvIjns7vnu5/ku6PnkIbmiJYgVFVO77yJICAKCuaehOW7uua1geawtOe6v+S8muWcqOaJk+WMhemYtuauteiHquWKqOS4i+i9veW5tuWGmeWFpSAqKlhyYXktY29yZSoq44CBKipzaW5nLWJveCoq44CBKipNaWhvbW8qKiDku6Xlj4ogKipnZW9pcCAvIGdlb3NpdGUgLyB3aW50dW4qKu+8jOeUqOaIt+aXoOmcgOWGjeWNleeLrOWvu+aJvuaguOW/g+aWh+S7tuOAggoKLS0tCgojIyDlip/og73nibnmgKcKCiMjIyDku6PnkIbkuI7moLjlv4MKCnwg6IO95YqbIHwg6K+05piOIHwKfCAtLS0gfCAtLS0gfAp8IOWkmuaguOW/gyB8IFhyYXkgLyBzaW5nLWJveCAvIE1paG9tb++8jOWPr+aMieWNj+iuruWIhuWIq+aMh+WumiB8Cnwg5Y2P6K6uIHwgVk1lc3PjgIFWTEVTU+OAgVRyb2phbuOAgVNoYWRvd3NvY2tzIOetiSB8Cnwg5YWl56uZIHwg5pys5ZywIFNPQ0tTIC8gSFRUUO+8iOerr+WPo+WPr+mFjee9ru+8iSB8Cnwg57O757uf5Luj55CGIHwg5ZCv5Yqo5pe25YaZ5YWl44CB5YGc5q2i5pe26L+Y5Y6fIFdpbmRvd3Mg5Luj55CG6K6+572uIHwKfCBUVU4gfCDns7vnu5/nuqfmtYHph4/mjqXnrqHvvIjpnIDnrqHnkIblkZjmnYPpmZDvvIkgfAp8IOi3r+eUseaooeW8jyB8IOinhOWImeaooeW8jyAvIOWFqOWxgOaooeW8jyAvIOebtOi/nuaooeW8jyB8Cnwg6Ieq5a6a5LmJ5Z+f5ZCNIHwg55u06L+e5Z+f5ZCN44CB5Luj55CG5Z+f5ZCN5YiX6KGo77yI5pSv5oyB566A5Y2V6YCa6YWN77yJIHwKCiMjIyDorqLpmIXkuI7oioLngrkKCnwg6IO95YqbIHwg6K+05piOIHwKfCAtLS0gfCAtLS0gfAp8IOWkmuiuoumYhSB8IOa3u+WKoOOAgeWIoOmZpOOAgemHjeWRveWQjeOAgeWFqOmDqOabtOaWsCB8Cnwg5a+85YWlIHwg6K6i6ZiFIFVSTOOAgeWJqui0tOadv+iKgueCueOAgeWxj+W5leaJq+eggeOAgeeUn+aIkOiKgueCueS6jOe7tOeggSB8Cnwg5rWL6YCfIHwg5YWo6YOo5rWL6YCfIC8g562b6YCJ5rWL6YCf77yM5bm25Y+R6Lev5pWw5Y+v6LCDIHwKfCDpgInmnIDlv6sgfCDmjInlu7bov5/oh6rliqjpgInkuK3mnIDkvJjoioLngrkgfAp8IOi/numAmuaApyB8IOiKgueCuSBUQ1AgKyDlj6/pgInnu4/ku6PnkIborr/pl67luLjop4Hnq5nngrkgfAp8IOaQnOe0oiB8IOaMieWQjeensCAvIOWcsOWdgCAvIOWNj+iurui/h+a7pOiKgueCueWIl+ihqCB8Cnwg5oyB5LmF5YyWIHwg6K6i6ZiF5LiO6IqC54K55pys5Zyw5L+d5a2Y77yM6YeN5ZCv5ZCO5oGi5aSNIHwKCiMjIyDkvZPpqozkuI7ns7vnu5/pm4bmiJAKCnwg6IO95YqbIHwg6K+05piOIHwKfCAtLS0gfCAtLS0gfAp8IOaJmOebmCB8IOWFs+mXreWIsOaJmOebmOOAgeaJmOebmOWbvuagh+eKtuaAgSB8Cnwg54Ot6ZSuIHwg5pi+56S6L+makOiXj+eql+WPo+OAgeWQr+WBnOS7o+eQhu+8iOWPr+iHquWumuS5ie+8iSB8Cnwg5byA5py66Ieq5ZCvIC8g5ZCv5Yqo5ZCO6L+e5o6lIC8g5ZCv5Yqo5ZCO5pyA5bCP5YyWIHwg6K6+572u6Z2i5p2/5byA5YWzIHwKfCDkuLvpopjkuI7lrZfkvZMgfCDlpJbop4LkuLvpopjjgIHnlYzpnaLlrZfkvZPlpKflsI8gfAp8IOaXpeW/lyB8IOmmlumhtei/kOihjOaXpeW/l+OAgei/h+a7pOOAgeWkjeWItuOAgea4heepuuOAgeiHquWKqOa7muWKqCB8Cnwg5pu05pawIHwg5qOA5p+l6L2v5Lu25pu05paw77yb5Y+v5omL5Yqo5pu05paw5qC45b+D5paH5Lu2IHwKCi0tLQoKIyMg5YaF572u57uE5Lu2Cgrmr4/mrKEgR2l0SHViIEFjdGlvbnMg5p6E5bu65Lya5LuO5a6Y5pa5IFJlbGVhc2Ug5ouJ5Y+W5bm25omT5YWl5a6J6KOF5YyF77yaCgp8IOaWh+S7tiB8IOadpea6kOS4jueUqOmAlCB8CnwgLS0tIHwgLS0tIHwKfCBgY29yZS94cmF5LmV4ZWAgfCBbWFRMUy9YcmF5LWNvcmVdKGh0dHBzOi8vZ2l0aHViLmNvbS9YVExTL1hyYXktY29yZSkg4oCUIOm7mOiupOWNj+iuruWHuuermSB8CnwgYGNvcmUvc2luZy1ib3guZXhlYCB8IFtTYWdlck5ldC9zaW5nLWJveF0oaHR0cHM6Ly9naXRodWIuY29tL1NhZ2VyTmV0L3NpbmctYm94KSDigJQgVFVOIC8g5a6M5pW05Ye656uZIHwKfCBgY29yZS9taWhvbW8uZXhlYCB8IFtNZXRhQ3ViZVgvbWlob21vXShodHRwczovL2dpdGh1Yi5jb20vTWV0YUN1YmVYL21paG9tbykg4oCUIENsYXNoIE1ldGEg5YW85a65IHwKfCBgY29yZS9nZW9pcC5kYXRgIHwgW3YyZmx5L2dlb2lwXShodHRwczovL2dpdGh1Yi5jb20vdjJmbHkvZ2VvaXApIOKAlCBJUCDliIbmtYHmlbDmja4gfAp8IGBjb3JlL2dlb3NpdGUuZGF0YCB8IFt2MmZseS9kb21haW4tbGlzdC1jb21tdW5pdHldKGh0dHBzOi8vZ2l0aHViLmNvbS92MmZseS9kb21haW4tbGlzdC1jb21tdW5pdHkpIOKAlCDln5/lkI3liIbmtYHmlbDmja4gfAp8IGBjb3JlL3dpbnR1bi5kbGxgIHwgV2lyZUd1YXJkIOeUqOaIt+aAgempseWKqCDigJQgV2luZG93cyBUVU4gfAoKPiDor7fli7/ljZXni6znp7vliqggYE1vYmlsaXR5LmV4ZWAg6ICM5Lii5o6JIGBjb3JlYCDnm67lvZXvvIzlkKbliJnml6Dms5XlkK/liqjmoLjlv4PjgIIKCi0tLQoKIyMg5b+r6YCf5byA5aeLCgoxLiDmiZPlvIAgW1JlbGVhc2VzXSguLi8uLi9yZWxlYXNlcykg77yM5LiL6L29ICoqTW9iaWxpdHkuemlwKiogIAoyLiDop6PljovliLDku7vmhI/nm67lvZXvvIjlu7rorq7ot6/lvoTkuK3pgb/lhY3ov4fkuo7nibnmrornmoTmnYPpmZDpmZDliLbvvIkgIAozLiDlj4zlh7vov5DooYwgYE1vYmlsaXR5LmV4ZWAgIAo0LiDlnKjorqLpmIXmoI/nspjotLTorqLpmIXlnLDlnYAg4oaSICoq5Yqg6L29KirvvIzmiJbkvb/nlKjliarotLTmnb8gLyDmiavnoIHlr7zlhaXoioLngrkgIAo1LiDvvIjlj6/pgInvvIkqKua1i+mAn+WFqOmDqCoqIOKGkiAqKumAieacgOW/qyoqICAKNi4g54K55Ye7ICoq5ZCv5YqoKirvvJvpnIDopoHlhajlsYDmjqXnrqHml7bli77pgIkgKipUVU4g5qih5byPKirvvIjnrqHnkIblkZjov5DooYzvvIkgIAoKLS0tCgojIyDnlYzpnaLkuI7kvb/nlKjor7TmmI4KCi0gKirpobbpg6gqKu+8mui/kOihjOeKtuaAgeOAgeW9k+WJjeiKgueCueaRmOimgeOAgei9r+S7tueJiOacrOS4jioq5b2T5YmN5qC45b+D54mI5pysKirjgIHlkK/liqggLyDlgZzmraIgIAotICoq6K6i6ZiF5qCPKirvvJrlpJrorqLpmIXliIfmjaLjgIFVUkzjgIHliqDovb0gLyDmt7vliqAgLyDliKDpmaQgLyDph43lkb3lkI0gLyDmm7TmlrDlhajpg6ggIAotICoq5bel5YW35qCPKirvvJrmtYvpgJ/jgIHpgInmnIDlv6vjgIHlpI3liLboioLngrnjgIHov57pgJrmgKfvvJvlj7PkvqfkuLrlubblj5HkuI7ku6PnkIbmqKHlvI8gIAotICoq6IqC54K55YiX6KGoKirvvJrmkJzntKLjgIHpgInkuK3pq5jkuq7vvJvlj7PkvqfkuLrorr7nva7vvIjmiZjnm5jjgIHoh6rlkK/jgIHnq6/lj6PjgIHljY/orq7moLjlv4PmmKDlsITnrYnvvIkgIAotICoq6L+Q6KGM5pel5b+XKirvvJrlrp7ml7bovpPlh7rvvJvmlK/mjIHov4fmu6TjgIHlpI3liLbjgIHmuIXnqbrjgIHoh6rliqjmu5rliqggIAoK5qCH6aKY5qCP54mI5pys56S65L6L77yaCgotIGB2MC4xOC54IHwgWHJheSAyNi54YCAgCi0gYHYwLjE4LnggfCBzaW5nLWJveCAxLnhgICAKLSBgdjAuMTgueCB8IE1paG9tbyAxLnhgICAKCuS8mumajyoq5b2T5YmN6IqC54K55Y2P6K6u5omA5pig5bCE55qE5qC45b+DKirlj5jljJbjgIIKCi0tLQoKIyMg5qC45b+D5LiO5Y2P6K6u5pig5bCECgrlnKjlj7PkvqcgKirorr7nva4g4oaSIOaguOW/g+exu+Wei++8iOaMieWNj+iuru+8iSoqIOS4re+8jOWPr+S4uuS4i+WIl+WNj+iuruWIhuWIq+mAieaLqeaguOW/g++8mgoKLSBWTWVzcyAgCi0gVkxFU1MgIAotIFRyb2phbiAgCi0gU2hhZG93c29ja3MgIAotIFNvY2tzICAKLSBIVFRQICAKCuWPr+mAieaguOW/g++8mioqWHJheSoqIC8gKipzaW5nLWJveCoqIC8gKipNaWhvbW8qKuOAggoK5ZCv5Yqo5pe26YC76L6R77yaCgoxLiDor7vlj5blvZPliY3pgInkuK3oioLngrnnmoTljY/orq4gIAoyLiDmn6Xor6Lor6XljY/orq7mmKDlsITnmoTmoLjlv4MgIAozLiDnlJ/miJDlr7nlupTphY3nva7lubbmi4notbfov5vnqIsgIAo0LiDmoIfpopjmoI/liLfmlrDkuLror6XmoLjlv4PnmoTniYjmnKzlj7cgIAoKLS0tCgojIyDku6PnkIbmqKHlvI/kuI7ot6/nlLEKCnwg5qih5byPIHwg6KGM5Li65qaC6KaBIHwKfCAtLS0gfCAtLS0gfAp8IOinhOWImeaooeW8jyB8IOaMiei3r+eUseinhOWImeWIhua1ge+8iOWQq+iHquWumuS5ieebtOi/ni/ku6PnkIbln5/lkI3vvIznu5PlkIggZ2VvIOaVsOaNru+8iSB8Cnwg5YWo5bGA5qih5byPIHwg5bC95Y+v6IO95bCG5rWB6YeP6YCB5YWl5Luj55CG5Ye656uZIHwKfCDnm7Tov57mqKHlvI8gfCDkuI3otbDku6PnkIblh7rnq5nvvIjkvr/kuo7mjpLmn6XvvIkgfAoK5Y+v5Zyo6K6+572u5Lit57u05oqkICoq55u06L+e5Z+f5ZCNKiog5LiOICoq5Luj55CG5Z+f5ZCNKiog5YiX6KGo77yM5L+u5pS55ZCO6ZyA6YeN5paw5ZCv5Yqo5Luj55CG55Sf5pWI44CCCgotLS0KCiMjIFRVTiDmqKHlvI8KCi0g5Yu+6YCJICoqVFVOIOaooeW8jyoqIOW5tuWQr+WKqOWQju+8jOWwneivlemAmui/h+iZmuaLn+e9keWNoeaOpeeuoeezu+e7n+a1gemHjyAgCi0gKirpnIDopoHnrqHnkIblkZjmnYPpmZAqKu+8m+WMheWGheW3suW4piBgd2ludHVuLmRsbGAgIAotIOS4uuWFvOWuuea1j+iniOWZqO+8jOS7jeWPr+iDveWQjOaXtuiuvue9ruezu+e7n+S7o+eQhiAgCi0g6Iul5LuFIFRVTiDlvILluLjvvIzlj6/lhYjlhbPpl60gVFVO77yM5LuF5L2/55So57O757uf5Luj55CG5o6S5p+l6IqC54K55LiO5qC45b+DICAKCi0tLQoKIyMg6K6i6ZiF5LiO6IqC54K5CgotICoq5aSa6K6i6ZiFKirvvJrlvbzmraTni6znq4vnrqHnkIbvvIzmlK/mjIHlkIjlubbljrvph43nrZbnlaUgIAotICoq5pu05pawKirvvJrmiYvliqjjgIzmm7TmlrDlhajpg6jjgI3vvIzmiJborr7nva7lrprml7Yv6Ieq5a6a5LmJ6Ze06ZqUICAKLSAqKua1i+mAn+W5tuWPkSoq77ya55WM6Z2i5Y+v6YCJIDjvvZ4yNTYg6Lev77yI6L+H5aSn5Y+v6IO95Y+X572R57uc5LiO5py65Zmo5oCn6IO96ZmQ5Yi277yJICAKLSAqKuS6jOe7tOeggSoq77ya5pSv5oyB5omr56CB5a+85YWl5LiO5Li65b2T5YmN6IqC54K555Sf5oiQ5LqM57u056CB5L6/5LqO5omL5py65omr5o+PICAKCi0tLQoKIyMg55uu5b2V57uT5p6ECgpgYGB0ZXh0Ck1vYmlsaXR5LwrilJzilIDilIAgTW9iaWxpdHkuZXhlICAgICAgICAgICMg5Li756iL5bqPCuKUnOKUgOKUgCBjb3JlLwrilIIgICDilJzilIDilIAgeHJheS5leGUK4pSCICAg4pSc4pSA4pSAIHNpbmctYm94LmV4ZQrilIIgICDilJzilIDilIAgbWlob21vLmV4ZQrilIIgICDilJzilIDilIAgZ2VvaXAuZGF0CuKUgiAgIOKUnOKUgOKUgCBnZW9zaXRlLmRhdArilIIgICDilJTilIDilIAgd2ludHVuLmRsbArilJTilIDilIAg77yI6L+Q6KGM5ZCO77yJ6YWN572u44CB6K6i6ZiF57yT5a2Y44CB5pel5b+X562JCmBgYAoKLS0tCgojIyDns7vnu5/opoHmsYIKCi0gV2luZG93cyAxMCAvIDEx77yIKio2NCDkvY0qKu+8iSAgCi0g5L2/55SoIFRVTiDml7bvvJrnrqHnkIblkZjmnYPpmZAgIAotIOW7uuiuruWwhuWuieijheebruW9leWKoOWFpeadgOavkui9r+S7tueZveWQjeWNle+8jOmBv+WFjeaguOW/g+iiq+malOemuyAgCgotLS0KCiMjIOW4uOingemXrumimAoKKipROiDlkK/liqjlkI7mtY/op4jlmajml6Dms5XkuIrnvZHvvJ8qKiAgCkE6IOehruiupOiKgueCueW7tui/n+S4jui/numAmuaAp++8m+WwneivleabtOaNouiKgueCueaIluS7o+eQhuaooeW8j++8m+afpeeci+i/kOihjOaXpeW/l+S4reeahOaguOW/g+aKpemUmeOAggoKKipROiBUVU4g5peg5pWI5oiW5o+Q56S6IHdpbnR1bu+8nyoqICAKQTog5Lul566h55CG5ZGY6L+Q6KGM77yb56Gu6K6kIGBjb3JlL3dpbnR1bi5kbGxgIOWtmOWcqOS4lOacquiiq+WIoOmZpOOAggoKKipROiDmoIfpopjmoI/kuIDnm7TmmL7npLrmn5DkuKrmoLjlv4PvvJ8qKiAgCkE6IOaYvuekuueahOaYryoq5b2T5YmN6IqC54K55Y2P6K6u5omA5pig5bCE55qE5qC45b+DKirvvJvor7fliLDorr7nva7kuK3kv67mlLnlr7nlupTljY/orq7nmoTmmKDlsITjgIIKCioqUTog6IO95ZCm5Y+q5pu05paw5p+Q5LiA5Liq5qC45b+D77yfKiogIApBOiDlj6/kvb/nlKjorr7nva7kuK3nmoTjgIzmm7TmlrDmoLjlv4PjgI3vvJvkuqblj6/nlKjlrpjmlrnlj5HluIPljIXkuK3nmoTljZXmlofku7bmm7/mjaIgYGNvcmVgIOebruW9leS4i+WvueW6lCBleGXjgIIKCi0tLQoKIyMg5p6E5bu65LiO5Y+R5biDCgrmnKzku5PlupPpgJrov4cgKipHaXRIdWIgQWN0aW9ucyArIFB5SW5zdGFsbGVyKiog5ZyoIGB3aW5kb3dzLWxhdGVzdGAg5LiK5p6E5bu677yaCgoxLiDlronoo4Xkvp3otZblubbmiZPljIUgYE1vYmlsaXR5LmV4ZWAgIAoyLiDkuIvovb0gWHJheSAvIHNpbmctYm94IC8gTWlob21vIC8gZ2VvIOaVsOaNriAvIHdpbnR1biAgCjMuIOe7hOijheS4uiBgTW9iaWxpdHkuemlwYCAgCjQuIOabtOaWsCBSRUFETUUg5bm25Yib5bu6IEdpdEh1YiBSZWxlYXNlICAKCuaJi+WKqOinpuWPke+8mkFjdGlvbnMg4oaSICoqQnVpbGQgUG9ydGFibGUqKiDihpIgKipSdW4gd29ya2Zsb3cqKu+8jOWhq+WGmeeJiOacrOWPt++8iOWmgiBgMC4xOC4xYO+8ieOAggoKLS0tCgojIyDlj43ppojkuI7otKHnjK4KCi0g57y66Zm35LiO6ZyA5rGC77ya6K+35L2/55SoIFtJc3N1ZSDmqKHmnb9dKC4uLy4uL2lzc3Vlcy9uZXcvY2hvb3NlKSAgCi0g5Luj56CB6LSh54yu77ya6K+36ZiF6K+7IFtDT05UUklCVVRJTkcubWRdKENPTlRSSUJVVElORy5tZCkg5ZCO5o+Q5LqkIFBSICAKCi0tLQoKIyMg5YWN6LSj5aOw5piOCgrmnKzova/ku7bku4XkvpvlrabkuaDjgIHnoJTnqbbnvZHnu5zkuI7ku6PnkIbmioDmnK/kvb/nlKjjgILor7fnoa7kv53kvaDnmoTkvb/nlKjooYzkuLrnrKblkIjmiYDlnKjlnLDms5Xlvovms5Xop4Tku6Xlj4rnm7jlhbPmnI3liqHmnaHmrL7jgILkvZzogIXkuI3lr7nku7vkvZXmu6XnlKjmiJbnlLHmraTkuqfnlJ/nmoTlkI7mnpzmib/mi4XotKPku7vjgIIK"
+          $bytes = [Convert]::FromBase64String($b64)
+          $readme = [System.Text.Encoding]::UTF8.GetString($bytes)
+          if (-not $readme.EndsWith("`n")) { $readme += "`n" }
 
           $current = ""
           if (Test-Path "README.md") {
             $current = Get-Content "README.md" -Raw
           }
-
           if ($current -ne $readme) {
-            Set-Content -Path "README.md" -Value $readme -Encoding utf8
+            [System.IO.File]::WriteAllText((Resolve-Path .).Path + "\README.md", $readme, [System.Text.UTF8Encoding]::new($false))
             Write-Host "README.md 已更新"
             echo "readme_changed=true" >> $env:GITHUB_OUTPUT
           } else {
             Write-Host "README.md 无需修改"
             echo "readme_changed=false" >> $env:GITHUB_OUTPUT
           }
-        id: readme
 
       - name: Commit updated README
         if: steps.readme.outputs.readme_changed == 'true'
@@ -469,45 +218,40 @@ jobs:
           echo "tag=$ver" >> $env:GITHUB_OUTPUT
           echo "使用版本号: $ver"
 
-      - name: Create GitHub Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "Mobility ${{ steps.version.outputs.tag }}"
+          name: Mobility ${{ steps.version.outputs.tag }}
+          files: dist/Mobility.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease || false }}
           body: |
-            <div align="center">
-
             ## Mobility ${{ steps.version.outputs.tag }}
 
             **Windows 便携版 · 多核心代理客户端**
 
             解压即用 · Xray / sing-box / Mihomo · 订阅测速 · 系统代理 / TUN
 
-            </div>
-
-            ---
-
             ### 本版本亮点
 
-            - **零依赖运行**：PyInstaller 绿色包，无需安装 Python 或额外运行库
-            - **三核心内置**：Xray-core、sing-box、Mihomo，构建时写入 `core/`
-            - **路由数据齐全**：geoip.dat、geosite.dat、wintun.dll（TUN）
-            - **按协议映射核心**：VMess / VLESS / Trojan / SS 等可分别指定核心
-            - **订阅与节点**：多订阅、测速筛选、连通性、扫码与二维码
-            - **系统集成**：系统代理、托盘、热键、开机自启、主题与字体
-
-            ---
+            - 零依赖运行：PyInstaller 绿色包，无需安装 Python
+            - 三核心内置：Xray-core、sing-box、Mihomo（构建时写入 core/）
+            - 路由数据齐全：geoip.dat、geosite.dat、wintun.dll（TUN）
+            - 按协议映射核心：VMess / VLESS / Trojan / SS 等可分别指定
+            - 订阅与节点：多订阅、测速筛选、连通性、扫码与二维码
+            - 系统集成：系统代理、托盘、热键、开机自启、主题与字体
 
             ### 下载与安装
 
-            1. 下载下方资产中的 **Mobility.zip**
-            2. 解压到任意目录（**必须保留 `core` 文件夹**）
+            1. 下载下方 **Mobility.zip**
+            2. 解压到任意目录（必须保留 `core` 文件夹）
             3. 运行 `Mobility.exe`
             4. 加载订阅或导入节点 → 测速 → 启动
 
-            > 使用 **TUN** 时请以管理员身份运行。若杀软误报，请将整个目录加入白名单。
-
-            ---
+            > TUN 请以管理员身份运行。若杀软误报，请将整个目录加入白名单。
 
             ### 包内核心与数据
 
@@ -520,42 +264,19 @@ jobs:
             | `core/geosite.dat` | 域名分流数据 |
             | `core/wintun.dll` | Windows TUN 驱动 |
 
-            标题栏会显示软件版本与**当前选用核心**的版本（随节点协议映射变化）。
-
-            ---
-
-            ### 简要使用提示
-
-            | 场景 | 建议 |
-            | --- | --- |
-            | 日常浏览器 | 规则模式 + 系统代理即可 |
-            | 需要接管更多应用 | 管理员运行并勾选 TUN |
-            | 节点慢或不稳定 | 测速全部 → 选最快；或提高并发后重测 |
-            | 指定协议走某核心 | 设置 → 核心类型（按协议） |
-
-            ---
+            标题栏会显示软件版本与当前选用核心的版本（随节点协议映射变化）。
 
             ### 系统要求
 
-            - Windows **10 / 11（64 位）**
+            - Windows 10 / 11（64 位）
             - TUN：管理员权限
-
-            ---
 
             ### 文档与反馈
 
-            - 完整说明见仓库 [README](../..)
-            - 问题反馈：[Issues](../../issues/new/choose)
-            - 参与开发：[CONTRIBUTING.md](../..)
+            - 完整说明见仓库 README
+            - 问题反馈：Issues
+            - 参与开发：CONTRIBUTING.md
 
             ---
 
-            <div align="center">
-
             *Enjoy the freedom of the network.*
-
-            </div>
-
-          generate_release_notes: false
-          draft: false
-          prerelease: ${{ github.event.inputs.prerelease || false }}
