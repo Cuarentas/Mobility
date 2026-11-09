@@ -788,23 +788,27 @@ class App(ctk.CTk):
         self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
         self.tun_check.pack(anchor="w", padx=8, pady=3)
 
-        # 端口分行显示，避免右侧窄栏裁切
+        # 端口：标签固定宽 + 输入框填满，避免启动时被裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
-        pr1.pack(fill="x", padx=8, pady=(8, 2))
-        ctk.CTkLabel(pr1, text="SOCKS", width=52, font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.socks_entry = ctk.CTkEntry(pr1, height=28, font=("Consolas", 12))
+        pr1.pack(fill="x", padx=8, pady=(10, 2))
+        pr1.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(pr1, text="SOCKS", width=56, anchor="w",
+                     font=("Microsoft YaHei UI", 12)).grid(row=0, column=0, sticky="w")
+        self.socks_entry = ctk.CTkEntry(pr1, height=30, font=("Consolas", 13))
         self.socks_entry.insert(0, "10808")
-        self.socks_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.socks_entry.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         pr2 = ctk.CTkFrame(right, fg_color="transparent")
         pr2.pack(fill="x", padx=8, pady=2)
-        ctk.CTkLabel(pr2, text="HTTP", width=52, font=("Microsoft YaHei UI", 12)).pack(side="left")
-        self.http_entry = ctk.CTkEntry(pr2, height=28, font=("Consolas", 12))
+        pr2.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(pr2, text="HTTP", width=56, anchor="w",
+                     font=("Microsoft YaHei UI", 12)).grid(row=0, column=0, sticky="w")
+        self.http_entry = ctk.CTkEntry(pr2, height=30, font=("Consolas", 13))
         self.http_entry.insert(0, "10809")
-        self.http_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.http_entry.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         self.apply_port_btn = ctk.CTkButton(right, text="应用端口", height=30, command=self.apply_ports)
-        self.apply_port_btn.pack(fill="x", padx=8, pady=4)
+        self.apply_port_btn.pack(fill="x", padx=8, pady=(6, 4))
 
         ctk.CTkLabel(right, text="主题", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
         self.theme_combo = ctk.CTkComboBox(right, height=28, values=THEME_OPTIONS, state="readonly", command=self.on_theme_change)
@@ -1289,7 +1293,7 @@ class App(ctk.CTk):
                     if a.get("name"):
                         self.log(f"  资源：{a['name']}")
             else:
-                self.log("当前已是最新版本（或更新）")
+                self.log("当前已是最新版本")
         except Exception as e:
             self.log(f"检查更新失败：{e}")
 
@@ -3239,7 +3243,35 @@ class App(ctk.CTk):
         self.destroy()
 
 
+def ensure_single_instance() -> bool:
+    """Windows 下仅允许运行一个 Mobility 实例。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        # 全局互斥体
+        handle = kernel32.CreateMutexW(None, False, "Global\\MobilityProxySingleInstance")
+        last = kernel32.GetLastError()
+        # ERROR_ALREADY_EXISTS = 183
+        if last == 183:
+            return False
+        # 保持句柄，进程退出系统自动释放
+        ensure_single_instance._handle = handle
+        return True
+    except Exception:
+        return True
+
+
 if __name__ == "__main__":
+    if not ensure_single_instance():
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showwarning("Mobility", "程序已在运行，不能重复启动。")
+            root.destroy()
+        except Exception:
+            pass
+        raise SystemExit(0)
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
