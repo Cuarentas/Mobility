@@ -77,14 +77,21 @@ jobs:
           Write-Host "wintun.dll 已内置到 core/"
 
           Write-Host "下载并内置 sing-box（TUN）..."
-          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "singbox.zip" "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip"
+          # 官方资源名含版本号，如 sing-box-1.14.4-windows-amd64.zip，需用 API 解析
+          $api = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+          $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "Mobility-Build" }
+          $asset = $rel.assets | Where-Object { $_.name -match "windows-amd64\.zip$" -and $_.name -notmatch "cgo" } | Select-Object -First 1
+          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "windows-amd64" } | Select-Object -First 1 }
+          if (-not $asset) { throw "sing-box windows-amd64 asset not found in latest release" }
+          Write-Host "sing-box asset: $($asset.name)"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "singbox.zip" $asset.browser_download_url
           if (-not (Test-Path "singbox.zip")) { throw "singbox.zip download failed" }
           if (Test-Path "singbox_extract") { Remove-Item -Recurse -Force "singbox_extract" }
           Expand-Archive -Path "singbox.zip" -DestinationPath "singbox_extract" -Force
           $sb = Get-ChildItem -Path "singbox_extract" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
-          if (-not $sb) { throw "sing-box.exe not found" }
+          if (-not $sb) { throw "sing-box.exe not found after extract" }
           Copy-Item $sb.FullName "core\sing-box.exe" -Force
-          Write-Host "sing-box.exe 已内置到 core/"
+          Write-Host "sing-box.exe 已内置到 core/ ($($sb.Length) bytes)"
           Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
       - name: Build with PyInstaller (onedir)
