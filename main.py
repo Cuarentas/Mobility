@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.1"
+APP_VERSION = "0.18.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -828,6 +828,8 @@ class App(ctk.CTk):
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
         self.hotkey_proxy = "ctrl+shift+p"
+        self.hotkey_clear_proxy = ""
+        self.hotkey_set_proxy = ""
         self.proxy_mode = PROXY_MODE_DEFAULT
         self.close_to_tray = True
         self.auto_start = False
@@ -883,8 +885,10 @@ class App(ctk.CTk):
         self.start_btn = ctk.CTkButton(top, text="启动", width=72, height=32, command=self.start_proxy_thread)
         self.start_btn.pack(side="right", padx=4, pady=10)
 
-        ctk.CTkLabel(top, text="Mobility", font=("Microsoft YaHei UI", 18, "bold"),
-                     text_color=("#2563EB", "#60A5FA")).pack(side="left", padx=16)
+        self.title_label = ctk.CTkLabel(
+            top, text=f"Mobility v{APP_VERSION}", font=("Microsoft YaHei UI", 18, "bold"),
+            text_color=("#2563EB", "#60A5FA"))
+        self.title_label.pack(side="left", padx=16)
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
         self.status_label.pack(side="left", padx=8)
         self.current_label = ctk.CTkLabel(top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
@@ -951,10 +955,10 @@ class App(ctk.CTk):
         self.workers_combo = ctk.CTkComboBox(right_opts, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 11)).pack(side="left", padx=(8, 2))
+        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(8, 2))
         self.mode_combo = ctk.CTkComboBox(
-            right_opts, width=130, height=30, values=PROXY_MODES, state="readonly",
-            command=self.on_mode_change, font=("Microsoft YaHei UI", 11),
+            right_opts, width=150, height=32, values=PROXY_MODES, state="readonly",
+            command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=2)
@@ -1119,24 +1123,15 @@ class App(ctk.CTk):
         self.font_combo.set(str(getattr(self, "font_size", 13)))
         self.font_combo.pack(fill="x", padx=8)
 
-        ctk.CTkLabel(right, text="热键-显示/隐藏", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 2))
-        self.hotkey_toggle_entry = ctk.CTkEntry(right, height=28)
-        self.hotkey_toggle_entry.insert(0, getattr(self, "hotkey_toggle", "ctrl+shift+m"))
-        self.hotkey_toggle_entry.pack(fill="x", padx=8)
-        ctk.CTkLabel(right, text="热键-启停代理", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(4, 2))
-        self.hotkey_proxy_entry = ctk.CTkEntry(right, height=28)
-        self.hotkey_proxy_entry.insert(0, getattr(self, "hotkey_proxy", "ctrl+shift+p"))
-        self.hotkey_proxy_entry.pack(fill="x", padx=8)
-        
-        # 右侧按钮区：统一用 grid 两列，保证左右边对齐
+        # 右侧按钮区
         bh = 30
         btn_box = ctk.CTkFrame(right, fg_color="transparent")
         btn_box.pack(fill="x", padx=10, pady=(6, 8))
         btn_box.grid_columnconfigure(0, weight=1, uniform="btn")
         btn_box.grid_columnconfigure(1, weight=1, uniform="btn")
 
-        self.apply_hotkey_btn = ctk.CTkButton(btn_box, text="应用热键", height=bh, command=self.apply_hotkeys)
-        self.apply_hotkey_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
+        self.hotkey_setting_btn = ctk.CTkButton(btn_box, text="热键设置", height=bh, command=self.open_hotkey_dialog)
+        self.hotkey_setting_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
 
         self.clear_log_btn = ctk.CTkButton(btn_box, text="清空日志", height=bh, command=self.clear_log)
         self.clear_log_btn.grid(row=1, column=0, sticky="ew", pady=3, padx=(0, 3))
@@ -1250,7 +1245,7 @@ class App(ctk.CTk):
                         path = c
                         break
                 ver = get_core_binary_version(path, "sing-box")
-                label = f"v{APP_VERSION} | sing-box {ver}"
+                label = f"sing-box {ver}"
             elif low.startswith("mihomo") or low == "clash":
                 path = self.core_dir / "mihomo.exe"
                 for c in [path, get_base_dir() / "core" / "mihomo.exe", get_base_dir() / "mihomo.exe"]:
@@ -1258,18 +1253,18 @@ class App(ctk.CTk):
                         path = c
                         break
                 ver = get_core_binary_version(path, "mihomo")
-                label = f"v{APP_VERSION} | Mihomo {ver}"
+                label = f"Mihomo {ver}"
             else:
                 path = getattr(self, "xray_path", None) or find_xray()
                 ver = get_xray_version(path)
                 self._xray_ver = ver
-                label = f"v{APP_VERSION} | Xray {ver}"
+                label = f"Xray {ver}"
             if hasattr(self, "version_label"):
                 self.version_label.configure(text=label)
         except Exception:
             try:
                 if hasattr(self, "version_label"):
-                    self.version_label.configure(text=f"v{APP_VERSION}")
+                    self.version_label.configure(text="")
             except Exception:
                 pass
 
@@ -1397,9 +1392,82 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def open_hotkey_dialog(self):
+        """二级对话框设置全局热键。"""
+        win = ctk.CTkToplevel(self)
+        win.title("全局热键设置")
+        win.geometry("440x340")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(win, text="全局热键设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 12)
+        )
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(fill="x", padx=20)
+
+        def row(label, default):
+            fr = ctk.CTkFrame(form, fg_color="transparent")
+            fr.pack(fill="x", pady=6)
+            ctk.CTkLabel(fr, text=label, width=120, anchor="w", font=("Microsoft YaHei UI", 12)).pack(side="left")
+            ent = ctk.CTkEntry(fr, height=32)
+            ent.insert(0, default or "")
+            ent.pack(side="left", fill="x", expand=True, padx=(8, 0))
+            return ent
+
+        e_toggle = row("显示主界面", getattr(self, "hotkey_toggle", "ctrl+shift+m"))
+        e_proxy = row("启停代理", getattr(self, "hotkey_proxy", "ctrl+shift+p"))
+        e_clear = row("清除系统代理", getattr(self, "hotkey_clear_proxy", ""))
+        e_set = row("配置系统代理", getattr(self, "hotkey_set_proxy", ""))
+
+        ctk.CTkLabel(
+            win,
+            text="格式示例：ctrl+shift+m、alt+n\n留空表示不注册；确定后立即生效",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(10, 4))
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
+
+        def do_reset():
+            for e, v in ((e_toggle, "ctrl+shift+m"), (e_proxy, "ctrl+shift+p"), (e_clear, ""), (e_set, "")):
+                e.delete(0, "end")
+                e.insert(0, v)
+
+        def do_ok():
+            self.hotkey_toggle = (e_toggle.get() or "").strip().lower()
+            self.hotkey_proxy = (e_proxy.get() or "").strip().lower()
+            self.hotkey_clear_proxy = (e_clear.get() or "").strip().lower()
+            self.hotkey_set_proxy = (e_set.get() or "").strip().lower()
+            self.save_settings()
+            self.start_hotkey_listener()
+            self.log(
+                f"热键已应用：显示={self.hotkey_toggle or '无'}，启停={self.hotkey_proxy or '无'}，"
+                f"清代理={self.hotkey_clear_proxy or '无'}，设代理={self.hotkey_set_proxy or '无'}"
+            )
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        def do_cancel():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        ctk.CTkButton(btn_row, text="重置", width=90, command=do_reset).pack(side="left")
+        ctk.CTkButton(btn_row, text="取消", width=90, command=do_cancel).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="确定", width=90, fg_color="#2563EB", command=do_ok).pack(side="right")
+
     def apply_hotkeys(self):
-        self.hotkey_toggle = (self.hotkey_toggle_entry.get() or "ctrl+shift+m").strip().lower()
-        self.hotkey_proxy = (self.hotkey_proxy_entry.get() or "ctrl+shift+p").strip().lower()
         self.save_settings()
         self.start_hotkey_listener()
         self.log(f"热键已应用：显示/隐藏={self.hotkey_toggle}，启停={self.hotkey_proxy}")
@@ -1415,11 +1483,33 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            keyboard.add_hotkey(self.hotkey_toggle, lambda: self.after(0, self.toggle_window_visibility))
-            keyboard.add_hotkey(self.hotkey_proxy, lambda: self.after(0, self.toggle_proxy_hotkey))
-            pass  # hotkeys ready
+            if self.hotkey_toggle:
+                keyboard.add_hotkey(self.hotkey_toggle, lambda: self.after(0, self.toggle_window_visibility))
+            if self.hotkey_proxy:
+                keyboard.add_hotkey(self.hotkey_proxy, lambda: self.after(0, self.toggle_proxy_hotkey))
+            if getattr(self, "hotkey_clear_proxy", ""):
+                keyboard.add_hotkey(self.hotkey_clear_proxy, lambda: self.after(0, self._hotkey_clear_proxy))
+            if getattr(self, "hotkey_set_proxy", ""):
+                keyboard.add_hotkey(self.hotkey_set_proxy, lambda: self.after(0, self._hotkey_set_proxy))
         except Exception as e:
             self.log(f"注册热键失败：{e}")
+
+    def _hotkey_clear_proxy(self):
+        try:
+            self.set_system_proxy(False)
+            self.log("热键：已清除系统代理")
+        except Exception as e:
+            self.log(f"热键清除代理失败：{e}")
+
+    def _hotkey_set_proxy(self):
+        try:
+            _, http_port = self.get_ports()
+            if self.set_system_proxy(True, http_port):
+                self.log(f"热键：已配置系统代理 127.0.0.1:{http_port}")
+            else:
+                self.log("热键：配置系统代理失败")
+        except Exception as e:
+            self.log(f"热键配置代理失败：{e}")
 
     def toggle_window_visibility(self):
         try:
@@ -1658,7 +1748,10 @@ class App(ctk.CTk):
                     if a.get("name"):
                         self.log(f"  资源：{a['name']}")
             else:
-                self.log("当前已是最新版本")
+                if version_newer(APP_VERSION, tag):
+                    self.log(f"本地版本 v{APP_VERSION} 新于仓库 v{str(tag).lstrip('v')}")
+                else:
+                    self.log("当前已是最新版本")
         except Exception as e:
             self.log(f"检查更新失败：{e}")
 
@@ -2349,6 +2442,8 @@ class App(ctk.CTk):
                 "font_size": int(getattr(self, "font_size", 13)),
                 "hotkey_toggle": getattr(self, "hotkey_toggle", "ctrl+shift+m"),
                 "hotkey_proxy": getattr(self, "hotkey_proxy", "ctrl+shift+p"),
+                "hotkey_clear_proxy": getattr(self, "hotkey_clear_proxy", ""),
+                "hotkey_set_proxy": getattr(self, "hotkey_set_proxy", ""),
                 "nodes": slim_nodes,
                 "selected_label": (self.current_node or {}).get("_label", "") if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
@@ -2440,15 +2535,12 @@ class App(ctk.CTk):
                 self.font_combo.set(str(self.font_size))
             self.hotkey_toggle = data.get("hotkey_toggle") or "ctrl+shift+m"
             self.hotkey_proxy = data.get("hotkey_proxy") or "ctrl+shift+p"
+            self.hotkey_clear_proxy = data.get("hotkey_clear_proxy") or ""
+            self.hotkey_set_proxy = data.get("hotkey_set_proxy") or ""
             try:
                 self.settings_refresh_hours = float(data.get("settings_refresh_hours") or 0)
             except Exception:
                 self.settings_refresh_hours = 0
-            if hasattr(self, "hotkey_toggle_entry"):
-                self.hotkey_toggle_entry.delete(0, "end")
-                self.hotkey_toggle_entry.insert(0, self.hotkey_toggle)
-                self.hotkey_proxy_entry.delete(0, "end")
-                self.hotkey_proxy_entry.insert(0, self.hotkey_proxy)
             tw = str(data.get("test_workers") or TEST_WORKERS_DEFAULT)
             if tw in TEST_WORKERS_OPTIONS:
                 self.workers_combo.set(tw)
