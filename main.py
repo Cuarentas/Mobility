@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.2"
+APP_VERSION = "0.17.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -788,9 +788,9 @@ class App(ctk.CTk):
                                          command=self.show_node_qr)
         self.show_qr_btn.pack(side="left", padx=2)
 
-        # ===== 工具行 =====
+        # ===== 工具行 1：节点操作 =====
         tools = ctk.CTkFrame(body, fg_color="transparent")
-        tools.pack(fill="x", pady=(0, 6))
+        tools.pack(fill="x", pady=(0, 4))
         self.test_btn = ctk.CTkButton(tools, text="测速全部", width=80, height=30, fg_color="#7C3AED", command=self.test_all_thread)
         self.test_btn.pack(side="left", padx=2)
         self.test_filter_btn = ctk.CTkButton(tools, text="测速筛选", width=80, height=30, fg_color="#8B5CF6", command=self.test_filtered_thread)
@@ -801,25 +801,27 @@ class App(ctk.CTk):
         self.copy_btn.pack(side="left", padx=2)
         self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
         self.ping_btn.pack(side="left", padx=2)
-        ctk.CTkLabel(tools, text="更换核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
+
+        # ===== 工具行 2：核心 / 并发 / 模式（单独一行，避免被挤扁） =====
+        tools2 = ctk.CTkFrame(body, fg_color="transparent")
+        tools2.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(tools2, text="更换核心", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(2, 2))
         self.core_combo = ctk.CTkComboBox(
-            tools, width=100, height=30,
+            tools2, width=110, height=30,
             values=["Xray", "sing-box"],
             state="readonly",
             command=self.on_core_change,
         )
         self.core_combo.set(getattr(self, "proxy_core", None) or "Xray")
         self.core_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(tools, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
-        self.workers_combo = ctk.CTkComboBox(tools, width=70, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        ctk.CTkLabel(tools2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(12, 2))
+        self.workers_combo = ctk.CTkComboBox(tools2, width=80, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
-        self.workers_combo.pack(side="left")
-
-        # 模式 / 端口
-        ctk.CTkLabel(tools, text="模式", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(12, 2))
-        self.mode_combo = ctk.CTkComboBox(tools, width=100, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
+        self.workers_combo.pack(side="left", padx=2)
+        ctk.CTkLabel(tools2, text="模式", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(12, 2))
+        self.mode_combo = ctk.CTkComboBox(tools2, width=120, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
         self.mode_combo.set(PROXY_MODE_DEFAULT)
-        self.mode_combo.pack(side="left")
+        self.mode_combo.pack(side="left", padx=2)
 
         # ===== 运行状态条 =====
         stats = ctk.CTkFrame(body, fg_color=("gray90", "gray20"), corner_radius=8, height=48)
@@ -3218,8 +3220,13 @@ class App(ctk.CTk):
 
 
 
-    def create_singbox_tun_config(self, socks_port: int) -> Path:
+    def create_singbox_tun_config(self, socks_port: int, http_port: int = None) -> Path:
         """生成 sing-box 1.13+ 兼容的 TUN 配置（无 legacy inbound 字段）。"""
+        if http_port is None:
+            try:
+                _, http_port = self.get_ports()
+            except Exception:
+                http_port = 10809
         cfg = {
             "log": {"level": "warn", "timestamp": True},
             "inbounds": [
@@ -3232,6 +3239,13 @@ class App(ctk.CTk):
                     "auto_route": True,
                     "strict_route": True,
                     "stack": "mixed",
+                    "platform": {
+                        "http_proxy": {
+                            "enabled": True,
+                            "server": "127.0.0.1",
+                            "server_port": int(http_port),
+                        }
+                    },
                 }
             ],
             "outbounds": [
@@ -3392,11 +3406,11 @@ class App(ctk.CTk):
             socks_port, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # sing-box TUN：不叠加系统代理
-                try:
-                    self.set_system_proxy(False)
-                except Exception:
-                    pass
+                # TUN + 系统代理：纯 TUN 在部分环境下浏览器仍无法出网
+                if self.set_system_proxy(True, http_port):
+                    self.log(f"系统代理已设置 127.0.0.1:{http_port}（浏览器兼容）")
+                else:
+                    self.log("系统代理设置失败，仅依赖 TUN")
                 sb = ensure_singbox(self.core_dir, log_fn=self.log)
                 if not sb:
                     self.log("未找到 sing-box，无法启用 TUN")
@@ -3411,7 +3425,7 @@ class App(ctk.CTk):
                     ensure_wintun(self.core_dir, log_fn=self.log)
                 except Exception:
                     pass
-                sb_cfg = self.create_singbox_tun_config(socks_port)
+                sb_cfg = self.create_singbox_tun_config(socks_port, http_port)
                 flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
                 sb_log = self.core_dir / "singbox.log"
                 try:
