@@ -122,11 +122,16 @@ jobs:
           } else {
             throw "缺少文件: wintun.dll"
           }
+          if (Test-Path "core\sing-box.exe") {
+            Copy-Item -Path "core\sing-box.exe" -Destination "$coreDir\sing-box.exe" -Force
+          } else {
+            throw "缺少文件: sing-box.exe"
+          }
 
-          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll")) {
+          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll", "sing-box.exe")) {
             if (-not (Test-Path "$coreDir\$f")) { throw "缺少文件: $f" }
           }
-          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll"
+          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll / sing-box.exe"
 
           $zipPath = "dist\Mobility.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
