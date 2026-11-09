@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.16.15"
+APP_VERSION = "0.17.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -161,6 +161,65 @@ def ensure_wintun(core_dir: Path, log_fn=None) -> bool:
             log_fn(f"下载 wintun 失败：{e}")
         return False
 
+
+
+def find_singbox():
+    candidates = [
+        get_base_dir() / "core" / "sing-box.exe",
+        get_base_dir() / "sing-box.exe",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+    return None
+
+
+def ensure_singbox(core_dir: Path, log_fn=None):
+    """确保 sing-box.exe 存在；缺失时尝试从 GitHub 下载。"""
+    core_dir = Path(core_dir)
+    core_dir.mkdir(parents=True, exist_ok=True)
+    dest = core_dir / "sing-box.exe"
+    if dest.exists() and dest.stat().st_size > 1000:
+        return dest
+    existing = find_singbox()
+    if existing and existing.resolve() != dest.resolve():
+        try:
+            import shutil
+            shutil.copy2(existing, dest)
+            return dest
+        except Exception:
+            pass
+    # 下载最新 windows amd64
+    url = "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip"
+    try:
+        if log_fn:
+            log_fn("正在下载 sing-box 核心 ...")
+        import tempfile, zipfile
+        r = requests.get(url, timeout=120, headers={"User-Agent": "Mobility"})
+        r.raise_for_status()
+        tmp = Path(tempfile.gettempdir()) / "singbox.zip"
+        tmp.write_bytes(r.content)
+        with zipfile.ZipFile(tmp, "r") as zf:
+            pick = None
+            for n in zf.namelist():
+                if n.lower().endswith("sing-box.exe"):
+                    pick = n
+                    break
+            if not pick:
+                if log_fn:
+                    log_fn("sing-box 压缩包内未找到 exe")
+                return None
+            dest.write_bytes(zf.read(pick))
+        if log_fn:
+            log_fn(f"sing-box 已保存到 {dest}")
+        return dest if dest.exists() else None
+    except Exception as e:
+        if log_fn:
+            log_fn(f"下载 sing-box 失败：{e}")
+        return None
 
 def get_xray_version(xray_path) -> str:
     if not xray_path:
@@ -591,6 +650,7 @@ class App(ctk.CTk):
         self.settings_path = self.base_dir / "Subscribe.json"
 
         self.xray_process = None
+        self.singbox_process = None
         self.is_running = False
         self.is_testing = False
         self.nodes: list[dict] = []
@@ -746,10 +806,10 @@ class App(ctk.CTk):
         # 实时统计开关：默认关闭，用户需要时再开（尤其 TUN 下更省资源）
         self.live_stats_var = ctk.BooleanVar(value=False)
         self.live_stats_sw = ctk.CTkSwitch(
-            stats, text="实时统计", variable=self.live_stats_var, width=70,
+            stats, text="实时统计", variable=self.live_stats_var, width=90,
             command=self.on_live_stats_toggle
         )
-        self.live_stats_sw.pack(side="right", padx=12)
+        self.live_stats_sw.pack(side="right", padx=10)
 
         # ===== 中部：节点列表 + 右侧设置 =====
         mid = ctk.CTkFrame(body, fg_color="transparent")
@@ -919,7 +979,7 @@ class App(ctk.CTk):
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
         self.log_autoscroll_var = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(log_tools, text="自动滚动", variable=self.log_autoscroll_var, width=70, command=self._on_log_autoscroll).pack(side="left", padx=(8, 0))
+        ctk.CTkSwitch(log_tools, text="自动滚动", variable=self.log_autoscroll_var, width=90, command=self._on_log_autoscroll).pack(side="left", padx=(8, 0))
         self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
@@ -954,11 +1014,11 @@ class App(ctk.CTk):
         # 高亮
         for b in self._node_buttons:
             try:
-                b.configure(fg_color=("gray85", "gray25"))
+                b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
             except Exception:
                 pass
         try:
-            btn.configure(fg_color=("#2563EB", "#1D4ED8"))
+            btn.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
         except Exception:
             pass
         try:
@@ -1204,6 +1264,18 @@ class App(ctk.CTk):
                         self.log(f"{geo_name} 已更新")
                 except Exception as ge:
                     self.log(f"{geo_name} 更新失败：{ge}")
+            # 同步更新 sing-box
+            try:
+                self.log("更新 sing-box ...")
+                dest = self.core_dir / "sing-box.exe"
+                if dest.exists():
+                    try:
+                        dest.unlink()
+                    except Exception:
+                        pass
+                ensure_singbox(self.core_dir, log_fn=self.log)
+            except Exception as se:
+                self.log(f"sing-box 更新失败：{se}")
             self.log("核心/规则文件更新完成（建议重启软件）")
             try:
                 self.xray_path = find_xray()
@@ -2780,50 +2852,6 @@ class App(ctk.CTk):
         if dns_servers:
             config["dns"] = {"servers": dns_servers}
 
-        if getattr(self, "tun_enabled", False):
-            # Windows 官方推荐：system 栈 + wintun.dll（与 xray.exe 同目录）
-            # gvisor 在 Windows 上对全局流量接管不可靠，易导致“有进程无网”
-            config["inbounds"].append({
-                "tag": "tun-in",
-                "protocol": "tun",
-                "settings": {
-                    "name": "Mobility0",
-                    "mtu": 1400,
-                    "stack": "system",
-                    "auto": True,
-                    "strictRoute": True,
-                },
-                "sniffing": {
-                    "enabled": True,
-                    "destOverride": ["http", "tls", "quic"],
-                    "routeOnly": False,
-                },
-            })
-            try:
-                if config.get("log", {}).get("loglevel") in ("debug", "info"):
-                    config["log"]["loglevel"] = "warning"
-            except Exception:
-                pass
-            # TUN 必须有可用 DNS，否则表现为完全没网
-            config["dns"] = {
-                "hosts": {"dns.google": "8.8.8.8"},
-                "servers": [
-                    "8.8.8.8",
-                    "1.1.1.1",
-                    "localhost",
-                ],
-                "queryStrategy": "UseIPv4",
-                "disableCache": False,
-            }
-            # 私网直连，避免把局域网也送进代理
-            rules = config.get("routing", {}).get("rules") or []
-            rules.insert(0, {
-                "type": "field",
-                "inboundTag": ["tun-in"],
-                "ip": ["geoip:private"],
-                "outboundTag": "direct",
-            })
-            config.setdefault("routing", {})["rules"] = rules
 
 
         # Stats API 常驻（占用很小）；界面是否轮询由「实时统计」开关控制
@@ -3112,6 +3140,61 @@ class App(ctk.CTk):
         self.after(12000 if getattr(self, "tun_enabled", False) else 8000, self.update_home_stats)
 
 
+
+    def create_singbox_tun_config(self, socks_port: int) -> Path:
+        """生成 sing-box TUN 配置：流量进 TUN，出站走本地 Xray SOCKS。"""
+        cfg = {
+            "log": {"level": "warn", "timestamp": True},
+            "inbounds": [
+                {
+                    "type": "tun",
+                    "tag": "tun-in",
+                    "interface_name": "Mobility0",
+                    "mtu": 1400,
+                    "auto_route": True,
+                    "strict_route": True,
+                    "stack": "mixed",
+                    "sniff": True,
+                    "sniff_override_destination": True,
+                }
+            ],
+            "outbounds": [
+                {
+                    "type": "socks",
+                    "tag": "proxy",
+                    "server": "127.0.0.1",
+                    "server_port": int(socks_port),
+                    "version": "5",
+                },
+                {"type": "direct", "tag": "direct"},
+                {"type": "block", "tag": "block"},
+            ],
+            "route": {
+                "auto_detect_interface": True,
+                "final": "proxy",
+                "rules": [
+                    {"protocol": "dns", "outbound": "direct"},
+                    {"ip_is_private": True, "outbound": "direct"},
+                ],
+            },
+        }
+        path = self.core_dir / "singbox-tun.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return path
+
+    def stop_singbox(self):
+        if getattr(self, "singbox_process", None):
+            try:
+                self.singbox_process.terminate()
+                try:
+                    self.singbox_process.wait(timeout=2)
+                except Exception:
+                    self.singbox_process.kill()
+            except Exception:
+                pass
+            self.singbox_process = None
+
     def start_proxy_thread(self):
         if self.is_running:
             self.log("代理已在运行中，请先停止")
@@ -3231,15 +3314,49 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
-            _, http_port = self.get_ports()
+            socks_port, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # 实测：纯 TUN 在部分 Windows 上浏览器仍不通；
-                # 采用 TUN + 系统代理保证可访问，并通过降低核心优先级减轻卡顿
-                if self.set_system_proxy(True, http_port):
-                    self.log(f"TUN 已启用；系统代理 127.0.0.1:{http_port}（兼容浏览器）")
-                else:
-                    self.log("系统代理设置失败，仅依赖 TUN（若无法上网请检查管理员权限）")
+                # sing-box TUN：不叠加系统代理
+                try:
+                    self.set_system_proxy(False)
+                except Exception:
+                    pass
+                sb = ensure_singbox(self.core_dir, log_fn=self.log)
+                if not sb:
+                    self.log("未找到 sing-box，无法启用 TUN")
+                    try:
+                        self.xray_process.terminate()
+                    except Exception:
+                        pass
+                    self.xray_process = None
+                    self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal"))
+                    return
+                try:
+                    ensure_wintun(self.core_dir, log_fn=self.log)
+                except Exception:
+                    pass
+                sb_cfg = self.create_singbox_tun_config(socks_port)
+                flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                self.singbox_process = subprocess.Popen(
+                    [str(sb), "run", "-c", str(sb_cfg)],
+                    cwd=str(self.core_dir),
+                    creationflags=flags,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.8)
+                if self.singbox_process.poll() is not None:
+                    self.log("sing-box TUN 启动失败，请确认管理员权限与 wintun.dll")
+                    try:
+                        self.xray_process.terminate()
+                    except Exception:
+                        pass
+                    self.xray_process = None
+                    self.singbox_process = None
+                    self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal"))
+                    return
+                self.log("sing-box TUN 已启动（流量经本地 Xray）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
@@ -3247,18 +3364,6 @@ class App(ctk.CTk):
 
             if proxy_ok:
                 self.is_running = True
-                # TUN 时降低 xray 进程优先级，减轻风扇与卡顿
-                if getattr(self, "tun_enabled", False) and self.xray_process:
-                    try:
-                        import ctypes
-                        BELOW_NORMAL = 0x00004000
-                        handle = ctypes.windll.kernel32.OpenProcess(0x0200 | 0x0400, False, self.xray_process.pid)
-                        if handle:
-                            ctypes.windll.kernel32.SetPriorityClass(handle, BELOW_NORMAL)
-                            ctypes.windll.kernel32.CloseHandle(handle)
-                            self.log("已降低核心进程优先级以减轻卡顿")
-                    except Exception:
-                        pass
                 # TUN 时默认关闭实时统计，避免额外开销
                 if getattr(self, "tun_enabled", False):
                     try:
@@ -3270,7 +3375,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", text_color="#16A34A"
                 ))
-                self.log("代理已启动" + ("（TUN）" if getattr(self, "tun_enabled", False) else ""))
+                self.log("代理已启动" + ("（sing-box TUN）" if getattr(self, "tun_enabled", False) else ""))
                 if self.allow_lan and not getattr(self, "tun_enabled", False):
                     self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self._run_started_at = time.time()
