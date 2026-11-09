@@ -30,6 +30,9 @@ TEST_WORKERS_DEFAULT = 32
 TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
+CORE_OPTIONS = ["Xray", "sing-box"]
+CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http"]
+DEFAULT_CORE_MAP = {p: "Xray" for p in CORE_PROTOCOLS}
 PROXY_MODE_DEFAULT = "规则模式"
 REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时", "自定义"]
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
@@ -47,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.5"
+APP_VERSION = "0.17.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -682,6 +685,7 @@ class App(ctk.CTk):
         self._xray_ver = "未知"
         self.tun_enabled = False
         self.proxy_core = "Xray"
+        self.core_map = dict(DEFAULT_CORE_MAP)
         self.live_stats_enabled = False  # 实时网速/内存，默认关闭
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
@@ -818,8 +822,11 @@ class App(ctk.CTk):
         self.workers_combo = ctk.CTkComboBox(right_opts, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
-        self.mode_combo = ctk.CTkComboBox(right_opts, width=110, height=30, values=PROXY_MODES, state="readonly", command=self.on_mode_change)
+        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 11)).pack(side="left", padx=(8, 2))
+        self.mode_combo = ctk.CTkComboBox(
+            right_opts, width=130, height=30, values=PROXY_MODES, state="readonly",
+            command=self.on_mode_change, font=("Microsoft YaHei UI", 11),
+        )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=2)
 
@@ -946,6 +953,27 @@ class App(ctk.CTk):
         self.loglevel_combo.set("警告")
         self.loglevel_combo.pack(fill="x", padx=8)
 
+        # 按协议映射核心（类似 v2rayN）
+        ctk.CTkLabel(right, text="核心类型（按协议）", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=8, pady=(10, 4))
+        self.core_proto_combos = {}
+        proto_labels = {
+            "vmess": "VMess", "vless": "VLESS", "trojan": "Trojan",
+            "shadowsocks": "Shadowsocks", "socks": "Socks", "http": "HTTP",
+        }
+        for proto in CORE_PROTOCOLS:
+            row = ctk.CTkFrame(right, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=1)
+            ctk.CTkLabel(row, text=proto_labels.get(proto, proto), width=90, anchor="w",
+                         font=("Microsoft YaHei UI", 11)).pack(side="left")
+            cb = ctk.CTkComboBox(
+                row, width=100, height=26, values=CORE_OPTIONS, state="readonly",
+                font=("Microsoft YaHei UI", 11),
+                command=lambda v, p=proto: self.on_core_map_change(p, v),
+            )
+            cb.set((getattr(self, "core_map", {}) or {}).get(proto, "Xray"))
+            cb.pack(side="right")
+            self.core_proto_combos[proto] = cb
+
         # 域名分流（精简）
         ctk.CTkLabel(right, text="直连域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 0))
         self.direct_entry = ctk.CTkEntry(right, height=28, placeholder_text="baidu.com,*.qq.com")
@@ -1070,6 +1098,20 @@ class App(ctk.CTk):
             return bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
             return False
+
+    def on_core_map_change(self, proto: str, value=None):
+        if not getattr(self, "core_map", None):
+            self.core_map = dict(DEFAULT_CORE_MAP)
+        self.core_map[proto] = (value or "Xray").strip()
+        self.save_settings()
+
+    def resolve_core_for_node(self, node: dict) -> str:
+        proto = (node.get("protocol") or "").lower()
+        if proto == "ss":
+            proto = "shadowsocks"
+        cmap = getattr(self, "core_map", None) or DEFAULT_CORE_MAP
+        core = cmap.get(proto) or getattr(self, "proxy_core", None) or "Xray"
+        return str(core).strip() or "Xray"
 
     def on_core_change(self, value=None):
         try:
@@ -2132,6 +2174,8 @@ class App(ctk.CTk):
                 "dns_mode": self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode,
                 "dns_custom": self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom,
                 "log_level": self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level,
+                "proxy_core": getattr(self, "proxy_core", "Xray"),
+                "core_map": getattr(self, "core_map", dict(DEFAULT_CORE_MAP)),
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -2159,6 +2203,24 @@ class App(ctk.CTk):
             except Exception:
                 pass
             self.tun_enabled = bool(data.get("tun_enabled", False))
+
+            cm = data.get("core_map") or {}
+            self.core_map = dict(DEFAULT_CORE_MAP)
+            if isinstance(cm, dict):
+                for k, v in cm.items():
+                    if k in self.core_map and v in CORE_OPTIONS:
+                        self.core_map[k] = v
+            self.proxy_core = data.get("proxy_core") or "Xray"
+            try:
+                if hasattr(self, "core_combo"):
+                    self.core_combo.set(self.proxy_core if self.proxy_core in CORE_OPTIONS else "Xray")
+            except Exception:
+                pass
+            try:
+                for proto, cb in getattr(self, "core_proto_combos", {}).items():
+                    cb.set(self.core_map.get(proto, "Xray"))
+            except Exception:
+                pass
             self.live_stats_enabled = bool(data.get("live_stats_enabled", False))
             try:
                 if hasattr(self, "live_stats_var"):
@@ -3471,13 +3533,13 @@ class App(ctk.CTk):
             text=self._short_node_text(node, lat_s)
         ))
 
-        core_name = (getattr(self, "proxy_core", None) or "Xray").strip()
         try:
             if hasattr(self, "core_combo"):
-                core_name = (self.core_combo.get() or core_name).strip()
-                self.proxy_core = core_name
+                self.proxy_core = (self.core_combo.get() or getattr(self, "proxy_core", None) or "Xray").strip()
         except Exception:
             pass
+        core_name = self.resolve_core_for_node(node)
+        self.log(f"节点协议 [{node.get('protocol')}] → 核心 {core_name}")
 
         socks_port, http_port = self.get_ports()
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
