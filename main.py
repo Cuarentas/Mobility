@@ -47,7 +47,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.17.1"
+APP_VERSION = "0.17.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1075,6 +1075,10 @@ class App(ctk.CTk):
         except Exception:
             self.proxy_core = "Xray"
         self.log(f"当前代理核心：{self.proxy_core}")
+        if self.proxy_core == "Xray":
+            self.log("说明：协议代理使用 Xray；若开启 TUN，流量接管仍由 sing-box 负责")
+        else:
+            self.log("说明：当前选择 sing-box（TUN 与接管均由 sing-box）")
         self.save_settings()
         # 切换核心后若在运行则提示重启
         if self.is_running:
@@ -1533,27 +1537,56 @@ class App(ctk.CTk):
         Thread(target=self.connectivity_test, daemon=True).start()
 
     def connectivity_test(self):
-        if not self.is_running:
-            self.log("请先启动代理再做连通性测试")
-            return
-        _, http_port = self.get_ports()
-        proxies = {
-            "http": f"http://127.0.0.1:{http_port}",
-            "https": f"http://127.0.0.1:{http_port}",
-        }
+        """连通性：不强制要求已启动代理。
+        - 先测当前节点 TCP 端口是否通
+        - 若已启动代理，再经代理测 Google/YouTube
+        - 若未启动，仅做节点 TCP + 本机直连参考
+        """
+        self.log("---------- 连通性测试 ----------")
+        node = None
+        try:
+            node = self.get_selected_node()
+        except Exception:
+            node = self.current_node
+        # 1) 节点 TCP
+        if node and node.get("address") and node.get("port"):
+            host = str(node.get("address"))
+            port = int(node.get("port") or 0)
+            try:
+                import socket
+                t0 = time.perf_counter()
+                s = socket.create_connection((host, port), timeout=5)
+                s.close()
+                ms = int((time.perf_counter() - t0) * 1000)
+                self.log(f"  节点 TCP {host}:{port}: 通 ({ms}ms)")
+            except Exception as e:
+                self.log(f"  节点 TCP {host}:{port}: 不通 ({e})")
+        else:
+            self.log("  未选择节点，跳过节点 TCP 测试")
+
+        # 2) HTTP 目标
         targets = [
             ("https://www.google.com/generate_204", "Google"),
             ("https://www.youtube.com", "YouTube"),
             ("https://www.cloudflare.com", "Cloudflare"),
         ]
-        self.log("---------- 连通性测试 ----------")
+        proxies = None
+        if self.is_running:
+            _, http_port = self.get_ports()
+            proxies = {
+                "http": f"http://127.0.0.1:{http_port}",
+                "https": f"http://127.0.0.1:{http_port}",
+            }
+            self.log("  （经当前代理测试网页）")
+        else:
+            self.log("  （未启动代理，以下为直连参考，失败属正常）")
+
         ok_count = 0
         for url, name in targets:
             try:
                 t0 = time.perf_counter()
                 r = requests.get(url, proxies=proxies, timeout=8, allow_redirects=True)
                 ms = int((time.perf_counter() - t0) * 1000)
-                # 204 or 200 都算成功
                 if r.status_code in (200, 204, 301, 302):
                     self.log(f"  {name}: 成功 {ms}ms (HTTP {r.status_code})")
                     ok_count += 1
@@ -1562,7 +1595,7 @@ class App(ctk.CTk):
             except Exception as e:
                 self.log(f"  {name}: 失败 ({e})")
         self.log(f"连通性结果：{ok_count}/{len(targets)} 成功")
-        if ok_count == 0:
+        if self.is_running and ok_count == 0:
             self.log("提示：代理可能未真正可用，请更换节点后重试")
 
     def on_refresh_change(self, value=None):
@@ -3186,7 +3219,7 @@ class App(ctk.CTk):
 
 
     def create_singbox_tun_config(self, socks_port: int) -> Path:
-        """生成 sing-box TUN 配置：流量进 TUN，出站走本地 Xray SOCKS。"""
+        """生成 sing-box 1.13+ 兼容的 TUN 配置（无 legacy inbound 字段）。"""
         cfg = {
             "log": {"level": "warn", "timestamp": True},
             "inbounds": [
@@ -3194,12 +3227,11 @@ class App(ctk.CTk):
                     "type": "tun",
                     "tag": "tun-in",
                     "interface_name": "Mobility0",
+                    "address": ["172.19.0.1/30"],
                     "mtu": 1400,
                     "auto_route": True,
                     "strict_route": True,
                     "stack": "mixed",
-                    "sniff": True,
-                    "sniff_override_destination": True,
                 }
             ],
             "outbounds": [
@@ -3211,13 +3243,12 @@ class App(ctk.CTk):
                     "version": "5",
                 },
                 {"type": "direct", "tag": "direct"},
-                {"type": "block", "tag": "block"},
             ],
             "route": {
                 "auto_detect_interface": True,
                 "final": "proxy",
                 "rules": [
-                    {"protocol": "dns", "outbound": "direct"},
+                    {"action": "sniff"},
                     {"ip_is_private": True, "outbound": "direct"},
                 ],
             },
@@ -3414,7 +3445,8 @@ class App(ctk.CTk):
                     self.singbox_process = None
                     self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal"))
                     return
-                self.log("sing-box TUN 已启动（流量经本地 Xray）")
+                core_name = getattr(self, "proxy_core", "Xray") or "Xray"
+                self.log(f"sing-box TUN 已启动（代理核心：{core_name}，流量经本地 SOCKS）")
             else:
                 proxy_ok = bool(self.set_system_proxy(True, http_port))
                 if proxy_ok:
