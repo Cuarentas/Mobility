@@ -168,35 +168,85 @@ jobs:
           $readme = @"
           # Mobility
 
-          Windows 代理客户端
+          **Windows 便携版多核心代理客户端**
 
-          ## 功能
+          面向日常科学上网与分流场景，内置多套代理核心与路由数据，解压即可使用，无需额外安装运行时。
 
-          - 已内置 Xray-core 与 geoip/geosite 数据
-          - 支持 vmess / vless / trojan 节点
-          - 一键启动 / 停止本地代理
-          - 自动设置 / 取消 Windows 系统代理
-          - 绿色便携版，解压即用
+          ---
 
-          ## 使用方法
+          ## 特性概览
 
-          1. 在 [Releases](../../releases) 下载 ``Mobility.zip``
-          2. 解压到任意目录
-          3. 双击运行 ``Mobility.exe``
-          4. 粘贴节点链接后点击「启动代理」
+          | 模块 | 说明 |
+          | --- | --- |
+          | 多核心 | **Xray** / **sing-box** / **Mihomo**，按协议映射自动选用 |
+          | 协议 | VMess / VLESS / Trojan / Shadowsocks 等 |
+          | TUN | 系统级流量接管（需管理员权限，内置 ``wintun.dll``） |
+          | 路由 | 规则 / 全局 / 直连；自定义直连与代理域名 |
+          | 订阅 | 多订阅管理、定时更新、测速筛选、连通性检测 |
+          | 系统集成 | Windows 系统代理、托盘、热键、开机自启 |
+          | 分发形态 | PyInstaller 绿色包，``core/`` 内嵌核心与 geo 数据 |
 
-          > 解压后请保持目录完整（包含 core 文件夹），不要单独移动 exe。
+          ### 内置组件（构建时自动拉取最新）
+
+          - ``core/xray.exe`` — Xray-core
+          - ``core/sing-box.exe`` — sing-box（TUN / 完整出站）
+          - ``core/mihomo.exe`` — Mihomo（Clash Meta 兼容）
+          - ``core/geoip.dat`` / ``core/geosite.dat`` — 路由地理与域名数据
+          - ``core/wintun.dll`` — Windows TUN 驱动
+
+          ---
+
+          ## 快速开始
+
+          1. 打开 [Releases](../../releases) 下载 ``Mobility.zip``
+          2. 解压到任意目录（**保持 ``core`` 文件夹与主程序同级**）
+          3. 运行 ``Mobility.exe``
+          4. 添加订阅或粘贴节点 → 测速 / 选节点 → 启动
+
+          > TUN 模式请以**管理员身份**运行。若杀软拦截，请将目录加入白名单。
+
+          ---
+
+          ## 核心与协议映射
+
+          在右侧 **设置 → 核心类型（按协议）** 中，可为 VMess / VLESS / Trojan / SS 等分别指定使用 Xray、sing-box 或 Mihomo。  
+          启动时根据**当前节点协议**自动选择对应核心，并在标题栏显示该核心版本号。
+
+          ---
+
+          ## 目录结构（解压后）
+
+          ```
+          Mobility/
+          ├── Mobility.exe
+          ├── core/
+          │   ├── xray.exe
+          │   ├── sing-box.exe
+          │   ├── mihomo.exe
+          │   ├── geoip.dat
+          │   ├── geosite.dat
+          │   └── wintun.dll
+          └── （运行后生成配置与日志）
+          ```
+
+          ---
 
           ## 反馈与贡献
 
-          - **提交 Bug 或功能建议**：请到 [Issues](../../issues/new/choose) 页面选择对应模板提交
-          - **参与开发**：欢迎提交 Pull Request，请先阅读 [贡献指南](CONTRIBUTING.md)
+          - Bug / 功能建议：[Issues 模板](../../issues/new/choose)
+          - 参与开发：请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
 
           ## 构建
 
-          使用 GitHub Actions + PyInstaller 自动打包。
+          使用 **GitHub Actions + PyInstaller** 在 Windows runner 上打包，并自动下载上述核心与数据文件写入发布包。
 
-          Actions 页面点击 **Build Portable** → **Run workflow**，填写版本号后即可自动构建并发布。
+          Actions → **Build Portable** → **Run workflow**，填写版本号即可构建并创建 Release。
+
+          ---
+
+          ## 免责声明
+
+          本项目仅供学习与研究网络技术使用，请遵守当地法律法规与服务条款。
           "@
           $readme = ($readme -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n"
           $readme = $readme.Trim() + "`n"
@@ -255,48 +305,48 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: "Mobility ${{ steps.version.outputs.tag }}"
           body: |
-            <div align="center">
-            
-            # Mobility
-            
-            **Windows 便携版代理客户端**
-            
-            </div>
-            
-            ---
-            
-            ### ✨ 本版本亮点
-            
-            - 📦 解压即用，无需安装任何运行环境
-            - 📦 **已内置 Xray-core + geoip.dat + geosite.dat + wintun.dll（TUN）**
-            - 🔌 支持 vmess / vless / trojan
-            - 🌐 自动设置与取消 Windows 系统代理
-            
-            ---
-            
-            ### 📦 下载与使用
-            
-            1. 下载下方的 **Mobility.zip**
-            2. 解压到任意目录
-            3. 双击运行 `Mobility.exe`
-            4. 粘贴节点链接后点击「启动代理」
-            
-            > 请保持解压后的目录完整（含 core 文件夹）。
-            
-            ---
-            
-            ### 🛠️ 系统要求
-            
+            ## Mobility ${{ steps.version.outputs.tag }}
+
+            **Windows 便携版多核心代理客户端**
+
+            ### 本版本亮点
+
+            - 解压即用，无需安装 Python / 运行库
+            - **多核心内置**：Xray-core + sing-box + Mihomo + geoip/geosite + wintun.dll
+            - 按协议映射核心（VMess / VLESS / Trojan / SS → Xray / sing-box / Mihomo）
+            - 订阅管理、并行测速、连通性检测、规则/全局/直连
+            - TUN 模式（管理员运行）+ Windows 系统代理
+            - 托盘 / 热键 / 开机自启 / 主题与字体
+
+            ### 下载与使用
+
+            1. 下载下方 **Mobility.zip**
+            2. 解压到任意目录（保持 `core` 文件夹完整）
+            3. 运行 `Mobility.exe`
+            4. 添加订阅或节点后启动代理
+
+            > TUN 请使用管理员权限。目录请加入杀软白名单以免误删核心文件。
+
+            ### 技术说明
+
+            | 组件 | 用途 |
+            | --- | --- |
+            | Xray-core | 默认协议出站（VMess/VLESS/Trojan 等） |
+            | sing-box | TUN 流量接管 / 可选完整出站 |
+            | Mihomo | Clash Meta 兼容出站与规则 |
+            | geoip / geosite | 域名与 IP 分流数据 |
+            | wintun.dll | Windows TUN 虚拟网卡 |
+
+            构建流水线在打包阶段从各官方 Release 拉取最新核心与数据文件并写入 `core/`。
+
+            ### 系统要求
+
             - Windows 10 / 11（64 位）
-            
+
             ---
-            
-            <div align="center">
-            
-            **Enjoy the freedom of the network.**
-            
-            </div>
-          files: dist/Mobility.zip
+
+            *Enjoy the freedom of the network.*
+
           generate_release_notes: false
           draft: false
           prerelease: ${{ github.event.inputs.prerelease || false }}
