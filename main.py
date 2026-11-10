@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.3"
+APP_VERSION = "0.18.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -107,6 +107,19 @@ def find_xray():
             pass
     return None
 
+
+
+def wait_local_port(port: int, host: str = "127.0.0.1", timeout: float = 8.0) -> bool:
+    """等待本地端口可连接（用于确认 Xray SOCKS 已就绪再拉 TUN）。"""
+    import socket
+    deadline = time.time() + max(0.5, float(timeout))
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, int(port)), 0.4):
+                return True
+        except Exception:
+            time.sleep(0.15)
+    return False
 
 def ensure_wintun(core_dir: Path, log_fn=None) -> bool:
     """确保 wintun.dll 与 xray.exe 同目录（Windows system 栈必需）。"""
@@ -1427,15 +1440,13 @@ class App(ctk.CTk):
             self.tun_enabled = True
             self.save_settings()
             self.log("TUN 模式：开启，正在自动连接...")
-            # 若已在运行，先停再以 TUN 配置重启
-            if self.is_running:
-                try:
+            # 无论是否已在运行，都先干净停止再以 TUN 配置启动，避免半开状态
+            try:
+                if self.is_running:
                     self.stop_proxy()
-                except Exception:
-                    pass
-                self.after(400, self.start_proxy_thread)
-            else:
-                self.start_proxy_thread()
+            except Exception:
+                pass
+            self.after(600, self.start_proxy_thread)
             return
 
         # 关闭 TUN
@@ -3885,6 +3896,19 @@ class App(ctk.CTk):
             })
 
         if enable_tun:
+            excludes = [
+                "127.0.0.0/8",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "169.254.0.0/16",
+            ]
+            try:
+                addr = (node.get("address") or "").strip()
+                if addr and not any(c.isalpha() for c in addr):
+                    excludes.append(f"{addr}/32" if ":" not in addr or "." in addr else addr)
+            except Exception:
+                pass
             inbounds.append({
                 "type": "tun",
                 "tag": "tun-in",
@@ -3893,13 +3917,8 @@ class App(ctk.CTk):
                 "mtu": 1400,
                 "auto_route": True,
                 "strict_route": False,
-                "stack": "mixed",
-                "route_exclude_address": [
-                    "127.0.0.0/8",
-                    "10.0.0.0/8",
-                    "172.16.0.0/12",
-                    "192.168.0.0/16",
-                ],
+                "stack": "system",
+                "route_exclude_address": excludes,
             })
 
         mode = self.proxy_mode or "规则模式"
@@ -3931,13 +3950,54 @@ class App(ctk.CTk):
             json.dump(cfg, f, indent=2, ensure_ascii=False)
         return path
 
-    def create_singbox_tun_config(self, socks_port: int, http_port: int = None) -> Path:
-        """生成 sing-box 1.13+ 兼容的 TUN 配置（无 legacy inbound 字段）。"""
+    def create_singbox_tun_config(self, socks_port: int, http_port: int = None, node: dict = None) -> Path:
+        """生成 sing-box TUN 配置：流量进 TUN 后转发到本地 Xray SOCKS。
+
+        必须排除节点服务器地址，否则 Xray 访问远端会再次被 TUN 吸走形成环路，
+        表现为「先普通启动再开 TUN 才通、冷启动勾选 TUN 不通」。
+        """
         if http_port is None:
             try:
                 _, http_port = self.get_ports()
             except Exception:
                 http_port = 10809
+        excludes = [
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "224.0.0.0/4",
+        ]
+        # 排除当前代理节点 IP，避免出站环路
+        try:
+            n = node or getattr(self, "current_node", None) or {}
+            addr = (n.get("address") or "").strip()
+            if addr and not any(c.isalpha() for c in addr):
+                # 纯 IP
+                if ":" in addr and "." not in addr:
+                    excludes.append(addr)  # IPv6 literal
+                else:
+                    excludes.append(f"{addr}/32")
+            elif addr:
+                # 域名：加入 dns 直连规则，并在 route 里对域名 direct（见下）
+                pass
+        except Exception:
+            pass
+
+        route_rules = [
+            {"action": "sniff"},
+            {"ip_is_private": True, "outbound": "direct"},
+        ]
+        # 节点域名单直连（不走 TUN 出站环）
+        try:
+            n = node or getattr(self, "current_node", None) or {}
+            addr = (n.get("address") or "").strip()
+            if addr and any(c.isalpha() for c in addr):
+                route_rules.insert(1, {"domain": [addr], "outbound": "direct"})
+        except Exception:
+            pass
+
         cfg = {
             "log": {"level": "warn", "timestamp": True},
             "inbounds": [
@@ -3949,13 +4009,8 @@ class App(ctk.CTk):
                     "mtu": 1400,
                     "auto_route": True,
                     "strict_route": False,
-                    "stack": "mixed",
-                    "route_exclude_address": [
-                        "127.0.0.0/8",
-                        "10.0.0.0/8",
-                        "172.16.0.0/12",
-                        "192.168.0.0/16",
-                    ],
+                    "stack": "system",
+                    "route_exclude_address": excludes,
                     "platform": {
                         "http_proxy": {
                             "enabled": True,
@@ -3978,10 +4033,7 @@ class App(ctk.CTk):
             "route": {
                 "auto_detect_interface": True,
                 "final": "proxy",
-                "rules": [
-                    {"action": "sniff"},
-                    {"ip_is_private": True, "outbound": "direct"},
-                ],
+                "rules": route_rules,
             },
         }
         path = self.core_dir / "singbox-tun.json"
@@ -4010,6 +4062,17 @@ class App(ctk.CTk):
     def start_proxy(self):
         self.after(0, lambda: self.start_btn and self.start_btn.configure(state="disabled") if self.start_btn else None)
         self.log("---------- 开始启动 ----------")
+        # 清理可能残留的核心进程，保证冷启动勾选 TUN 与二次启动路径一致
+        try:
+            if getattr(self, "singbox_process", None):
+                self.stop_singbox()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "mihomo_process", None):
+                self.stop_mihomo()
+        except Exception:
+            pass
 
         node = self.get_selected_node()
         if not node:
@@ -4198,7 +4261,12 @@ class App(ctk.CTk):
             socks_port, http_port = self.get_ports()
             proxy_ok = True
             if getattr(self, "tun_enabled", False):
-                # TUN + 系统代理：纯 TUN 在部分环境下浏览器仍无法出网
+                # 1) 先确认 Xray 本地端口就绪，避免 TUN 转发打到空端口
+                if not wait_local_port(socks_port, timeout=8):
+                    self.log(f"等待本地 SOCKS {socks_port} 超时，TUN 可能无法转发")
+                else:
+                    self.log(f"本地 SOCKS {socks_port} 已就绪")
+                # 2) 系统代理（浏览器兼容）
                 if self.set_system_proxy(True, http_port):
                     self.log(f"系统代理已设置 127.0.0.1:{http_port}（浏览器兼容）")
                 else:
@@ -4217,7 +4285,8 @@ class App(ctk.CTk):
                     ensure_wintun(self.core_dir, log_fn=self.log)
                 except Exception:
                     pass
-                sb_cfg = self.create_singbox_tun_config(socks_port, http_port)
+                # 3) 生成 TUN 配置时排除节点地址，防止路由环路
+                sb_cfg = self.create_singbox_tun_config(socks_port, http_port, node=self.current_node)
                 flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
                 sb_log = self.core_dir / "singbox.log"
                 try:
@@ -4231,7 +4300,7 @@ class App(ctk.CTk):
                     stdout=sb_log_handle,
                     stderr=subprocess.STDOUT,
                 )
-                time.sleep(1.2)
+                time.sleep(1.5)
                 if self.singbox_process.poll() is not None:
                     self.log("sing-box TUN 启动失败，请确认：①管理员运行 ②core\\wintun.dll 存在")
                     try:
