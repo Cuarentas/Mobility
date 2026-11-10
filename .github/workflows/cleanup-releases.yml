@@ -1,0 +1,83 @@
+name: Cleanup Old Releases
+
+# 与 Build Portable 完全独立：只负责删除过旧的 Release / Tag
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: '保留最近多少个 Release（含 Latest）'
+        required: true
+        default: '5'
+        type: string
+      delete_tags:
+        description: '是否同时删除对应 git tag'
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # 每周一 UTC 03:00（北京时间约 11:00）自动清理
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for gh auth context)
+        uses: actions/checkout@v4
+
+      - name: Delete old releases (keep newest N)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ github.event.inputs.keep || '5' }}
+          DELETE_TAGS: ${{ github.event.inputs.delete_tags == true || github.event.inputs.delete_tags == 'true' || github.event_name == 'schedule' }}
+        run: |
+          set -euo pipefail
+
+          KEEP_N="$(echo "${KEEP}" | tr -cd '0-9')"
+          if [ -z "${KEEP_N}" ] || [ "${KEEP_N}" -lt 1 ]; then
+            KEEP_N=5
+          fi
+          echo "将保留最近 ${KEEP_N} 个 Release，更旧的将删除。"
+
+          # 按创建时间倒序列出 release（JSON）
+          mapfile -t RELEASE_JSON < <(gh release list --limit 200 --json tagName,isDraft,isPrerelease,createdAt --jq 'sort_by(.createdAt) | reverse | .[] | @json')
+
+          TOTAL=${#RELEASE_JSON[@]}
+          echo "当前共有 ${TOTAL} 个 Release"
+          if [ "${TOTAL}" -le "${KEEP_N}" ]; then
+            echo "未超过保留数量，无需清理。"
+            exit 0
+          fi
+
+          idx=0
+          for item in "${RELEASE_JSON[@]}"; do
+            idx=$((idx + 1))
+            tag=$(echo "${item}" | jq -r '.tagName')
+            created=$(echo "${item}" | jq -r '.createdAt')
+            draft=$(echo "${item}" | jq -r '.isDraft')
+            pre=$(echo "${item}" | jq -r '.isPrerelease')
+
+            if [ "${idx}" -le "${KEEP_N}" ]; then
+              echo "[保留] #${idx} ${tag} (${created}) draft=${draft} pre=${pre}"
+              continue
+            fi
+
+            echo "[删除] #${idx} ${tag} (${created})"
+            # 删除 Release（含附件资产）
+            if gh release delete "${tag}" --yes --cleanup-tag 2>/dev/null; then
+              echo "  已删除 release 与 tag: ${tag}"
+            else
+              # 兼容旧版 gh：先删 release 再删 tag
+              gh release delete "${tag}" --yes || true
+              if [ "${DELETE_TAGS}" = "true" ] || [ "${DELETE_TAGS}" = "True" ]; then
+                git push origin ":refs/tags/${tag}" 2>/dev/null || \
+                  gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
+                echo "  已尝试删除 tag: ${tag}"
+              fi
+            fi
+          done
+
+          echo "清理完成。"
