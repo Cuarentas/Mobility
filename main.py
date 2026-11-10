@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.0"
+APP_VERSION = "0.19.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1073,6 +1073,11 @@ class App(ctk.CTk):
         self.lan_check.pack(anchor="w", padx=8, pady=3)
         self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
         self.tun_check.pack(anchor="w", padx=8, pady=3)
+        # 显眼入口，避免埋在设置底部
+        tun_btns = ctk.CTkFrame(right, fg_color="transparent")
+        tun_btns.pack(fill="x", padx=8, pady=(0, 4))
+        ctk.CTkButton(tun_btns, text="TUN 设置", height=28, width=100, command=self.open_tun_settings_dialog).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(tun_btns, text="路由设置", height=28, width=100, command=self.open_routing_dialog).pack(side="left")
 
         # 端口：标签固定宽 + 输入框填满，避免启动时被裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
@@ -1705,10 +1710,58 @@ class App(ctk.CTk):
             return
         self.nodes[idx], self.nodes[new_i] = self.nodes[new_i], self.nodes[idx]
         self.current_node = self.nodes[new_i]
-        self._selected_label = self.current_node.get("_label")
-        self.refresh_node_list(keep_selection=True)
-        self.save_settings()
+        try:
+            self._selected_label = self.current_node.get("_label") or node_label(self.current_node)
+        except Exception:
+            self._selected_label = self.current_node.get("_label")
+        # 快速更新两个按钮文案，避免 100+ 节点整表销毁重建导致卡顿
+        try:
+            self._swap_node_buttons(idx, new_i)
+        except Exception:
+            self.refresh_node_list(keep_selection=True, resort=False)
+        # 持久化节流：不每次写盘
+        try:
+            if hasattr(self, "_move_save_after") and self._move_save_after:
+                self.after_cancel(self._move_save_after)
+        except Exception:
+            pass
+        self._move_save_after = self.after(800, self.save_settings)
         self.log("节点已" + ("上移" if delta < 0 else "下移"))
+
+    def _swap_node_buttons(self, i: int, j: int):
+        """仅交换两个节点按钮显示，不重建列表。"""
+        btns = [b for b in getattr(self, "_node_buttons", []) if hasattr(b, "configure") and hasattr(b, "cget")]
+        # _node_buttons 与当前过滤列表对应；无过滤时与 self.nodes 对齐
+        if not btns or max(i, j) >= len(btns) or max(i, j) >= len(self.nodes):
+            self.refresh_node_list(keep_selection=True, resort=False)
+            return
+        for pos in (i, j):
+            n = self.nodes[pos]
+            try:
+                lb = node_label(n)
+            except Exception:
+                lb = n.get("_label") or n.get("name") or ("节点%d" % (pos + 1))
+            n["_label"] = lb
+            n["_index"] = pos
+            try:
+                btns[pos].configure(text=lb)
+            except Exception:
+                pass
+        # 高亮当前
+        sel = getattr(self, "_selected_label", None)
+        for b in btns:
+            try:
+                txt = b.cget("text")
+                if sel and txt == sel:
+                    b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
+                else:
+                    b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
+            except Exception:
+                pass
+        try:
+            self.current_label.configure(text=self._short_node_text(self.current_node))
+        except Exception:
+            pass
 
     def export_diagnostics(self):
         try:
@@ -3070,8 +3123,10 @@ class App(ctk.CTk):
         if self.allow_lan:
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
-    def refresh_node_list(self, keep_selection: bool = True):
-        """刷新左侧节点列表（滚动列表，不再用 ComboBox）。"""
+    def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
+        """刷新左侧节点列表（滚动列表，不再用 ComboBox）。
+        resort=True 时才按延迟排序（测速后调用）；平时保持用户顺序。
+        """
         try:
             nodes = list(self.nodes or [])
             self.clear_node_list_ui()
@@ -3085,18 +3140,18 @@ class App(ctk.CTk):
                 self.log("节点列表为空")
                 return
 
-            def sort_key(n):
-                lat = n.get("latency")
-                if lat is None:
-                    return (2, 999999)
-                if isinstance(lat, (int, float)) and lat < 0:
-                    return (1, 999999)
-                try:
-                    return (0, int(lat))
-                except Exception:
-                    return (2, 999999)
-
-            nodes.sort(key=sort_key)
+            if resort:
+                def sort_key(n):
+                    lat = n.get("latency")
+                    if lat is None:
+                        return (2, 999999)
+                    if isinstance(lat, (int, float)) and lat < 0:
+                        return (1, 999999)
+                    try:
+                        return (0, int(lat))
+                    except Exception:
+                        return (2, 999999)
+                nodes.sort(key=sort_key)
             self.nodes = nodes
 
             kw = ""
@@ -3495,7 +3550,7 @@ class App(ctk.CTk):
         for n in ranked[:5]:
             self.log(f"  优: {n['name']} → {n['latency']}ms")
 
-        self.refresh_node_list(keep_selection=False)
+        self.refresh_node_list(keep_selection=False, resort=True)
         self.select_best()
         self.save_settings()
 
@@ -3742,9 +3797,16 @@ class App(ctk.CTk):
     def apply_system_proxy_for_mode(self, port: int) -> bool:
         mode = getattr(self, "proxy_mode", "") or ""
         if "PAC" in mode:
-            ok = self.set_system_proxy(True, port, pac=True)
+            # 现代 Windows/浏览器常忽略 file:// PAC，导致网页全挂。
+            # 等效实现：系统 HTTP 代理 + Xray 规则分流；同时写出 pac 文件供手工使用。
+            try:
+                self.write_pac_file(port)
+            except Exception:
+                pass
+            ok = self.set_system_proxy(True, port, pac=False)
             if ok:
-                self.log("已启用 PAC：mobility.pac -> 127.0.0.1:%s" % port)
+                self.log("PAC 模式：已设系统代理 127.0.0.1:%s（规则分流，兼容浏览器）" % port)
+                self.log("已生成 mobility.pac（若需可在系统设置中手动指定）")
             return ok
         return self.set_system_proxy(True, port, pac=False)
 
@@ -4412,13 +4474,6 @@ class App(ctk.CTk):
                     "strict_route": bool(ts.get("strict_route", False)),
                     "stack": ts.get("stack") or "system",
                     "route_exclude_address": excludes,
-                    "platform": {
-                        "http_proxy": {
-                            "enabled": True,
-                            "server": "127.0.0.1",
-                            "server_port": int(http_port),
-                        }
-                    },
                 }
             ],
             "outbounds": [
@@ -4437,6 +4492,28 @@ class App(ctk.CTk):
                 "rules": route_rules,
             },
         }
+        # 规则/PAC：保留国内直连；全局：去掉域名直连规则，全部进代理
+        try:
+            mode = getattr(self, "proxy_mode", "") or ""
+            if "全局" in mode:
+                cfg["route"]["rules"] = [r for r in route_rules if "domain_suffix" not in r and "domain_keyword" not in r]
+            # 额外路由设置
+            extra_d = []
+            for line in (getattr(self, "routing_extra_direct", "") or "").splitlines():
+                d = line.strip()
+                if d:
+                    extra_d.append(d.lstrip("*").lstrip("."))
+            if extra_d:
+                cfg["route"]["rules"].insert(1, {"domain_suffix": extra_d, "outbound": "direct"})
+            extra_p = []
+            for line in (getattr(self, "routing_extra_proxy", "") or "").splitlines():
+                d = line.strip()
+                if d:
+                    extra_p.append(d.lstrip("*").lstrip("."))
+            if extra_p:
+                cfg["route"]["rules"].insert(1, {"domain_suffix": extra_p, "outbound": "proxy"})
+        except Exception:
+            pass
         path = self.core_dir / "singbox-tun.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
