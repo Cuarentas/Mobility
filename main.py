@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.1"
+APP_VERSION = "0.19.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1135,15 +1135,9 @@ class App(ctk.CTk):
         # 核心类型改为二级对话框
         self.core_proto_combos = {}
 
-        # 域名分流（精简）
-        ctk.CTkLabel(right, text="直连域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8, pady=(8, 0))
-        self.direct_entry = ctk.CTkEntry(right, height=28, placeholder_text="baidu.com,*.qq.com")
-        self.direct_entry.pack(fill="x", padx=8, pady=2)
-        ctk.CTkLabel(right, text="代理域名", font=("Microsoft YaHei UI", 11)).pack(anchor="w", padx=8)
-        self.proxy_entry = ctk.CTkEntry(right, height=28, placeholder_text="google.com")
-        self.proxy_entry.pack(fill="x", padx=8, pady=2)
-        self.domain_apply_btn = ctk.CTkButton(right, text="应用域名规则", height=30, command=self.apply_custom_domains)
-        self.domain_apply_btn.pack(fill="x", padx=8, pady=6)
+        # 域名分流已并入「路由设置」弹窗，避免与路由规则重复
+        self.direct_entry = None
+        self.proxy_entry = None
 
         ctk.CTkLabel(right, text="字体大小", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(8, 2))
         self.font_combo = ctk.CTkComboBox(right, height=28, values=FONT_SIZE_OPTIONS,
@@ -1644,9 +1638,10 @@ class App(ctk.CTk):
         )
         ctk.CTkLabel(
             win,
-            text="每行一条域名或后缀。保存后重新启动代理生效。",
+            text="统一管理直连 / 代理 / 拦截域名（每行一条或逗号分隔）。\n保存后重新启动代理生效。",
             font=("Microsoft YaHei UI", 11),
             text_color=("gray40", "gray60"),
+            justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 8))
 
         form = ctk.CTkFrame(win, fg_color="transparent")
@@ -1660,8 +1655,17 @@ class App(ctk.CTk):
                 tb.insert("1.0", default)
             return tb
 
-        tb_direct = box("强制直连", getattr(self, "routing_extra_direct", "") or "")
-        tb_proxy = box("强制代理", getattr(self, "routing_extra_proxy", "") or "")
+        d0 = (getattr(self, "routing_extra_direct", "") or "").strip()
+        p0 = (getattr(self, "routing_extra_proxy", "") or "").strip()
+        dd = (getattr(self, "direct_domains", "") or "").strip()
+        pd = (getattr(self, "proxy_domains", "") or "").strip()
+        if dd and dd not in d0:
+            d0 = (d0 + "\n" + dd.replace(",", "\n")).strip() if d0 else dd.replace(",", "\n")
+        if pd and pd not in p0:
+            p0 = (p0 + "\n" + pd.replace(",", "\n")).strip() if p0 else pd.replace(",", "\n")
+
+        tb_direct = box("强制直连（含原直连域名）", d0)
+        tb_proxy = box("强制代理（含原代理域名）", p0)
         tb_block = box("拦截（黑名单）", getattr(self, "routing_extra_block", "") or "")
 
         btn_row = ctk.CTkFrame(win, fg_color="transparent")
@@ -1671,6 +1675,12 @@ class App(ctk.CTk):
             self.routing_extra_direct = tb_direct.get("1.0", "end").strip()
             self.routing_extra_proxy = tb_proxy.get("1.0", "end").strip()
             self.routing_extra_block = tb_block.get("1.0", "end").strip()
+            self.direct_domains = ",".join(
+                [x.strip() for x in self.routing_extra_direct.replace(",", "\n").splitlines() if x.strip()]
+            )
+            self.proxy_domains = ",".join(
+                [x.strip() for x in self.routing_extra_proxy.replace(",", "\n").splitlines() if x.strip()]
+            )
             self.save_settings()
             self.log("路由规则已保存，请重新启动代理")
             try:
@@ -2448,149 +2458,199 @@ class App(ctk.CTk):
         self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
 
     def scan_screen_qr_thread(self):
-        Thread(target=self.scan_screen_qr, daemon=True).start()
+        # 改为主线程弹窗，用户确认后再截屏（类似身份验证器扫码）
+        self.after(0, self.open_qr_scanner_dialog)
 
-    def scan_screen_qr(self):
-        """截取屏幕并识别二维码，导入节点或订阅链接。"""
-        status = {"win": None, "label": None}
+    def open_qr_scanner_dialog(self):
+        """屏幕扫码：先展示取景界面，用户点击「开始识别」再截屏。"""
+        win = ctk.CTkToplevel(self)
+        win.title("扫描二维码")
+        win.geometry("380x420")
+        win.attributes("-topmost", True)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
 
-        def _open_ui():
+        ctk.CTkLabel(win, text="扫描节点二维码", font=("Microsoft YaHei UI", 16, "bold")).pack(pady=(16, 4))
+        ctk.CTkLabel(
+            win,
+            text="请将订阅/节点二维码完整显示在屏幕上\n（可先把本窗口移开），再点击下方按钮",
+            font=("Microsoft YaHei UI", 12),
+            text_color=("gray40", "gray60"),
+            justify="center",
+        ).pack(pady=(0, 10))
+
+        # 简易取景框
+        frame = ctk.CTkFrame(win, width=240, height=240, fg_color=("gray90", "gray20"), corner_radius=12)
+        frame.pack(pady=8)
+        frame.pack_propagate(False)
+        ctk.CTkLabel(
+            frame,
+            text="▢\n\n将二维码置于屏幕可见区域\n\n▢",
+            font=("Microsoft YaHei UI", 14),
+            text_color=("#2563EB", "#60A5FA"),
+            justify="center",
+        ).pack(expand=True)
+
+        status = ctk.CTkLabel(win, text="等待开始…", font=("Microsoft YaHei UI", 12))
+        status.pack(pady=8)
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
+
+        def do_close():
             try:
-                win = ctk.CTkToplevel(self)
-                win.title("屏幕扫码")
-                win.geometry("360x160")
-                win.attributes("-topmost", True)
-                ctk.CTkLabel(win, text="屏幕扫码", font=("Microsoft YaHei UI", 14, "bold")).pack(pady=(12, 6))
-                lab = ctk.CTkLabel(win, text="请将二维码完整显示在屏幕上…\n正在截屏识别", font=("Microsoft YaHei UI", 12))
-                lab.pack(pady=8)
-                status["win"] = win
-                status["label"] = lab
+                win.grab_release()
             except Exception:
                 pass
-        self.after(0, _open_ui)
-        time.sleep(0.25)
+            win.destroy()
 
-        def _set(msg):
-            self.log(msg)
-            def _u():
+        def do_scan():
+            status.configure(text="3 秒后截屏，请露出二维码…")
+            scan_btn.configure(state="disabled")
+
+            def _countdown(n):
+                if n > 0:
+                    status.configure(text="%d 秒后截屏…" % n)
+                    win.after(1000, lambda: _countdown(n - 1))
+                else:
+                    status.configure(text="正在截屏识别…")
+                    Thread(target=self._scan_screen_qr_worker, args=(win, status, scan_btn), daemon=True).start()
+
+            # 先隐藏扫码窗，避免挡到二维码
+            try:
+                win.withdraw()
+            except Exception:
+                pass
+            self.after(300, lambda: _countdown(2))
+
+        scan_btn = ctk.CTkButton(btn_row, text="开始识别", width=120, height=36, fg_color="#2563EB", command=do_scan)
+        scan_btn.pack(side="right")
+        ctk.CTkButton(btn_row, text="取消", width=90, height=36, command=do_close).pack(side="right", padx=(0, 8))
+
+    def _scan_screen_qr_worker(self, win, status_label, scan_btn):
+        def ui(msg, reopen=False):
+            def _():
                 try:
-                    if status.get("label"):
-                        status["label"].configure(text=msg)
+                    if reopen:
+                        win.deiconify()
+                        win.lift()
+                    status_label.configure(text=msg)
+                    scan_btn.configure(state="normal")
                 except Exception:
                     pass
-            self.after(0, _u)
+            self.after(0, _)
 
-        _set("正在截取屏幕…")
         try:
             from PIL import ImageGrab
         except Exception:
-            _set("缺少 Pillow，无法截屏")
+            ui("缺少 Pillow，无法截屏", reopen=True)
             return
-        img = None
+
         try:
             img = ImageGrab.grab()
-            _set("截屏完成，正在识别二维码…")
         except Exception as e:
-            _set(f"截屏失败：{e}")
+            ui("截屏失败：%s" % e, reopen=True)
             return
 
         texts = []
-        # 优先 pyzbar
         try:
             from pyzbar.pyzbar import decode as zbar_decode
-            res = zbar_decode(img)
-            for r in res:
+            for obj in zbar_decode(img):
                 try:
-                    texts.append(r.data.decode("utf-8", errors="ignore"))
+                    texts.append(obj.data.decode("utf-8", errors="ignore"))
                 except Exception:
                     pass
         except Exception:
             pass
-
-        # 备选 opencv
         if not texts:
             try:
-                import numpy as np
                 import cv2
+                import numpy as np
                 arr = np.array(img.convert("RGB"))
-                arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                arr = arr[:, :, ::-1]
                 det = cv2.QRCodeDetector()
+                val, _, _ = det.detectAndDecode(arr)
+                if val:
+                    texts.append(val)
                 # multi
-                ok, decoded, _, _ = det.detectAndDecodeMulti(arr)
-                if ok and decoded:
-                    for s in decoded:
-                        if s:
-                            texts.append(s)
-                if not texts:
-                    data, _, _ = det.detectAndDecode(arr)
-                    if data:
-                        texts.append(data)
+                try:
+                    ok, decoded, _, _ = det.detectAndDecodeMulti(arr)
+                    if ok and decoded:
+                        for v in decoded:
+                            if v and v not in texts:
+                                texts.append(v)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
         if not texts:
             self.log("未识别到二维码。请把二维码完整显示在屏幕上后重试")
+            ui("未识别到二维码，请重试", reopen=True)
             return
 
-        self.log(f"识别到 {len(texts)} 个二维码")
-        all_nodes = []
+        self.log("识别到 %d 个二维码" % len(texts))
+        # 复用原有导入逻辑
+        try:
+            self._import_qr_texts(texts)
+            ui("导入成功", reopen=True)
+            self.after(1000, lambda: win.destroy() if win.winfo_exists() else None)
+        except Exception as e:
+            self.log("扫码导入失败：%s" % e)
+            ui("导入失败：%s" % e, reopen=True)
+
+    def _import_qr_texts(self, texts):
+        """解析扫码文本并入订阅/节点。"""
+        from urllib.parse import urlparse
+        added_nodes = []
         for i, text in enumerate(texts):
             text = (text or "").strip()
             if not text:
                 continue
-            self.log(f"二维码{i+1}：{text[:80]}{'...' if len(text) > 80 else ''}")
-            if text.startswith(("http://", "https://")):
+            self.log("二维码%d：%s%s" % (i + 1, text[:80], "..." if len(text) > 80 else ""))
+            low = text.lower()
+            if low.startswith("http://") or low.startswith("https://"):
                 try:
-                    self.after(0, lambda u=text: (self.entry.delete(0, "end"), self.entry.insert(0, u)))
-                    self.subscription_url = text
-                    if not any(s.get("url") == text for s in self.subscriptions):
-                        try:
-                            from urllib.parse import urlparse
-                            nm = (urlparse(text).netloc or "")[:20] or f"扫码订阅{len(self.subscriptions)+1}"
-                        except Exception:
-                            nm = f"扫码订阅{len(self.subscriptions)+1}"
-                        self.subscriptions.append({"name": nm, "url": text})
-                    resp = requests.get(text, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
-                    resp.raise_for_status()
-                    nodes = parse_subscription_content(resp.text)
-                    all_nodes.extend(nodes)
-                    self.log(f"  订阅解析：{len(nodes)} 个节点")
-                except Exception as e:
-                    self.log(f"  订阅拉取失败：{e}")
-                continue
-            nodes = parse_subscription_content(text)
-            if not nodes and "://" in text:
-                node = parse_link(text)
-                if node:
-                    nodes = [node]
-            if nodes:
-                all_nodes.extend(nodes)
-                self.log(f"  解析节点：{len(nodes)}")
-            else:
-                self.log("  无法识别为节点或订阅")
-
-        if not all_nodes:
-            _set("二维码中未得到有效节点")
-            def _close_empty():
+                    nm = (urlparse(text).netloc or "")[:20] or ("扫码订阅%d" % (len(self.subscriptions) + 1))
+                except Exception:
+                    nm = "扫码订阅%d" % (len(self.subscriptions) + 1)
+                self.subscriptions.append({"name": nm, "url": text})
+                self.subscription_url = text
                 try:
-                    if status.get("win"):
-                        status["win"].destroy()
+                    self.entry.delete(0, "end")
+                    self.entry.insert(0, text)
+                    self.load_nodes_thread()
                 except Exception:
                     pass
-            self.after(1500, _close_empty)
-            return
-
-        # 合并去重
-        seen = set()
-        merged = []
-        for n in (self.nodes or []) + all_nodes:
-            key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}"
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(n)
-        self.nodes = merged
-
+            else:
+                node = None
+                try:
+                    node = parse_link(text)
+                except Exception:
+                    node = None
+                if node:
+                    added_nodes.append(node)
+                else:
+                    try:
+                        more = parse_subscription_content(text)
+                        if more:
+                            added_nodes.extend(more)
+                    except Exception:
+                        pass
+        if added_nodes:
+            self.nodes = list(self.nodes or []) + added_nodes
+            # 去重
+            seen = set()
+            merged = []
+            for n in self.nodes:
+                key = "%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(n)
+            self.nodes = merged
         def _ui():
             self.refresh_node_list(keep_selection=False)
             try:
@@ -2598,19 +2658,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
             self.save_settings()
-            self.log(f"扫码导入完成，当前共 {len(self.nodes)} 个节点")
-            try:
-                if status.get("label"):
-                    status["label"].configure(text=f"完成：导入后共 {len(self.nodes)} 个节点")
-            except Exception:
-                pass
-            def _close_ok():
-                try:
-                    if status.get("win"):
-                        status["win"].destroy()
-                except Exception:
-                    pass
-            self.after(1200, _close_ok)
+            self.log("扫码导入完成，当前共 %d 个节点" % len(self.nodes))
         self.after(0, _ui)
 
     def show_node_qr(self):
@@ -3619,8 +3667,10 @@ class App(ctk.CTk):
         return out
 
     def apply_custom_domains(self):
-        self.direct_domains = self.direct_entry.get().strip() if hasattr(self, "direct_entry") else ""
-        self.proxy_domains = self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else ""
+        if getattr(self, "direct_entry", None) is not None:
+            self.direct_domains = self.direct_entry.get().strip()
+        if getattr(self, "proxy_entry", None) is not None:
+            self.proxy_domains = self.proxy_entry.get().strip()
         self.save_settings()
         dd = self.parse_domain_list(self.direct_domains)
         pd = self.parse_domain_list(self.proxy_domains)
