@@ -50,7 +50,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.4"
+APP_VERSION = "0.18.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -908,14 +908,17 @@ class App(ctk.CTk):
         self.app_ver_label.pack(side="left", padx=(4, 10))
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
         self.status_label.pack(side="left", padx=8)
-        self.current_label = ctk.CTkLabel(top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
-                                          text_color=("gray40", "gray60"))
-        self.current_label.pack(side="left", padx=8)
+        # 核心版本固定在状态后，避免被长节点名挤掉
         self.version_label = ctk.CTkLabel(
-            top, text=f"v{APP_VERSION}",
+            top, text="",
             font=("Microsoft YaHei UI", 11), text_color=("gray45", "gray55")
         )
-        self.version_label.pack(side="left", padx=8)
+        self.version_label.pack(side="left", padx=(4, 8))
+        self.current_label = ctk.CTkLabel(
+            top, text="当前节点：无", font=("Microsoft YaHei UI", 12),
+            text_color=("gray40", "gray60"), width=260, anchor="w"
+        )
+        self.current_label.pack(side="left", padx=4)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
@@ -1214,7 +1217,7 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            self.current_label.configure(text=f"当前节点：{node.get('name')}")
+            self.current_label.configure(text=self._short_node_text(node))
         except Exception:
             pass
 
@@ -1851,10 +1854,15 @@ class App(ctk.CTk):
             self._xray_ver = "未知"
         self.load_settings()
         try:
+            if hasattr(self, "app_ver_label"):
+                self.app_ver_label.configure(text=f"v{APP_VERSION}")
+        except Exception:
+            pass
+        try:
             self.refresh_version_label()
         except Exception:
             try:
-                self.version_label.configure(text=f"v{APP_VERSION} | Xray {self._xray_ver}")
+                self.version_label.configure(text=f"Xray {self._xray_ver}")
             except Exception:
                 pass
         try:
@@ -3441,11 +3449,17 @@ class App(ctk.CTk):
     def _short_node_text(self, node: dict, lat_s: str = "") -> str:
         name = (node or {}).get("name") or "无"
         proto = (node or {}).get("protocol") or ""
-        if len(name) > 28:
-            name = name[:26] + "…"
-        base = f"当前节点：[{proto}] {name}"
+        # 顶栏空间有限，过长用省略号，避免挡住核心版本
+        max_name = 18
+        if len(name) > max_name:
+            name = name[: max_name - 1] + "…"
+        base = f"节点：{name}"
+        if proto:
+            base = f"节点：[{proto}] {name}"
         if lat_s:
             base += f" ({lat_s})"
+        if len(base) > 36:
+            base = base[:35] + "…"
         return base
 
     def _fmt_bytes(self, n: float) -> str:
@@ -3928,8 +3942,12 @@ class App(ctk.CTk):
         elif "直连" in mode:
             final = "direct"
         else:
-            # 规则：私网直连，其余代理（简化）
             rules.append({"ip_is_private": True, "outbound": "direct"})
+            rules.append({
+                "domain_suffix": [".cn", ".中国", "baidu.com", "qq.com", "weixin.qq.com",
+                                  "taobao.com", "alipay.com", "bilibili.com", "163.com"],
+                "outbound": "direct",
+            })
             final = "proxy"
 
         cfg = {
@@ -3988,6 +4006,29 @@ class App(ctk.CTk):
         route_rules = [
             {"action": "sniff"},
             {"ip_is_private": True, "outbound": "direct"},
+            # 国内常见域名走直连，避免 TUN 全部进代理导致国内站超时
+            {
+                "domain_suffix": [
+                    ".cn", ".中国", ".公司", ".网络",
+                    "baidu.com", "qq.com", "weixin.qq.com", "wechat.com",
+                    "taobao.com", "aliyun.com", "alipay.com", "tmall.com",
+                    "163.com", "126.com", "yeah.net",
+                    "bilibili.com", "hdslb.com",
+                    "zhihu.com", "douyin.com", "bytedance.com",
+                    "jd.com", "360.cn", "huawei.com", "mi.com", "xiaomi.com",
+                    "microsoft.com", "office.com", "live.com", "windows.com",
+                    "apple.com", "icloud.com",
+                    "gtimg.com", "qpic.cn", "dhgate.com",
+                ],
+                "outbound": "direct",
+            },
+            {
+                "domain_keyword": [
+                    "baidu", "weixin", "wechat", "alipay", "taobao",
+                    "bilibili", "douyin", "zhihu",
+                ],
+                "outbound": "direct",
+            },
         ]
         # 节点域名单直连（不走 TUN 出站环）
         try:
