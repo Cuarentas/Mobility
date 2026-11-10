@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.2"
+APP_VERSION = "0.19.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -940,56 +940,64 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        # ===== 订阅行（多订阅）=====
-        sub = ctk.CTkFrame(body, fg_color="transparent")
-        sub.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(sub, text="订阅", font=("Microsoft YaHei UI", 13)).pack(side="left")
+        # ===== 工具栏（精简：主操作 + 二级菜单）=====
+        sub = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
+        sub.pack(fill="x", pady=(0, 6), ipady=4)
+        inner = ctk.CTkFrame(sub, fg_color="transparent")
+        inner.pack(fill="x", padx=8, pady=4)
+
+        ctk.CTkLabel(inner, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
         self.sub_select = ctk.CTkComboBox(
-            sub, width=140, height=32, values=["（无订阅）"], state="readonly",
+            inner, width=130, height=32, values=["（无订阅）"], state="readonly",
             command=self.on_sub_select
         )
         self.sub_select.set("（无订阅）")
         self.sub_select.pack(side="left", padx=(6, 4))
-        self.entry = ctk.CTkEntry(sub, height=32, placeholder_text="订阅 URL 或节点链接")
+        self.entry = ctk.CTkEntry(inner, height=32, placeholder_text="订阅 URL 或节点链接")
         self.entry.pack(side="left", fill="x", expand=True, padx=4)
-        self.load_btn = ctk.CTkButton(sub, text="加载", width=56, height=32, command=self.load_nodes_thread)
+
+        self.load_btn = ctk.CTkButton(inner, text="加载", width=60, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="left", padx=2)
-        self.add_sub_btn = ctk.CTkButton(sub, text="添加", width=56, height=32, fg_color="#0D9488", command=self.add_subscription)
-        self.add_sub_btn.pack(side="left", padx=2)
-        self.del_sub_btn = ctk.CTkButton(sub, text="删除", width=56, height=32, fg_color="#DC2626", command=self.remove_subscription)
-        self.del_sub_btn.pack(side="left", padx=2)
-        self.rename_sub_btn = ctk.CTkButton(sub, text="改名", width=56, height=32, fg_color="#0EA5E9", command=self.rename_subscription)
-        self.rename_sub_btn.pack(side="left", padx=2)
-        self.refresh_all_btn = ctk.CTkButton(sub, text="更新全部", width=72, height=32, fg_color="#7C3AED", command=self.refresh_all_subs_thread)
-        self.refresh_all_btn.pack(side="left", padx=2)
-        self.clip_btn = ctk.CTkButton(sub, text="剪贴板", width=64, height=32, command=self.import_clipboard_thread)
-        self.clip_btn.pack(side="left", padx=2)
-        self.qr_btn = ctk.CTkButton(sub, text="扫码", width=56, height=32, fg_color="#7C3AED",
-                                    command=self.scan_screen_qr_thread)
-        self.qr_btn.pack(side="left", padx=2)
-        self.show_qr_btn = ctk.CTkButton(sub, text="生成码", width=56, height=32, fg_color="#DB2777",
-                                         command=self.show_node_qr)
-        self.show_qr_btn.pack(side="left", padx=2)
+        self.sub_menu_btn = ctk.CTkButton(
+            inner, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
+            command=self.open_sub_menu
+        )
+        self.sub_menu_btn.pack(side="left", padx=2)
+        self.node_menu_btn = ctk.CTkButton(
+            inner, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
+            command=self.open_node_menu
+        )
+        self.node_menu_btn.pack(side="left", padx=2)
+        self.import_menu_btn = ctk.CTkButton(
+            inner, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
+            command=self.open_import_menu
+        )
+        self.import_menu_btn.pack(side="left", padx=2)
 
-        # ===== 工具行：左侧操作按钮，右侧核心/并发/模式（填满空白） =====
+        # 兼容旧代码引用的隐藏按钮（逻辑仍在，不占布局）
+        self.add_sub_btn = self.sub_menu_btn
+        self.del_sub_btn = self.sub_menu_btn
+        self.rename_sub_btn = self.sub_menu_btn
+        self.refresh_all_btn = self.sub_menu_btn
+        self.clip_btn = self.import_menu_btn
+        self.qr_btn = self.import_menu_btn
+        self.show_qr_btn = self.import_menu_btn
+        self.test_btn = self.node_menu_btn
+        self.test_filter_btn = self.node_menu_btn
+        self.best_btn = self.node_menu_btn
+        self.copy_btn = self.node_menu_btn
+        self.ping_btn = self.node_menu_btn
+        self.move_up_btn = self.node_menu_btn
+        self.move_down_btn = self.node_menu_btn
+
+        # 第二行：并发 + 模式（右侧对齐，更干净）
         tools = ctk.CTkFrame(body, fg_color="transparent")
-        tools.pack(fill="x", pady=(0, 6))
-        self.test_btn = ctk.CTkButton(tools, text="测速全部", width=80, height=30, fg_color="#7C3AED", command=self.test_all_thread)
-        self.test_btn.pack(side="left", padx=2)
-        self.test_filter_btn = ctk.CTkButton(tools, text="测速筛选", width=80, height=30, fg_color="#8B5CF6", command=self.test_filtered_thread)
-        self.test_filter_btn.pack(side="left", padx=2)
-        self.best_btn = ctk.CTkButton(tools, text="选最快", width=72, height=30, fg_color="#059669", command=self.select_best)
-        self.best_btn.pack(side="left", padx=2)
-        self.copy_btn = ctk.CTkButton(tools, text="复制节点", width=72, height=30, command=self.copy_selected_node)
-        self.copy_btn.pack(side="left", padx=2)
-        self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
-        self.ping_btn.pack(side="left", padx=2)
-        self.move_up_btn = ctk.CTkButton(tools, text="上移", width=52, height=30, command=lambda: self.move_selected_node(-1))
-        self.move_up_btn.pack(side="left", padx=2)
-        self.move_down_btn = ctk.CTkButton(tools, text="下移", width=52, height=30, command=lambda: self.move_selected_node(1))
-        self.move_down_btn.pack(side="left", padx=2)
+        tools.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            tools, text="常用操作已收入「订阅管理 / 节点工具 / 导入」菜单",
+            font=("Microsoft YaHei UI", 11), text_color=("gray50", "gray55")
+        ).pack(side="left", padx=4)
 
-        # 右侧选项区（核心由设置「按协议映射」决定，此处不再放核心下拉）
         right_opts = ctk.CTkFrame(tools, fg_color="transparent")
         right_opts.pack(side="right", padx=(8, 0))
         ctk.CTkLabel(right_opts, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
@@ -1508,6 +1516,181 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+
+
+    def _popup_action_menu(self, title: str, actions: list, anchor_widget=None):
+        """轻量二级菜单：actions = [(显示名, 回调), ...]"""
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+        # 定位到按钮附近
+        try:
+            if anchor_widget is not None:
+                ax = anchor_widget.winfo_rootx()
+                ay = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
+                win.geometry("+%d+%d" % (ax, ay))
+            else:
+                win.geometry("220x%d" % (48 + 36 * len(actions)))
+        except Exception:
+            win.geometry("220x%d" % (48 + 36 * len(actions)))
+
+        ctk.CTkLabel(win, text=title, font=("Microsoft YaHei UI", 13, "bold")).pack(
+            anchor="w", padx=12, pady=(10, 6)
+        )
+        box = ctk.CTkFrame(win, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        def make_cmd(fn):
+            def _run():
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                try:
+                    fn()
+                except Exception as e:
+                    self.log("%s 失败：%s" % (title, e))
+            return _run
+
+        for label, fn in actions:
+            ctk.CTkButton(
+                box, text=label, height=32, anchor="w",
+                fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"),
+                hover_color=("#DBEAFE", "#1E3A5F"),
+                command=make_cmd(fn),
+            ).pack(fill="x", pady=2)
+
+        def _close(_e=None):
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        win.bind("<FocusOut>", lambda e: win.after(120, _close))
+        win.focus_force()
+
+    def open_sub_menu(self):
+        self._popup_action_menu(
+            "订阅管理",
+            [
+                ("更新当前订阅", self.refresh_current_sub_thread),
+                ("添加当前链接到订阅", self.add_subscription),
+                ("删除当前订阅", self.remove_subscription),
+                ("重命名当前订阅", self.rename_subscription),
+                ("更新全部订阅", self.refresh_all_subs_thread),
+            ],
+            getattr(self, "sub_menu_btn", None),
+        )
+
+    def open_node_menu(self):
+        self._popup_action_menu(
+            "节点工具",
+            [
+                ("测速全部", self.test_all_thread),
+                ("测速筛选结果", self.test_filtered_thread),
+                ("选择最快节点", self.select_best),
+                ("复制当前节点", self.copy_selected_node),
+                ("删除当前节点", self.delete_selected_node),
+                ("连通性测试", self.connectivity_test_thread),
+                ("节点上移", lambda: self.move_selected_node(-1)),
+                ("节点下移", lambda: self.move_selected_node(1)),
+            ],
+            getattr(self, "node_menu_btn", None),
+        )
+
+    def refresh_current_sub_thread(self):
+        Thread(target=self.refresh_current_sub, daemon=True).start()
+
+    def refresh_current_sub(self):
+        """只更新当前选中的订阅（或输入框中的 URL）。"""
+        url = ""
+        try:
+            url = (self.entry.get() or "").strip()
+        except Exception:
+            url = ""
+        if not url.startswith(("http://", "https://")):
+            # 从当前订阅选择回填
+            name = ""
+            try:
+                name = self.sub_select.get()
+            except Exception:
+                name = ""
+            for s in self.subscriptions or []:
+                n = s.get("name") or (s.get("url") or "")[:24]
+                if n == name and s.get("url"):
+                    url = s.get("url")
+                    try:
+                        self.entry.delete(0, "end")
+                        self.entry.insert(0, url)
+                    except Exception:
+                        pass
+                    break
+        if not url.startswith(("http://", "https://")):
+            self.log("请先选择订阅或在输入框填入订阅 URL")
+            return
+        self.subscription_url = url
+        self.log("正在更新当前订阅…")
+        self.load_nodes()
+
+    def delete_selected_node(self):
+        node = None
+        try:
+            node = self.get_selected_node()
+        except Exception:
+            node = getattr(self, "current_node", None)
+        if not node:
+            self.log("请先选择要删除的节点")
+            return
+        try:
+            idx = self.nodes.index(node)
+        except ValueError:
+            lab = node.get("_label") or node.get("name")
+            idx = next(
+                (i for i, n in enumerate(self.nodes or [])
+                 if (n.get("_label") or n.get("name")) == lab),
+                -1,
+            )
+        if idx < 0:
+            self.log("未在列表中找到该节点")
+            return
+        removed = self.nodes.pop(idx)
+        name = removed.get("name") or removed.get("_label") or "节点"
+        if self.current_node is removed or (
+            self.current_node
+            and (self.current_node.get("_label") or self.current_node.get("name"))
+            == (removed.get("_label") or removed.get("name"))
+        ):
+            self.current_node = self.nodes[idx] if idx < len(self.nodes) else (
+                self.nodes[idx - 1] if self.nodes else None
+            )
+            self._selected_label = (
+                self.current_node.get("_label") if self.current_node else None
+            )
+        self.refresh_node_list(keep_selection=True, resort=False)
+        self.save_settings()
+        try:
+            if self.current_node:
+                self.current_label.configure(text=self._short_node_text(self.current_node))
+            else:
+                self.current_label.configure(text="当前节点：无")
+        except Exception:
+            pass
+        self.log("已删除节点：%s" % name)
+
+    def open_import_menu(self):
+        self._popup_action_menu(
+            "导入 / 二维码",
+            [
+                ("从剪贴板导入", self.import_clipboard_thread),
+                ("扫描屏幕二维码", self.scan_screen_qr_thread),
+                ("生成节点二维码", self.show_node_qr),
+            ],
+            getattr(self, "import_menu_btn", None),
+        )
 
     def open_tun_settings_dialog(self):
         """TUN 模式设置（参考 v2rayN）。"""
