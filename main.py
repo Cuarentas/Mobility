@@ -906,7 +906,7 @@ class App(ctk.CTk):
             top, text=f"v{APP_VERSION}", font=("Microsoft YaHei UI", 12),
             text_color=("gray40", "gray60"))
         self.app_ver_label.pack(side="left", padx=(4, 10))
-        self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 13))
+        self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#DC2626", "#F87171"))
         self.status_label.pack(side="left", padx=8)
         # 核心版本固定在状态后，避免被长节点名挤掉
         self.version_label = ctk.CTkLabel(
@@ -3632,7 +3632,7 @@ class App(ctk.CTk):
         try:
             if self.is_running:
                 try:
-                    self.status_label.configure(text="运行中", text_color="#16A34A")
+                    self.status_label.configure(text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80"))
                 except Exception:
                     pass
                 if self._run_started_at and hasattr(self, "stat_time_label"):
@@ -3655,7 +3655,7 @@ class App(ctk.CTk):
                         pass
             else:
                 try:
-                    self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
+                    self.status_label.configure(text="未运行", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#DC2626", "#F87171"))
                 except Exception:
                     pass
                 if hasattr(self, "stat_time_label"):
@@ -4202,7 +4202,7 @@ class App(ctk.CTk):
                 if self.set_system_proxy(True, http_port):
                     self.log(f"系统代理已设置 127.0.0.1:{http_port}")
                 self.is_running = True
-                self.after(0, lambda: self.status_label.configure(text="运行中", text_color="#16A34A"))
+                self.after(0, lambda: self.status_label.configure(text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")))
                 tun_s = " + TUN" if getattr(self, "tun_enabled", False) else ""
                 self.log(f"代理已启动（sing-box{tun_s}）")
                 self._run_started_at = time.time()
@@ -4379,7 +4379,7 @@ class App(ctk.CTk):
                     except Exception:
                         pass
                 self.after(0, lambda: self.status_label.configure(
-                    text="运行中", text_color="#16A34A"
+                    text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
                 ))
                 self.log("代理已启动" + ("（sing-box TUN）" if getattr(self, "tun_enabled", False) else ""))
                 if self.allow_lan and not getattr(self, "tun_enabled", False):
@@ -4435,7 +4435,7 @@ class App(ctk.CTk):
         self.is_running = False
         self._run_started_at = None
         try:
-            self.status_label.configure(text="未运行", text_color=("gray30", "gray70"))
+            self.status_label.configure(text="未运行", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#DC2626", "#F87171"))
         except Exception:
             pass
         try:
