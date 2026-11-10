@@ -29,7 +29,20 @@ ctk.set_default_color_theme("blue")
 TEST_WORKERS_DEFAULT = 32
 TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
-PROXY_MODES = ["规则模式", "全局模式", "直连模式"]
+PROXY_MODES = ["规则模式", "全局模式", "直连模式", "PAC模式"]
+TUN_STACK_OPTIONS = ["system", "gvisor", "mixed"]
+TUN_MTU_OPTIONS = ["9000", "1500", "1400", "1280"]
+DEFAULT_TUN_SETTINGS = {
+    "auto_route": True,
+    "strict_route": False,
+    "stack": "system",
+    "mtu": 1400,
+    "enable_ipv6": False,
+    "route_exclude": "",
+    "ipv4_address": "172.19.0.1/30",
+    "interface_name": "Mobility0",
+}
+
 CORE_OPTIONS = ["Xray", "sing-box", "Mihomo"]
 CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http"]
 DEFAULT_CORE_MAP = {p: "Xray" for p in CORE_PROTOCOLS}
@@ -50,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.18.5"
+APP_VERSION = "0.19.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -835,6 +848,10 @@ class App(ctk.CTk):
         self.subscriptions = []
         self._xray_ver = "未知"
         self.tun_enabled = False
+        self.tun_settings = dict(DEFAULT_TUN_SETTINGS)
+        self.routing_extra_direct = ""
+        self.routing_extra_proxy = ""
+        self.routing_extra_block = ""
         self.proxy_core = "Xray"
         self.core_map = dict(DEFAULT_CORE_MAP)
         self.live_stats_enabled = False  # 实时网速/内存，默认关闭
@@ -967,6 +984,10 @@ class App(ctk.CTk):
         self.copy_btn.pack(side="left", padx=2)
         self.ping_btn = ctk.CTkButton(tools, text="连通性", width=64, height=30, fg_color="#EA580C", command=self.connectivity_test_thread)
         self.ping_btn.pack(side="left", padx=2)
+        self.move_up_btn = ctk.CTkButton(tools, text="上移", width=52, height=30, command=lambda: self.move_selected_node(-1))
+        self.move_up_btn.pack(side="left", padx=2)
+        self.move_down_btn = ctk.CTkButton(tools, text="下移", width=52, height=30, command=lambda: self.move_selected_node(1))
+        self.move_down_btn.pack(side="left", padx=2)
 
         # 右侧选项区（核心由设置「按协议映射」决定，此处不再放核心下拉）
         right_opts = ctk.CTkFrame(tools, fg_color="transparent")
@@ -1137,20 +1158,25 @@ class App(ctk.CTk):
         self.hotkey_setting_btn = ctk.CTkButton(btn_box, text="热键设置", height=bh, command=self.open_hotkey_dialog)
         self.hotkey_setting_btn.grid(row=0, column=1, sticky="ew", pady=3, padx=(3, 0))
 
+        self.tun_setting_btn = ctk.CTkButton(btn_box, text="TUN 设置", height=bh, command=self.open_tun_settings_dialog)
+        self.tun_setting_btn.grid(row=1, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.route_setting_btn = ctk.CTkButton(btn_box, text="路由设置", height=bh, command=self.open_routing_dialog)
+        self.route_setting_btn.grid(row=1, column=1, sticky="ew", pady=3, padx=(3, 0))
+
         self.clear_log_btn = ctk.CTkButton(btn_box, text="清空日志", height=bh, command=self.clear_log)
-        self.clear_log_btn.grid(row=1, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.clear_log_btn.grid(row=2, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.update_btn = ctk.CTkButton(btn_box, text="检查更新", height=bh, command=self.check_update_thread)
-        self.update_btn.grid(row=1, column=1, sticky="ew", pady=3, padx=(3, 0))
+        self.update_btn.grid(row=2, column=1, sticky="ew", pady=3, padx=(3, 0))
 
         self.core_update_btn = ctk.CTkButton(btn_box, text="更新核心", height=bh, command=self.update_core_thread)
-        self.core_update_btn.grid(row=2, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.core_update_btn.grid(row=3, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.geo_update_btn = ctk.CTkButton(btn_box, text="更新规则", height=bh, command=self.update_geo_thread)
-        self.geo_update_btn.grid(row=2, column=1, sticky="ew", pady=3, padx=(3, 0))
+        self.geo_update_btn.grid(row=3, column=1, sticky="ew", pady=3, padx=(3, 0))
 
         self.admin_btn = ctk.CTkButton(btn_box, text="管理员运行", height=bh, command=self.restart_as_admin)
-        self.admin_btn.grid(row=3, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self.admin_btn.grid(row=4, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.about_btn = ctk.CTkButton(btn_box, text="关于", height=bh, command=self.show_about)
-        self.about_btn.grid(row=3, column=1, sticky="ew", pady=3, padx=(3, 0))
+        self.about_btn.grid(row=4, column=1, sticky="ew", pady=3, padx=(3, 0))
 
         self.open_release_btn = ctk.CTkButton(btn_box, text="打开发布页", height=bh, command=self.open_releases_page)
         self.open_release_btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
@@ -1483,6 +1509,246 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+
+    def open_tun_settings_dialog(self):
+        """TUN 模式设置（参考 v2rayN）。"""
+        win = ctk.CTkToplevel(self)
+        win.title("TUN 模式设置")
+        win.geometry("520x520")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ts = dict(DEFAULT_TUN_SETTINGS)
+        ts.update(getattr(self, "tun_settings", {}) or {})
+
+        ctk.CTkLabel(win, text="TUN 模式设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 8)
+        )
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=20)
+
+        def switch_row(label, key):
+            fr = ctk.CTkFrame(form, fg_color="transparent")
+            fr.pack(fill="x", pady=6)
+            ctk.CTkLabel(fr, text=label, width=120, anchor="w").pack(side="left")
+            var = ctk.BooleanVar(value=bool(ts.get(key)))
+            sw = ctk.CTkSwitch(fr, text="", variable=var)
+            sw.pack(side="right")
+            return var
+
+        def combo_row(label, values, current):
+            fr = ctk.CTkFrame(form, fg_color="transparent")
+            fr.pack(fill="x", pady=6)
+            ctk.CTkLabel(fr, text=label, width=120, anchor="w").pack(side="left")
+            cb = ctk.CTkComboBox(fr, width=160, values=values, state="readonly")
+            cb.set(str(current if current is not None else values[0]))
+            cb.pack(side="right")
+            return cb
+
+        def entry_row(label, current, placeholder=""):
+            fr = ctk.CTkFrame(form, fg_color="transparent")
+            fr.pack(fill="x", pady=6)
+            ctk.CTkLabel(fr, text=label, width=120, anchor="w").pack(side="left")
+            ent = ctk.CTkEntry(fr, width=260, placeholder_text=placeholder)
+            ent.insert(0, str(current or ""))
+            ent.pack(side="right", fill="x", expand=True, padx=(8, 0))
+            return ent
+
+        var_auto = switch_row("自动路由", "auto_route")
+        var_strict = switch_row("严格路由", "strict_route")
+        cb_stack = combo_row("协议栈", TUN_STACK_OPTIONS, ts.get("stack", "system"))
+        cb_mtu = combo_row("MTU", TUN_MTU_OPTIONS, ts.get("mtu", 1400))
+        var_v6 = switch_row("启用 IPv6", "enable_ipv6")
+        ent_exclude = entry_row("路由排除地址", ts.get("route_exclude", ""), "逗号分隔")
+        ent_v4 = entry_row("IPv4 地址", ts.get("ipv4_address", "172.19.0.1/30"), "172.19.0.1/30")
+        ent_if = entry_row("接口名称", ts.get("interface_name", "Mobility0"), "Mobility0")
+
+        ctk.CTkLabel(
+            form,
+            text="自动路由=接管系统默认路由；严格路由更激进。修改后需重新启动代理生效。",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+            justify="left",
+        ).pack(anchor="w", pady=(10, 4))
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
+
+        def do_reset():
+            var_auto.set(True)
+            var_strict.set(False)
+            cb_stack.set("system")
+            cb_mtu.set("1400")
+            var_v6.set(False)
+            ent_exclude.delete(0, "end")
+            ent_v4.delete(0, "end")
+            ent_v4.insert(0, "172.19.0.1/30")
+            ent_if.delete(0, "end")
+            ent_if.insert(0, "Mobility0")
+
+        def do_ok():
+            try:
+                mtu = int(cb_mtu.get() or 1400)
+            except Exception:
+                mtu = 1400
+            self.tun_settings = {
+                "auto_route": bool(var_auto.get()),
+                "strict_route": bool(var_strict.get()),
+                "stack": (cb_stack.get() or "system").strip(),
+                "mtu": mtu,
+                "enable_ipv6": bool(var_v6.get()),
+                "route_exclude": (ent_exclude.get() or "").strip(),
+                "ipv4_address": (ent_v4.get() or "172.19.0.1/30").strip(),
+                "interface_name": (ent_if.get() or "Mobility0").strip(),
+            }
+            self.save_settings()
+            self.log("TUN 设置已保存，重新启动代理后生效")
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        def do_cancel():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        ctk.CTkButton(btn_row, text="重置", width=90, command=do_reset).pack(side="left")
+        ctk.CTkButton(btn_row, text="取消", width=90, command=do_cancel).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="确定", width=90, fg_color="#2563EB", command=do_ok).pack(side="right")
+
+    def open_routing_dialog(self):
+        """路由与分流增强设置。"""
+        win = ctk.CTkToplevel(self)
+        win.title("路由与分流设置")
+        win.geometry("520x480")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(win, text="路由与分流设置", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 6)
+        )
+        ctk.CTkLabel(
+            win,
+            text="每行一条域名或后缀。保存后重新启动代理生效。",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+        ).pack(anchor="w", padx=20, pady=(0, 8))
+
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=20)
+
+        def box(title, default):
+            ctk.CTkLabel(form, text=title, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(8, 2))
+            tb = ctk.CTkTextbox(form, height=90)
+            tb.pack(fill="x")
+            if default:
+                tb.insert("1.0", default)
+            return tb
+
+        tb_direct = box("强制直连", getattr(self, "routing_extra_direct", "") or "")
+        tb_proxy = box("强制代理", getattr(self, "routing_extra_proxy", "") or "")
+        tb_block = box("拦截（黑名单）", getattr(self, "routing_extra_block", "") or "")
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
+
+        def do_ok():
+            self.routing_extra_direct = tb_direct.get("1.0", "end").strip()
+            self.routing_extra_proxy = tb_proxy.get("1.0", "end").strip()
+            self.routing_extra_block = tb_block.get("1.0", "end").strip()
+            self.save_settings()
+            self.log("路由规则已保存，请重新启动代理")
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        def do_cancel():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        ctk.CTkButton(btn_row, text="取消", width=90, command=do_cancel).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="确定", width=90, fg_color="#2563EB", command=do_ok).pack(side="right")
+
+    def move_selected_node(self, delta: int):
+        node = None
+        try:
+            node = self.get_selected_node()
+        except Exception:
+            node = getattr(self, "current_node", None)
+        if not node or not self.nodes:
+            self.log("请先选择要移动的节点")
+            return
+        try:
+            idx = self.nodes.index(node)
+        except ValueError:
+            lab = node.get("_label") or node.get("name")
+            idx = next((i for i, n in enumerate(self.nodes) if (n.get("_label") or n.get("name")) == lab), -1)
+        if idx < 0:
+            return
+        new_i = idx + int(delta)
+        if new_i < 0 or new_i >= len(self.nodes):
+            return
+        self.nodes[idx], self.nodes[new_i] = self.nodes[new_i], self.nodes[idx]
+        self.current_node = self.nodes[new_i]
+        self._selected_label = self.current_node.get("_label")
+        self.refresh_node_list(keep_selection=True)
+        self.save_settings()
+        self.log("节点已" + ("上移" if delta < 0 else "下移"))
+
+    def export_diagnostics(self):
+        try:
+            from tkinter import filedialog
+            path = filedialog.asksaveasfilename(
+                title="导出诊断信息",
+                defaultextension=".txt",
+                filetypes=[("Text", "*.txt")],
+                initialfile="Mobility-diag-v%s.txt" % APP_VERSION,
+            )
+            if not path:
+                return
+            lines = [
+                "Mobility v%s" % APP_VERSION,
+                "Core map: %s" % (getattr(self, "core_map", {}),),
+                "Proxy mode: %s" % (getattr(self, "proxy_mode", ""),),
+                "TUN: %s settings=%s" % (getattr(self, "tun_enabled", False), getattr(self, "tun_settings", {})),
+                "Node: %s" % (getattr(self, "current_node", None),),
+                "",
+                "---- log ----",
+            ]
+            try:
+                if hasattr(self, "log_box"):
+                    lines.append(self.log_box.get("1.0", "end"))
+            except Exception:
+                pass
+            for name in ("xray.log", "error.log", "singbox.log", "singbox-tun.json", "config.json"):
+                fp = self.core_dir / name
+                if fp.exists():
+                    lines.append("")
+                    lines.append("---- %s ----" % name)
+                    try:
+                        lines.append(fp.read_text(encoding="utf-8", errors="ignore")[-8000:])
+                    except Exception as e:
+                        lines.append(str(e))
+            Path(path).write_text("\n".join(lines), encoding="utf-8")
+            self.log("诊断信息已导出：%s" % path)
+        except Exception as e:
+            self.log("导出失败：%s" % e)
+
     def open_hotkey_dialog(self):
         """二级对话框设置全局热键。"""
         win = ctk.CTkToplevel(self)
@@ -1595,7 +1861,7 @@ class App(ctk.CTk):
     def _hotkey_set_proxy(self):
         try:
             _, http_port = self.get_ports()
-            if self.set_system_proxy(True, http_port):
+            if self.apply_system_proxy_for_mode(http_port):
                 self.log(f"热键：已配置系统代理 127.0.0.1:{http_port}")
             else:
                 self.log("热键：配置系统代理失败")
@@ -2499,6 +2765,11 @@ class App(ctk.CTk):
             pystray.MenuItem("启动代理", self.tray_start),
             pystray.MenuItem("停止代理", self.tray_stop),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("切换：规则模式", lambda: self.after(0, lambda: self._tray_set_mode("规则模式"))),
+            pystray.MenuItem("切换：全局模式", lambda: self.after(0, lambda: self._tray_set_mode("全局模式"))),
+            pystray.MenuItem("切换：PAC模式", lambda: self.after(0, lambda: self._tray_set_mode("PAC模式"))),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("清除系统代理", lambda: self.after(0, self._hotkey_clear_proxy)),
             pystray.MenuItem("退出", self.tray_quit),
         )
         img = self.load_tray_image("disconnected")
@@ -2524,6 +2795,20 @@ class App(ctk.CTk):
             self.on_closing()
         self.after(0, _do)
 
+    def _tray_set_mode(self, mode: str):
+        try:
+            if mode in PROXY_MODES:
+                self.proxy_mode = mode
+                if hasattr(self, "mode_combo"):
+                    self.mode_combo.set(mode)
+                self.save_settings()
+                self.log("托盘切换模式：" + mode)
+                if self.is_running:
+                    self.stop_proxy()
+                    self.after(400, self.start_proxy_thread)
+        except Exception as e:
+            self.log("托盘切换模式失败：%s" % e)
+
     def save_settings(self):
         try:
             slim_nodes = []
@@ -2540,6 +2825,10 @@ class App(ctk.CTk):
                 "hotkey_proxy": getattr(self, "hotkey_proxy", "ctrl+shift+p"),
                 "hotkey_clear_proxy": getattr(self, "hotkey_clear_proxy", ""),
                 "hotkey_set_proxy": getattr(self, "hotkey_set_proxy", ""),
+                "tun_settings": getattr(self, "tun_settings", dict(DEFAULT_TUN_SETTINGS)),
+                "routing_extra_direct": getattr(self, "routing_extra_direct", ""),
+                "routing_extra_proxy": getattr(self, "routing_extra_proxy", ""),
+                "routing_extra_block": getattr(self, "routing_extra_block", ""),
                 "nodes": slim_nodes,
                 "selected_label": (self.current_node or {}).get("_label", "") if self.nodes else "",
                 "test_workers": self.workers_combo.get(),
@@ -2633,6 +2922,13 @@ class App(ctk.CTk):
             self.hotkey_proxy = data.get("hotkey_proxy") or "ctrl+shift+p"
             self.hotkey_clear_proxy = data.get("hotkey_clear_proxy") or ""
             self.hotkey_set_proxy = data.get("hotkey_set_proxy") or ""
+            ts = data.get("tun_settings") or {}
+            self.tun_settings = dict(DEFAULT_TUN_SETTINGS)
+            if isinstance(ts, dict):
+                self.tun_settings.update(ts)
+            self.routing_extra_direct = data.get("routing_extra_direct") or ""
+            self.routing_extra_proxy = data.get("routing_extra_proxy") or ""
+            self.routing_extra_block = data.get("routing_extra_block") or ""
             try:
                 self.settings_refresh_hours = float(data.get("settings_refresh_hours") or 0)
             except Exception:
@@ -3293,6 +3589,15 @@ class App(ctk.CTk):
             rules.append({"type": "field", "outboundTag": "direct", "domain": custom_direct})
         if custom_proxy:
             rules.append({"type": "field", "outboundTag": "proxy", "domain": custom_proxy})
+        extra_d = self.parse_domain_list(getattr(self, "routing_extra_direct", "") or "")
+        extra_p = self.parse_domain_list(getattr(self, "routing_extra_proxy", "") or "")
+        extra_b = self.parse_domain_list(getattr(self, "routing_extra_block", "") or "")
+        if extra_d:
+            rules.append({"type": "field", "outboundTag": "direct", "domain": extra_d})
+        if extra_p:
+            rules.append({"type": "field", "outboundTag": "proxy", "domain": extra_p})
+        if extra_b:
+            rules.append({"type": "field", "outboundTag": "block", "domain": extra_b})
 
         # 直连模式：全部直连
         if mode == "直连模式":
@@ -3412,18 +3717,62 @@ class App(ctk.CTk):
             json.dump(config, f, indent=2, ensure_ascii=False)
         return config_path
 
-    def set_system_proxy(self, enable: bool, port: int = 10809):
+    def write_pac_file(self, port: int) -> Path:
+        """生成简易 PAC。"""
+        port = int(port)
+        lines = [
+            "// Mobility PAC",
+            "function FindProxyForURL(url, host) {",
+            '  if (isPlainHostName(host) || shExpMatch(host, "localhost") ||',
+            '      shExpMatch(host, "127.*") || shExpMatch(host, "10.*") ||',
+            '      shExpMatch(host, "192.168.*") || shExpMatch(host, "*.local"))',
+            '    return "DIRECT";',
+            '  if (shExpMatch(host, "*.cn") || shExpMatch(host, "*baidu.com") ||',
+            '      shExpMatch(host, "*qq.com") || shExpMatch(host, "*taobao.com") ||',
+            '      shExpMatch(host, "*aliyun.com") || shExpMatch(host, "*163.com"))',
+            '    return "DIRECT";',
+            '  return "PROXY 127.0.0.1:%d; DIRECT";' % port,
+            "}",
+            "",
+        ]
+        path = get_base_dir() / "mobility.pac"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    def apply_system_proxy_for_mode(self, port: int) -> bool:
+        mode = getattr(self, "proxy_mode", "") or ""
+        if "PAC" in mode:
+            ok = self.set_system_proxy(True, port, pac=True)
+            if ok:
+                self.log("已启用 PAC：mobility.pac -> 127.0.0.1:%s" % port)
+            return ok
+        return self.set_system_proxy(True, port, pac=False)
+
+    def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
             internet_settings = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
                 0, winreg.KEY_WRITE
             )
-            if enable:
+            if enable and pac:
+                pac_path = self.write_pac_file(port)
+                url = pac_path.resolve().as_uri()
+                winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                winreg.SetValueEx(internet_settings, "AutoConfigURL", 0, winreg.REG_SZ, url)
+            elif enable:
+                try:
+                    winreg.DeleteValue(internet_settings, "AutoConfigURL")
+                except Exception:
+                    pass
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, f"127.0.0.1:{port}")
+                winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "127.0.0.1:%s" % port)
             else:
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                try:
+                    winreg.DeleteValue(internet_settings, "AutoConfigURL")
+                except Exception:
+                    pass
             winreg.CloseKey(internet_settings)
 
             INTERNET_OPTION_SETTINGS_CHANGED = 39
@@ -3433,7 +3782,7 @@ class App(ctk.CTk):
             internet_set_option(0, INTERNET_OPTION_REFRESH, 0, 0)
             return True
         except Exception as e:
-            self.log(f"设置系统代理失败：{e}")
+            self.log("设置系统代理失败：%s" % e)
             return False
 
     def read_xray_error(self) -> str:
@@ -4003,6 +4352,17 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+        ts = dict(DEFAULT_TUN_SETTINGS)
+        ts.update(getattr(self, "tun_settings", {}) or {})
+        try:
+            extra = (ts.get("route_exclude") or "").replace(";", ",").split(",")
+            for x in extra:
+                x = x.strip()
+                if x and x not in excludes:
+                    excludes.append(x)
+        except Exception:
+            pass
+
         route_rules = [
             {"action": "sniff"},
             {"ip_is_private": True, "outbound": "direct"},
@@ -4045,12 +4405,12 @@ class App(ctk.CTk):
                 {
                     "type": "tun",
                     "tag": "tun-in",
-                    "interface_name": "Mobility0",
-                    "address": ["172.19.0.1/30"],
-                    "mtu": 1400,
-                    "auto_route": True,
-                    "strict_route": False,
-                    "stack": "system",
+                    "interface_name": ts.get("interface_name") or "Mobility0",
+                    "address": [ts.get("ipv4_address") or "172.19.0.1/30"],
+                    "mtu": int(ts.get("mtu") or 1400),
+                    "auto_route": bool(ts.get("auto_route", True)),
+                    "strict_route": bool(ts.get("strict_route", False)),
+                    "stack": ts.get("stack") or "system",
                     "route_exclude_address": excludes,
                     "platform": {
                         "http_proxy": {
@@ -4199,7 +4559,7 @@ class App(ctk.CTk):
                     self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                     return
                 # 系统代理指向 sing-box mixed/http 端口
-                if self.set_system_proxy(True, http_port):
+                if self.apply_system_proxy_for_mode(http_port):
                     self.log(f"系统代理已设置 127.0.0.1:{http_port}")
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")))
@@ -4308,7 +4668,7 @@ class App(ctk.CTk):
                 else:
                     self.log(f"本地 SOCKS {socks_port} 已就绪")
                 # 2) 系统代理（浏览器兼容）
-                if self.set_system_proxy(True, http_port):
+                if self.apply_system_proxy_for_mode(http_port):
                     self.log(f"系统代理已设置 127.0.0.1:{http_port}（浏览器兼容）")
                 else:
                     self.log("系统代理设置失败，仅依赖 TUN")
@@ -4364,7 +4724,7 @@ class App(ctk.CTk):
                 core_name = getattr(self, "proxy_core", "Xray") or "Xray"
                 self.log(f"sing-box TUN 已启动（代理核心：{core_name}，流量经本地 SOCKS）")
             else:
-                proxy_ok = bool(self.set_system_proxy(True, http_port))
+                proxy_ok = bool(self.apply_system_proxy_for_mode(http_port))
                 if proxy_ok:
                     self.log(f"系统代理已设置为 127.0.0.1:{http_port}")
 
