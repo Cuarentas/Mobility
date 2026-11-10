@@ -1,26 +1,29 @@
 name: Cleanup Old Releases
 
 on:
-  workflow_dispatch: # 允许你手动点击按钮触发测试
-  schedule:
-    - cron: '0 0 * * *' # 每天自动运行一次
+  workflow_dispatch:
 
-# 关键：声明允许使用默认的 GITHUB_TOKEN 进行写入（删除）操作
 permissions:
-  contents: write
+  contents: write # 必须赋予写入权限
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old releases
-        uses: nikhilbadyal/ghaction-rm-releases@v0.8.0
-        with:
-          # 直接使用 GitHub 自动分配的 Token，无需手动配置
+      - name: Delete old Mobility releases
+        run: |
+          # 获取所有 release，筛选出以 "Mobility v" 开头的 tag
+          # 按版本号倒序排列，保留最新 3 个（tail -n +4 表示从第 4 个开始处理）
+          gh release list --repo ${{ github.repository }} --limit 200 --json tagName \
+            | jq -r '.[].tagName | select(startswith("Mobility v"))' \
+            | sort -rV | tail -n +4 \
+            | while read -r tag; do
+                if [ -n "$tag" ]; then
+                  echo "Deleting release and tag: $tag"
+                  # --cleanup-tag 参数确保同时删除对应的 Git Tag
+                  gh release delete "$tag" --repo ${{ github.repository }} --yes --cleanup-tag
+                fi
+              done
+        env:
+          # 使用 GitHub 自动分配的 Token
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 保留最近 3 个版本
-          RELEASES_TO_KEEP: 3
-          # 同时删除对应的 Tag
-          DELETE_TAGS: true
-          # 只匹配以 "Mobility v" 开头的版本（防止误删其他东西）
-          RELEASE_PATTERN: "^Mobility v"
