@@ -64,7 +64,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.3"
+APP_VERSION = "0.20.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -943,64 +943,70 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        # ===== 第1行：订阅 + 加载/菜单 =====
-        sub_row = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
-        sub_row.pack(fill="x", pady=(0, 4))
-        sub_inner = ctk.CTkFrame(sub_row, fg_color="transparent")
-        sub_inner.pack(fill="x", padx=8, pady=6)
+        # ===== 订阅区：左输入 + 右操作（两行右对齐同一列）=====
+        bar = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
+        bar.pack(fill="x", pady=(0, 4))
+        bar_inner = ctk.CTkFrame(bar, fg_color="transparent")
+        bar_inner.pack(fill="x", padx=8, pady=6)
+        bar_inner.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(sub_inner, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
+        # 左列：订阅输入
+        left_col = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        left_col.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 8))
+
+        sub_line = ctk.CTkFrame(left_col, fg_color="transparent")
+        sub_line.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(sub_line, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
         self.sub_select = ctk.CTkComboBox(
-            sub_inner, width=130, height=32, values=["（无订阅）"], state="readonly",
+            sub_line, width=130, height=32, values=["（无订阅）"], state="readonly",
             command=self.on_sub_select
         )
         self.sub_select.set("（无订阅）")
         self.sub_select.pack(side="left", padx=(6, 4))
-        self.entry = ctk.CTkEntry(sub_inner, height=32, placeholder_text="订阅 URL 或节点链接")
+        self.entry = ctk.CTkEntry(sub_line, height=32, placeholder_text="订阅 URL 或节点链接")
         self.entry.pack(side="left", fill="x", expand=True, padx=4)
 
-        self.load_btn = ctk.CTkButton(sub_inner, text="加载", width=60, height=32, command=self.load_nodes_thread)
+        # 右列：两行操作，同一右边缘
+        right_col = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        right_col.grid(row=0, column=1, rowspan=2, sticky="ne")
+
+        r1 = ctk.CTkFrame(right_col, fg_color="transparent")
+        r1.pack(anchor="e", pady=(0, 6))
+        self.load_btn = ctk.CTkButton(r1, text="加载", width=60, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="left", padx=2)
         self.sub_menu_btn = ctk.CTkButton(
-            sub_inner, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
+            r1, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
             command=self.open_sub_menu
         )
         self.sub_menu_btn.pack(side="left", padx=2)
         self.node_menu_btn = ctk.CTkButton(
-            sub_inner, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
+            r1, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
             command=self.open_node_menu
         )
         self.node_menu_btn.pack(side="left", padx=2)
         self.import_menu_btn = ctk.CTkButton(
-            sub_inner, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
+            r1, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
             command=self.open_import_menu
         )
-        self.import_menu_btn.pack(side="left", padx=2)
+        self.import_menu_btn.pack(side="left", padx=(2, 0))
 
-        # ===== 第2行：并发/模式/启动/停止 全部靠右，与上一行「导入」右对齐 =====
-        opt_row = ctk.CTkFrame(body, fg_color="transparent")
-        opt_row.pack(fill="x", pady=(0, 4), padx=(0, 8))  # 与订阅行 sub_inner 右侧内边距对齐
-
-        # 先 pack 右侧按钮组，保证右边缘与上一行导入对齐
-        right_actions = ctk.CTkFrame(opt_row, fg_color="transparent")
-        right_actions.pack(side="right")
-
-        ctk.CTkLabel(right_actions, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
-        self.workers_combo = ctk.CTkComboBox(right_actions, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        r2 = ctk.CTkFrame(right_col, fg_color="transparent")
+        r2.pack(anchor="e")
+        ctk.CTkLabel(r2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
+        self.workers_combo = ctk.CTkComboBox(r2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(right_actions, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
+        ctk.CTkLabel(r2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
         self.mode_combo = ctk.CTkComboBox(
-            right_actions, width=120, height=30, values=PROXY_MODES, state="readonly",
+            r2, width=120, height=30, values=PROXY_MODES, state="readonly",
             command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=(2, 10))
-
-        self.start_btn = ctk.CTkButton(right_actions, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn = ctk.CTkButton(r2, text="启动", width=72, height=32, command=self.start_proxy_thread)
         self.start_btn.pack(side="left", padx=2)
         self.stop_btn = ctk.CTkButton(
-            right_actions, text="停止", width=72, height=32,
+            r2, text="停止", width=72, height=32,
             fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
         )
         self.stop_btn.pack(side="left", padx=(2, 0))
@@ -3186,14 +3192,6 @@ class App(ctk.CTk):
     def tray_quit(self, icon=None, item=None):
         def _do():
             self.close_to_tray = False
-            try:
-                self.stop_proxy()
-            except Exception:
-                pass
-            try:
-                self.restore_network_environment(kill_cores=True)
-            except Exception:
-                pass
             self.on_closing()
         self.after(0, _do)
 
@@ -4191,19 +4189,14 @@ class App(ctk.CTk):
                     winreg.DeleteValue(internet_settings, name)
                 except Exception:
                     pass
+            # 一律清空 ProxyServer，避免 v2rayN 等仍读到 127.0.0.1 残留
             try:
-                val, _ = winreg.QueryValueEx(internet_settings, "ProxyServer")
-                v = (val or "").lower().replace(" ", "")
-                if ("127.0.0.1" in v) or ("localhost" in v) or (not v):
-                    try:
-                        winreg.DeleteValue(internet_settings, "ProxyServer")
-                    except Exception:
-                        try:
-                            winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
-                        except Exception:
-                            pass
+                winreg.DeleteValue(internet_settings, "ProxyServer")
             except Exception:
-                pass
+                try:
+                    winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
+                except Exception:
+                    pass
             # 部分系统还有该键
             try:
                 winreg.SetValueEx(internet_settings, "ProxySettingsPerUser", 0, winreg.REG_DWORD, 1)
@@ -4274,57 +4267,54 @@ class App(ctk.CTk):
                 )
             except Exception:
                 pass
-        # 再等一下让 wintun 释放
-        try:
-            time.sleep(0.3)
-        except Exception:
-            pass
+        # 不在这里 sleep，避免退出卡顿
 
     def restore_network_environment(self, kill_cores: bool = True):
         """停止本软件对系统网络的影响：关代理/PAC/WinHTTP，必要时杀残留核心。"""
+        if getattr(self, "_restoring_network", False):
+            return
+        self._restoring_network = True
         try:
-            self.stop_singbox()
-        except Exception:
-            pass
-        try:
-            self.stop_mihomo()
-        except Exception:
-            pass
-        if self.xray_process:
             try:
-                self.xray_process.terminate()
+                self.stop_singbox()
+            except Exception:
+                pass
+            try:
+                self.stop_mihomo()
+            except Exception:
+                pass
+            if self.xray_process:
                 try:
-                    self.xray_process.wait(timeout=2)
-                except Exception:
                     self.xray_process.kill()
-            except Exception:
-                pass
-            self.xray_process = None
-        if kill_cores:
+                except Exception:
+                    pass
+                self.xray_process = None
+            if kill_cores:
+                try:
+                    self.kill_stale_core_processes()
+                except Exception:
+                    pass
             try:
-                self.kill_stale_core_processes()
+                self.clear_system_proxy_force()
             except Exception:
-                pass
-        try:
-            self.clear_system_proxy_force()
-        except Exception:
+                try:
+                    self.set_system_proxy(False)
+                except Exception:
+                    pass
             try:
-                self.set_system_proxy(False)
+                self.reset_winhttp_proxy()
             except Exception:
                 pass
-        try:
-            self.reset_winhttp_proxy()
-        except Exception:
-            pass
-        try:
-            self.clear_local_proxy_env()
-        except Exception:
-            pass
-        # 再次通知，确保浏览器/其它进程刷新
-        try:
-            self._notify_proxy_change()
-        except Exception:
-            pass
+            try:
+                self.clear_local_proxy_env()
+            except Exception:
+                pass
+            try:
+                self._notify_proxy_change()
+            except Exception:
+                pass
+        finally:
+            self._restoring_network = False
 
     def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
@@ -4352,15 +4342,12 @@ class App(ctk.CTk):
                 except Exception:
                     pass
                 try:
-                    val, _ = winreg.QueryValueEx(internet_settings, "ProxyServer")
-                    v = (val or "").lower().replace(" ", "")
-                    if ("127.0.0.1" in v) or ("localhost" in v):
-                        try:
-                            winreg.DeleteValue(internet_settings, "ProxyServer")
-                        except Exception:
-                            winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
+                    winreg.DeleteValue(internet_settings, "ProxyServer")
                 except Exception:
-                    pass
+                    try:
+                        winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
+                    except Exception:
+                        pass
             winreg.CloseKey(internet_settings)
             self._notify_proxy_change()
             return True
@@ -5367,17 +5354,7 @@ class App(ctk.CTk):
         self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
 
     def stop_proxy(self):
-        if self.xray_process:
-            try:
-                self.xray_process.terminate()
-                self.xray_process.wait(timeout=3)
-            except Exception:
-                try:
-                    self.xray_process.kill()
-                except Exception:
-                    pass
-            self.xray_process = None
-        # 清 TUN/核心残留 + 系统代理/PAC
+        # 清核心 + 系统代理/PAC/WinHTTP（内部会处理 xray/sing-box/mihomo）
         try:
             self.restore_network_environment(kill_cores=True)
         except Exception:
@@ -5418,13 +5395,9 @@ class App(ctk.CTk):
             self.withdraw()
             self.log("已最小化到系统托盘")
             return
-        # 真正退出：必须恢复系统网络，否则其它代理/浏览器会无法上网
+        # 真正退出：只清理一次，避免重复 taskkill/netsh 导致退出很慢
         try:
             self.stop_proxy()
-        except Exception:
-            pass
-        try:
-            self.restore_network_environment(kill_cores=True)
         except Exception:
             pass
         try:
