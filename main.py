@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.5"
+APP_VERSION = "0.19.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -990,13 +990,11 @@ class App(ctk.CTk):
         self.move_up_btn = self.node_menu_btn
         self.move_down_btn = self.node_menu_btn
 
-        # 第二行：并发 + 模式（右侧对齐，更干净）
+        # 第二行：左侧预留给后续功能按钮，右侧并发 + 模式
         tools = ctk.CTkFrame(body, fg_color="transparent")
         tools.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(
-            tools, text="常用操作已收入「订阅管理 / 节点工具 / 导入」菜单",
-            font=("Microsoft YaHei UI", 11), text_color=("gray50", "gray55")
-        ).pack(side="left", padx=4)
+        self.tools_left = ctk.CTkFrame(tools, fg_color="transparent")
+        self.tools_left.pack(side="left", fill="x", expand=True)
 
         right_opts = ctk.CTkFrame(tools, fg_color="transparent")
         right_opts.pack(side="right", padx=(8, 0))
@@ -1540,6 +1538,26 @@ class App(ctk.CTk):
             pass
         try:
             win.transient(self)
+        except Exception:
+            pass
+        # 与主程序一致的窗口图标
+        try:
+            ico = self.icons_dir / "mobility.ico"
+            if ico.exists():
+                win.iconbitmap(str(ico))
+            else:
+                # 回退 png
+                for name in ("logo-main.png", "logo-main-32.png"):
+                    png = self.icons_dir / name
+                    if png.exists():
+                        try:
+                            from PIL import Image, ImageTk
+                            img = Image.open(png)
+                            win._menu_icon = ImageTk.PhotoImage(img)
+                            win.iconphoto(True, win._menu_icon)
+                        except Exception:
+                            pass
+                        break
         except Exception:
             pass
 
