@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.5"
+APP_VERSION = "0.21.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -5968,6 +5968,75 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+
+    def cleanup_logs_on_exit(self):
+        """退出时清理常规日志：仅保留含警告/错误的内容或文件。"""
+        logs_dir = getattr(self, "logs_dir", None)
+        if logs_dir is None:
+            try:
+                logs_dir = Path(getattr(self, "base_dir", Path("."))) / "logs"
+            except Exception:
+                return
+        try:
+            logs_dir = Path(logs_dir)
+        except Exception:
+            return
+        if not logs_dir.is_dir():
+            return
+
+        # 判定严重行的关键词（中英）
+        serious_kw = (
+            "error", "err]", "[error", "warning", "warn]", "[warn",
+            "failed", "failure", "exception", "traceback", "critical", "fatal",
+            "错误", "失败", "异常", "警告", "严重", "崩溃", "拒绝", "无法",
+        )
+
+        def line_is_serious(line: str) -> bool:
+            low = (line or "").lower()
+            if not low.strip():
+                return False
+            for k in serious_kw:
+                if k in low:
+                    return True
+            return False
+
+        for fp in list(logs_dir.glob("*")):
+            try:
+                if not fp.is_file():
+                    continue
+                # 过大的二进制直接跳过
+                if fp.suffix.lower() in (".dll", ".exe", ".dat"):
+                    continue
+                try:
+                    text = fp.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    try:
+                        fp.unlink()
+                    except Exception:
+                        pass
+                    continue
+                lines = text.splitlines()
+                serious_lines = [ln for ln in lines if line_is_serious(ln)]
+                if not serious_lines:
+                    # 无警告/错误：删除整个文件
+                    try:
+                        fp.unlink()
+                    except Exception:
+                        pass
+                    continue
+                # 有严重内容：只保留这些行，并加上说明头
+                try:
+                    header = [
+                        "# Mobility 退出时保留的警告/错误日志",
+                        "# 常规信息日志已自动清理",
+                        "",
+                    ]
+                    fp.write_text("\n".join(header + serious_lines) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
+            except Exception:
+                continue
+
     def on_closing(self):
         # 关闭到托盘（代理可继续跑）
         if self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
@@ -5982,6 +6051,10 @@ class App(ctk.CTk):
             pass
         try:
             self.save_settings()
+        except Exception:
+            pass
+        try:
+            self.cleanup_logs_on_exit()
         except Exception:
             pass
         try:
