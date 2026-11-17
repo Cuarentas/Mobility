@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.2"
+APP_VERSION = "0.21.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -843,8 +843,12 @@ class App(ctk.CTk):
         self.base_dir = get_base_dir()
         self.core_dir = self.base_dir / "core"
         self.core_dir.mkdir(exist_ok=True)
-        self.log_file = self.core_dir / "xray.log"
+        self.logs_dir = self.base_dir / "logs"
+        self.logs_dir.mkdir(exist_ok=True)
+        self.log_file = self.logs_dir / "xray.log"
+        self.app_log_file = self.logs_dir / "mobility.log"
         self.settings_path = self.base_dir / "Subscribe.json"
+        self.log_level = "调试"
 
         self.xray_process = None
         self.singbox_process = None
@@ -1170,7 +1174,7 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(right, text="日志级别", font=("Microsoft YaHei UI", 12)).pack(anchor="w", padx=8, pady=(4, 2))
         self.loglevel_combo = ctk.CTkComboBox(right, height=28, values=LOG_LEVELS, state="readonly", command=self.on_loglevel_change)
-        self.loglevel_combo.set("警告")
+        self.loglevel_combo.set("调试")
         self.loglevel_combo.pack(fill="x", padx=8)
 
         # 核心类型改为二级对话框
@@ -1269,39 +1273,41 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def on_node_button_click(self, node, btn):
-        """左键仅预选节点，需按回车确认后才真正选用。"""
-        self._pending_node = node
-        self._pending_label = node.get("_label") or node.get("name")
-        # 预选高亮（蓝）；已确认使用的保持橙
-        cur_lb = (getattr(self, "current_node", None) or {}).get("_label")
-        for b in self._node_buttons:
+    def _paint_node_buttons(self):
+        """只高亮：一个预选（蓝）+ 一个已确认（橙）。"""
+        pend = getattr(self, "_pending_label", None)
+        cur = None
+        cn = getattr(self, "current_node", None)
+        if isinstance(cn, dict):
+            cur = cn.get("_label") or cn.get("name")
+        for b in getattr(self, "_node_buttons", []) or []:
             try:
                 txt = b.cget("text")
             except Exception:
-                txt = ""
+                continue
             try:
-                if cur_lb and txt == cur_lb:
+                if pend and txt == pend:
+                    b.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="white")
+                elif cur and txt == cur:
                     b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
                 else:
                     b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
             except Exception:
                 pass
-        try:
-            btn.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="white")
-        except Exception:
-            pass
-        try:
-            self.log(f"已预选：{node.get('name')}（按回车确认使用）")
-        except Exception:
-            pass
+
+    def on_node_button_click(self, node, btn):
+        """左键仅预选一个节点，需按回车确认后才真正选用（同时只能有一个代理节点）。"""
+        if not isinstance(node, dict):
+            return
+        self._pending_node = node
+        self._pending_label = node.get("_label") or node.get("name")
+        self._paint_node_buttons()
 
     def confirm_pending_node(self, event=None):
-        """回车确认预选节点为当前使用节点。"""
+        """回车确认预选节点为当前唯一使用节点。"""
         node = getattr(self, "_pending_node", None)
         if not node:
             return "break"
-        # 若焦点在输入框，不抢回车
         try:
             focus = self.focus_get()
             if focus is not None:
@@ -1310,20 +1316,12 @@ class App(ctk.CTk):
                     return None
         except Exception:
             pass
+        # 确认后预选与当前合并为同一节点，只保留一个橙色
         self.current_node = node
         self._selected_label = node.get("_label") or node.get("name")
-        for b in getattr(self, "_node_buttons", []) or []:
-            try:
-                txt = b.cget("text")
-            except Exception:
-                txt = ""
-            try:
-                if txt == self._selected_label:
-                    b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
-                else:
-                    b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
-            except Exception:
-                pass
+        self._pending_node = node
+        self._pending_label = self._selected_label
+        self._paint_node_buttons()
         try:
             self.current_label.configure(text=self._short_node_text(node))
         except Exception:
@@ -2680,14 +2678,26 @@ class App(ctk.CTk):
 
 
     def log(self, msg: str):
-        """写日志；限制行数并节流滚动，减轻卡顿。"""
+        """写界面日志 + logs/mobility.log；默认记录全部动作。"""
         try:
             if not hasattr(self, "_log_lines"):
                 self._log_lines = []
             line = str(msg)
+            try:
+                logs_dir = getattr(self, "logs_dir", None)
+                if logs_dir is None:
+                    logs_dir = Path(getattr(self, "base_dir", Path("."))) / "logs"
+                    logs_dir.mkdir(parents=True, exist_ok=True)
+                    self.logs_dir = logs_dir
+                app_log = getattr(self, "app_log_file", None) or (logs_dir / "mobility.log")
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with open(app_log, "a", encoding="utf-8", errors="ignore") as f:
+                    f.write("[%s] %s\n" % (ts, line))
+            except Exception:
+                pass
             self._log_lines.append(line)
-            if len(self._log_lines) > 800:
-                self._log_lines = self._log_lines[-500:]
+            if len(self._log_lines) > 2000:
+                self._log_lines = self._log_lines[-1200:]
             if not hasattr(self, "log_box"):
                 return
             self.log_box.insert("end", line + "\n")
@@ -2699,8 +2709,8 @@ class App(ctk.CTk):
                     self.log_box.see("end")
             try:
                 end_idx = self.log_box.index("end-1c")
-                if float(str(end_idx).split(".")[0]) > 600:
-                    self.log_box.delete("1.0", "150.0")
+                if float(str(end_idx).split(".")[0]) > 800:
+                    self.log_box.delete("1.0", "200.0")
             except Exception:
                 pass
         except Exception:
@@ -3396,13 +3406,16 @@ class App(ctk.CTk):
 
     def get_ports(self):
         try:
-            sp = int(self.socks_entry.get().strip())
-            hp = int(self.http_entry.get().strip())
-            if 1 <= sp <= 65535 and 1 <= hp <= 65535 and sp != hp:
-                return sp, hp
+            sp_s = self._safe_widget_get("socks_entry", None)
+            hp_s = self._safe_widget_get("http_entry", None)
+            if sp_s is not None and hp_s is not None:
+                sp = int(str(sp_s).strip())
+                hp = int(str(hp_s).strip())
+                if 1 <= sp <= 65535 and 1 <= hp <= 65535 and sp != hp:
+                    return sp, hp
         except Exception:
             pass
-        return self.socks_port, self.http_port
+        return int(getattr(self, "socks_port", 10808) or 10808), int(getattr(self, "http_port", 10809) or 10809)
 
     def set_auto_start(self, enable: bool) -> bool:
         """写入/删除当前用户开机启动项"""
@@ -3530,57 +3543,109 @@ class App(ctk.CTk):
     def save_settings(self):
         try:
             slim_nodes = []
-            for n in self.nodes:
-                item = {k: v for k, v in n.items() if not str(k).startswith("_")}
+            for n in (self.nodes or []):
+                if not isinstance(n, dict):
+                    continue
+                item = {}
+                for k, v in n.items():
+                    if str(k).startswith("_"):
+                        continue
+                    item[k] = v
+                g = n.get("_group") or n.get("group")
+                if g:
+                    item["group"] = g
                 slim_nodes.append(item)
+
+            def read_str(attr_widget, attr_fallback, default=""):
+                w = getattr(self, attr_widget, None)
+                if w is not None:
+                    try:
+                        return str(w.get())
+                    except Exception:
+                        pass
+                return str(getattr(self, attr_fallback, default) or default)
+
+            def read_bool(attr_widget, attr_fallback, default=False):
+                w = getattr(self, attr_widget, None)
+                if w is not None:
+                    try:
+                        return bool(w.get())
+                    except Exception:
+                        pass
+                return bool(getattr(self, attr_fallback, default))
+
+            entry_txt = ""
+            w = getattr(self, "entry", None)
+            if w is not None:
+                try:
+                    entry_txt = str(w.get() or "").strip()
+                except Exception:
+                    entry_txt = ""
+
+            cur = getattr(self, "current_node", None)
+            selected_label = ""
+            if isinstance(cur, dict):
+                selected_label = cur.get("_label") or cur.get("name") or ""
+
             data = {
-                "subscription_url": self.subscription_url or self.entry.get().strip(),
-                "subscriptions": getattr(self, "subscriptions", []),
+                "subscription_url": getattr(self, "subscription_url", "") or entry_txt,
+                "subscriptions": list(getattr(self, "subscriptions", []) or []),
                 "tun_enabled": bool(getattr(self, "tun_enabled", False)),
-                "live_stats_enabled": bool(getattr(self, "live_stats_enabled", False)),
-                "font_size": int(getattr(self, "font_size", 13)),
-                "hotkey_toggle": getattr(self, "hotkey_toggle", "ctrl+shift+m"),
-                "hotkey_proxy": getattr(self, "hotkey_proxy", "ctrl+shift+p"),
-                "hotkey_clear_proxy": getattr(self, "hotkey_clear_proxy", ""),
-                "hotkey_set_proxy": getattr(self, "hotkey_set_proxy", ""),
-                "tun_settings": getattr(self, "tun_settings", dict(DEFAULT_TUN_SETTINGS)),
-                "routing_extra_direct": getattr(self, "routing_extra_direct", ""),
-                "routing_extra_proxy": getattr(self, "routing_extra_proxy", ""),
-                "routing_extra_block": getattr(self, "routing_extra_block", ""),
+                "live_stats_enabled": False,
+                "tun_settings": dict(getattr(self, "tun_settings", {}) or {}),
+                "routing_extra_direct": getattr(self, "routing_extra_direct", "") or "",
+                "routing_extra_proxy": getattr(self, "routing_extra_proxy", "") or "",
+                "routing_extra_block": getattr(self, "routing_extra_block", "") or "",
                 "nodes": slim_nodes,
-                "selected_label": (self.current_node or {}).get("_label", "") if self.nodes else "",
-                "test_workers": self.workers_combo.get(),
-                "proxy_mode": self.mode_combo.get() if hasattr(self, "mode_combo") else self.proxy_mode,
-                "close_to_tray": bool(self.tray_check.get()) if hasattr(self, "tray_check") else self.close_to_tray,
-                "auto_start": bool(self.autostart_check.get()) if hasattr(self, "autostart_check") else self.auto_start,
-                "auto_connect": bool(self.autoconnect_check.get()) if hasattr(self, "autoconnect_check") else self.auto_connect,
+                "selected_label": selected_label,
+                "test_workers": read_str("workers_combo", "test_workers", str(TEST_WORKERS_DEFAULT)),
+                "proxy_mode": read_str("mode_combo", "proxy_mode", PROXY_MODE_DEFAULT),
+                "close_to_tray": read_bool("tray_check", "close_to_tray", True),
+                "auto_start": read_bool("autostart_check", "auto_start", False),
+                "auto_connect": read_bool("autoconnect_check", "auto_connect", False),
                 "socks_port": self.get_ports()[0],
                 "http_port": self.get_ports()[1],
-                "refresh_label": self.refresh_interval_combo.get() if hasattr(self, "refresh_interval_combo") else self.refresh_label,
-                "start_minimized": bool(self.minimized_check.get()) if hasattr(self, "minimized_check") else self.start_minimized,
-                "theme_label": self.theme_combo.get() if hasattr(self, "theme_combo") else self.theme_label,
-                "allow_lan": bool(self.lan_check.get()) if hasattr(self, "lan_check") else self.allow_lan,
-                "direct_domains": self.direct_entry.get().strip() if hasattr(self, "direct_entry") else self.direct_domains,
-                "proxy_domains": self.proxy_entry.get().strip() if hasattr(self, "proxy_entry") else self.proxy_domains,
-                "dns_mode": self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode,
-                "dns_custom": self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom,
-                "log_level": self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level,
-                "proxy_core": getattr(self, "proxy_core", "Xray"),
-                "core_map": getattr(self, "core_map", dict(DEFAULT_CORE_MAP)),
+                "refresh_label": read_str("refresh_interval_combo", "refresh_label", "不自动更新"),
+                "start_minimized": read_bool("minimized_check", "start_minimized", False),
+                "theme_label": read_str("theme_combo", "theme_label", "跟随系统"),
+                "allow_lan": read_bool("lan_check", "allow_lan", False),
+                "direct_domains": read_str("direct_entry", "direct_domains", ""),
+                "proxy_domains": read_str("proxy_entry", "proxy_domains", ""),
+                "dns_mode": read_str("dns_combo", "dns_mode", "系统默认"),
+                "dns_custom": read_str("dns_entry", "dns_custom", ""),
+                "log_level": read_str("loglevel_combo", "log_level", "调试"),
+                "proxy_core": getattr(self, "proxy_core", "Xray") or "Xray",
+                "core_map": dict(getattr(self, "core_map", None) or DEFAULT_CORE_MAP),
                 "test_timeout": float(getattr(self, "test_timeout", DEFAULT_TEST_TIMEOUT) or DEFAULT_TEST_TIMEOUT),
                 "group_nodes_by_sub": bool(getattr(self, "group_nodes_by_sub", True)),
                 "rule_set_urls": list(getattr(self, "rule_set_urls", []) or []),
-                "connectivity_urls": [
-                    list(x) if isinstance(x, (list, tuple)) else [x.get("url"), x.get("name")]
-                    for x in (getattr(self, "connectivity_urls", None) or DEFAULT_CONNECTIVITY_URLS)
-                ],
+                "connectivity_urls": [],
             }
+            try:
+                lv = getattr(self, "live_stats_var", None)
+                if lv is not None:
+                    data["live_stats_enabled"] = bool(lv.get())
+            except Exception:
+                data["live_stats_enabled"] = bool(getattr(self, "live_stats_enabled", False))
+
+            cu_out = []
+            for x in (getattr(self, "connectivity_urls", None) or DEFAULT_CONNECTIVITY_URLS or []):
+                try:
+                    if isinstance(x, (list, tuple)) and x:
+                        cu_out.append([str(x[0]), str(x[1] if len(x) > 1 else x[0])])
+                    elif isinstance(x, dict) and x.get("url"):
+                        cu_out.append([str(x.get("url")), str(x.get("name") or x.get("url"))])
+                except Exception:
+                    continue
+            data["connectivity_urls"] = cu_out
+
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
+                encoding="utf-8",
             )
         except Exception as e:
             self.log(f"保存设置失败：{e}")
+
 
     def load_settings(self):
         if not self.settings_path.exists():
@@ -3766,7 +3831,7 @@ class App(ctk.CTk):
             # 兼容旧版英文配置
             if raw_lv in LOG_LEVEL_REV:
                 raw_lv = LOG_LEVEL_REV[raw_lv]
-            self.log_level = raw_lv if raw_lv in LOG_LEVELS else "警告"
+            self.log_level = raw_lv if raw_lv in LOG_LEVELS else "调试"
             if hasattr(self, "loglevel_combo"):
                 self.loglevel_combo.set(self.log_level)
             if nodes:
@@ -4519,15 +4584,14 @@ class App(ctk.CTk):
             dns_servers = [x.strip() for x in str(raw).split(",") if x.strip()]
         log_level_label = self._safe_widget_get("loglevel_combo", None)
         if log_level_label is None:
-            log_level_label = getattr(self, "log_level", "警告") or "警告"
+            log_level_label = getattr(self, "log_level", "调试") or "调试"
         log_level = LOG_LEVEL_MAP.get(log_level_label, "warning") if isinstance(LOG_LEVEL_MAP, dict) else "warning"
 
         config = {
             "log": {
                 "loglevel": log_level,
-                # 关闭 access 日志，显著降低磁盘与内存开销
-                "access": "none",
-                "error": str(self.core_dir / "error.log"),
+                "access": str(getattr(self, "logs_dir", self.core_dir) / "xray-access.log"),
+                "error": str(getattr(self, "logs_dir", self.core_dir) / "xray-error.log"),
             },
             "inbounds": [
                 {
