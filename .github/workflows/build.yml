@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '填写新版本号（GitHub表单无法动态显示上一版）。点Run后在日志第一步可看上一Release。当前建议 v0.20.4'
-        required: true
-        default: 'v0.20.4'
+        description: '新版本号（可留空，留空则自动在上一版补丁号 +1）'
+        required: false
+        default: ''
         type: string
       prerelease:
         description: '是否标记为预发布（Pre-release）'
@@ -30,7 +30,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 显示上一版本并检查重复
+      - name: 解析版本号（可自动递增）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
@@ -38,9 +38,35 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 解析本次版本：手动输入优先，否则用 tag
+          # 上一版本
+          LATEST="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true)"
+          if [ -z "${LATEST}" ]; then
+            LATEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)"
+          fi
+          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=5" --jq '.[0].name // empty' 2>/dev/null || true)"
+          BASE="${LATEST:-$LATEST_TAG}"
+
+          # 自动补丁 +1：v1.2.3 -> v1.2.4；无法解析则 v0.1.0
+          auto_bump() {
+            local base="$1"
+            base="$(echo "$base" | tr -d '[:space:]')"
+            [[ "$base" =~ ^v ]] || base="v${base}"
+            local num="${base#v}"
+            if [[ "$num" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            elif [[ "$num" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1"
+            else
+              echo "v0.1.0"
+            fi
+          }
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${INPUT_VERSION}"
+            VERSION="$(echo "${INPUT_VERSION:-}" | tr -d '[:space:]')"
+            if [ -z "${VERSION}" ]; then
+              VERSION="$(auto_bump "${BASE:-v0.0.0}")"
+              echo "未填写版本号，已自动生成: ${VERSION}（基于 ${BASE:-无}）"
+            fi
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
@@ -48,49 +74,35 @@ jobs:
           if [[ ! "${VERSION}" =~ ^v ]]; then
             VERSION="v${VERSION}"
           fi
+
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "本次构建版本: ${VERSION}"
-
-          # 最新 Release
-          LATEST="$(gh release list --limit 1 --json tagName,createdAt --jq '.[0].tagName // empty' 2>/dev/null || true)"
-          if [ -z "${LATEST}" ]; then
-            LATEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)"
-          fi
-          # 最新 tag（有时尚未发 Release）
-          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=5" --jq '.[0].name // empty' 2>/dev/null || true)"
-
           echo "========================================"
-          echo "  上一版本（最新 Release）: ${LATEST:-（无）}"
-          echo "  最新 Git Tag           : ${LATEST_TAG:-（无）}"
-          echo "  本次输入版本           : ${VERSION}"
+          echo "  上一版本: ${LATEST:-（无）}"
+          echo "  最新 Tag: ${LATEST_TAG:-（无）}"
+          echo "  本次版本: ${VERSION}"
           echo "========================================"
 
-          # 写入 Job Summary，Run workflow 页面可见
           {
-            echo "## 版本核对"
+            echo "## 版本"
             echo ""
             echo "| 项目 | 值 |"
             echo "|------|-----|"
-            echo "| 上一版本（最新 Release） | \`${LATEST:-无}\` |"
-            echo "| 最新 Git Tag | \`${LATEST_TAG:-无}\` |"
-            echo "| 本次构建版本 | \`${VERSION}\` |"
+            echo "| 上一版本 | \`${LATEST:-无}\` |"
+            echo "| 本次版本 | \`${VERSION}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 重复则直接失败，避免覆盖/产生同名混乱
           if [ -n "${LATEST}" ] && [ "${VERSION}" = "${LATEST}" ]; then
-            echo "::error::版本 ${VERSION} 与上一 Release 相同，请更换版本号后再构建"
+            echo "::error::版本 ${VERSION} 与上一 Release 相同"
             exit 1
           fi
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "::error::Release ${VERSION} 已存在，请换一个版本号（上一版本是 ${LATEST:-未知}）"
+            echo "::error::Release ${VERSION} 已存在（上一版 ${LATEST:-未知}）"
             exit 1
           fi
-          # tag 已存在也拦截（防止只打了 tag 未发 release 又重复）
           if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q "${VERSION}"; then
-            echo "::error::Git tag ${VERSION} 已存在，请换一个版本号"
+            echo "::error::Git tag ${VERSION} 已存在"
             exit 1
           fi
-
           echo "版本可用，继续构建。"
 
       - name: Setup Python 3.12
