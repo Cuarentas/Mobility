@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '发布版本号（如 v0.19.9）。运行后日志会显示上一版本；勿与已有 Release 重复'
+        description: '填写新版本号（GitHub表单无法动态显示上一版）。点Run后在日志第一步可看上一Release。当前建议 v0.20.4'
         required: true
-        default: 'v0.19.9'
+        default: 'v0.20.4'
         type: string
       prerelease:
         description: '是否标记为预发布（Pre-release）'
