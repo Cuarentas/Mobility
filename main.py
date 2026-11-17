@@ -64,7 +64,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.5"
+APP_VERSION = "0.20.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -879,6 +879,9 @@ class App(ctk.CTk):
         self.dns_custom = "8.8.8.8,1.1.1.1"
         self.log_level = "警告"
         self.tray_icon = None
+        self._proxy_backup = None  # 启动代理前的系统代理，退出时还原给 v2rayN 等
+        self._proxy_owned = False
+        self._winhttp_backup = None
         self._lock = Lock()
         self._run_started_at = None
         self._bytes_up = 0
@@ -2446,10 +2449,16 @@ class App(ctk.CTk):
 
     def startup(self):
         """分阶段启动，减轻首屏卡顿。"""
-        # 若上次异常退出残留了系统代理指向 127.0.0.1，先清掉，避免影响其它软件
+        # 若上次异常退出且系统代理仍指向本软件常用端口，才清理（避免误伤 v2rayN）
         try:
-            self.clear_system_proxy_force()
-            self.log("已检查并清理可能残留的系统代理设置")
+            cur = self._read_proxy_reg()
+            srv = (cur.get("ProxyServer") or "").replace(" ", "").lower()
+            en = int(cur.get("ProxyEnable") or 0)
+            our_ports = ("127.0.0.1:%s" % getattr(self, "http_port", 10809),
+                         "127.0.0.1:%s" % getattr(self, "socks_port", 10808))
+            if en and any(p in srv for p in our_ports):
+                self.clear_system_proxy_force()
+                self.log("已清理上次异常退出残留的系统代理")
         except Exception:
             pass
         try:
@@ -4165,8 +4174,102 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _read_proxy_reg(self):
+        """读取当前 WinINet 代理设置。"""
+        data = {
+            "ProxyEnable": 0,
+            "ProxyServer": "",
+            "AutoConfigURL": "",
+            "had_auto": False,
+            "had_server": False,
+        }
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+            try:
+                data["ProxyEnable"], _ = winreg.QueryValueEx(k, "ProxyEnable")
+            except Exception:
+                pass
+            try:
+                data["ProxyServer"], _ = winreg.QueryValueEx(k, "ProxyServer")
+                data["had_server"] = True
+            except Exception:
+                pass
+            try:
+                data["AutoConfigURL"], _ = winreg.QueryValueEx(k, "AutoConfigURL")
+                data["had_auto"] = True
+            except Exception:
+                pass
+            winreg.CloseKey(k)
+        except Exception:
+            pass
+        return data
+
+    def save_proxy_before_override(self):
+        """在本软件写入系统代理前，备份当前设置（便于退出后还给 v2rayN）。"""
+        if self._proxy_owned and self._proxy_backup is not None:
+            return
+        self._proxy_backup = self._read_proxy_reg()
+        # WinHTTP 当前代理（文本）
+        self._winhttp_backup = None
+        if sys.platform == "win32":
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                r = subprocess.run(
+                    ["netsh", "winhttp", "show", "proxy"],
+                    capture_output=True, text=True, timeout=3, creationflags=flags,
+                )
+                self._winhttp_backup = (r.stdout or "") + (r.stderr or "")
+            except Exception:
+                self._winhttp_backup = None
+
+    def restore_proxy_backup(self):
+        """还原进入本软件前的系统代理；若无备份则关闭代理。"""
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        b = self._proxy_backup
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            if b is None:
+                winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                for name in ("AutoConfigURL", "ProxyServer"):
+                    try:
+                        winreg.DeleteValue(k, name)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, int(b.get("ProxyEnable") or 0))
+                except Exception:
+                    winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                # ProxyServer
+                if b.get("had_server") and (b.get("ProxyServer") or ""):
+                    winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, str(b.get("ProxyServer") or ""))
+                else:
+                    try:
+                        winreg.DeleteValue(k, "ProxyServer")
+                    except Exception:
+                        try:
+                            winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, "")
+                        except Exception:
+                            pass
+                # PAC
+                if b.get("had_auto") and (b.get("AutoConfigURL") or ""):
+                    winreg.SetValueEx(k, "AutoConfigURL", 0, winreg.REG_SZ, str(b.get("AutoConfigURL") or ""))
+                else:
+                    try:
+                        winreg.DeleteValue(k, "AutoConfigURL")
+                    except Exception:
+                        pass
+            winreg.CloseKey(k)
+        except Exception:
+            pass
+        self._notify_proxy_change()
+        self._proxy_owned = False
+        # 不主动 reset WinHTTP：避免把 v2rayN 的 WinHTTP 代理清掉
+        # 仅当备份显示 WinHTTP 直连且我们曾改过时再处理（这里保持不动）
+
     def clear_system_proxy_force(self) -> bool:
-        """强制关闭系统代理与 PAC（WinINet + 连接设置）。"""
+        """强制关闭系统代理（仅在无备份或明确需要清空时使用）。"""
         ok = True
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
         try:
@@ -4177,105 +4280,43 @@ class App(ctk.CTk):
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
             except Exception:
                 ok = False
-            for name in ("AutoConfigURL", "ProxyOverride"):
+            for name in ("AutoConfigURL", "ProxyServer"):
                 try:
                     winreg.DeleteValue(internet_settings, name)
                 except Exception:
                     pass
-            # 一律清空 ProxyServer，避免 v2rayN 等仍读到 127.0.0.1 残留
-            try:
-                winreg.DeleteValue(internet_settings, "ProxyServer")
-            except Exception:
-                try:
-                    winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
-                except Exception:
-                    pass
-            # 部分系统还有该键
-            try:
-                winreg.SetValueEx(internet_settings, "ProxySettingsPerUser", 0, winreg.REG_DWORD, 1)
-            except Exception:
-                pass
             winreg.CloseKey(internet_settings)
         except Exception:
             ok = False
-
-        # 连接级默认连接代理（少数软件会读这里）
-        try:
-            conn_path = key_path + r"\Connections"
-            conn = winreg.OpenKey(winreg.HKEY_CURRENT_USER, conn_path, 0, winreg.KEY_ALL_ACCESS)
-            try:
-                # DefaultConnectionSettings 是二进制，不硬改；仅保证 ProxyEnable 已关
-                pass
-            finally:
-                winreg.CloseKey(conn)
-        except Exception:
-            pass
-
         self._notify_proxy_change()
         return ok
 
-    def reset_winhttp_proxy(self):
-        """重置 WinHTTP 代理（与 IE/系统设置独立，很多客户端走这里）。"""
-        if sys.platform != "win32":
-            return
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        try:
-            subprocess.run(
-                ["netsh", "winhttp", "reset", "proxy"],
-                capture_output=True, timeout=8, creationflags=flags,
-            )
-        except Exception:
-            pass
-
-    def clear_local_proxy_env(self):
-        """清理可能指向本机的代理环境变量（当前进程）。"""
-        for k in (
-            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
-            "NO_PROXY", "no_proxy",
-        ):
-            try:
-                v = os.environ.get(k, "")
-                if not v:
-                    continue
-                low = v.lower()
-                if "127.0.0.1" in low or "localhost" in low:
-                    os.environ.pop(k, None)
-            except Exception:
-                pass
-
     def kill_stale_core_processes(self):
-        """结束可能残留的核心进程（避免 TUN/端口占用导致其它代理异常）。"""
-        names = (
-            "xray.exe", "sing-box.exe", "mihomo.exe",
-            "xray", "sing-box", "mihomo",
-        )
+        """仅结束本软件可能残留的核心（快速、短超时）。"""
         if sys.platform != "win32":
             return
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        for name in names:
+        for name in ("xray.exe", "sing-box.exe", "mihomo.exe"):
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/IM", name, "/T"],
-                    capture_output=True, timeout=6, creationflags=flags,
+                    capture_output=True, timeout=1.5, creationflags=flags,
                 )
             except Exception:
                 pass
-        # 不在这里 sleep，避免退出卡顿
 
     def restore_network_environment(self, kill_cores: bool = True):
-        """停止本软件对系统网络的影响：关代理/PAC/WinHTTP，必要时杀残留核心。"""
+        """停止核心并还原系统代理（优先还原进入前的设置，兼容 v2rayN）。"""
         if getattr(self, "_restoring_network", False):
             return
         self._restoring_network = True
         try:
-            try:
-                self.stop_singbox()
-            except Exception:
-                pass
-            try:
-                self.stop_mihomo()
-            except Exception:
-                pass
+            for stopper in (getattr(self, "stop_singbox", None), getattr(self, "stop_mihomo", None)):
+                if stopper:
+                    try:
+                        stopper()
+                    except Exception:
+                        pass
             if self.xray_process:
                 try:
                     self.xray_process.kill()
@@ -4287,23 +4328,20 @@ class App(ctk.CTk):
                     self.kill_stale_core_processes()
                 except Exception:
                     pass
+            # 关键点：还原备份，而不是粗暴清空（否则 v2rayN 需换节点重写代理）
             try:
-                self.clear_system_proxy_force()
+                if self._proxy_owned or self._proxy_backup is not None:
+                    self.restore_proxy_backup()
+                else:
+                    # 未接管过系统代理则不动注册表
+                    pass
             except Exception:
                 try:
-                    self.set_system_proxy(False)
+                    self.clear_system_proxy_force()
                 except Exception:
                     pass
             try:
-                self.reset_winhttp_proxy()
-            except Exception:
-                pass
-            try:
                 self.clear_local_proxy_env()
-            except Exception:
-                pass
-            try:
-                self._notify_proxy_change()
             except Exception:
                 pass
         finally:
@@ -4311,6 +4349,11 @@ class App(ctk.CTk):
 
     def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
+            if enable:
+                try:
+                    self.save_proxy_before_override()
+                except Exception:
+                    pass
             internet_settings = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -4343,6 +4386,15 @@ class App(ctk.CTk):
                         pass
             winreg.CloseKey(internet_settings)
             self._notify_proxy_change()
+            if enable:
+                self._proxy_owned = True
+            else:
+                # 关闭时走还原逻辑更稳
+                try:
+                    self.restore_proxy_backup()
+                except Exception:
+                    pass
+                self._proxy_owned = False
             return True
         except Exception as e:
             self.log("设置系统代理失败：%s" % e)
@@ -5371,7 +5423,7 @@ class App(ctk.CTk):
             self.set_tray_state("disconnected")
         except Exception:
             pass
-        self.log("代理已停止，系统代理 / PAC / WinHTTP 已恢复")
+        self.log("代理已停止，系统代理已还原")
         # 恢复启动按钮
         try:
             self.after(0, lambda: self.start_btn.configure(state="normal"))
@@ -5429,42 +5481,29 @@ if __name__ == "__main__":
     import atexit
 
     def _atexit_restore():
+        # 轻量兜底：结束残留核心；系统代理若指向本机常见端口则关闭
         try:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
             k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-            winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-            try:
-                winreg.DeleteValue(k, "AutoConfigURL")
-            except Exception:
-                pass
             try:
                 val, _ = winreg.QueryValueEx(k, "ProxyServer")
-                v = (val or "").lower()
-                if "127.0.0.1" in v or "localhost" in v:
-                    try:
-                        winreg.DeleteValue(k, "ProxyServer")
-                    except Exception:
-                        pass
+                v = (val or "").lower().replace(" ", "")
             except Exception:
-                pass
+                v = ""
+            if "127.0.0.1:10808" in v or "127.0.0.1:10809" in v:
+                winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
             winreg.CloseKey(k)
             try:
                 ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
-                ctypes.windll.Wininet.InternetSetOptionW(0, 95, 0, 0)
                 ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
             except Exception:
                 pass
         except Exception:
             pass
-        try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.run(["netsh", "winhttp", "reset", "proxy"], capture_output=True, timeout=6, creationflags=flags)
-        except Exception:
-            pass
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         for name in ("xray.exe", "sing-box.exe", "mihomo.exe"):
             try:
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                subprocess.run(["taskkill", "/F", "/IM", name, "/T"], capture_output=True, timeout=3, creationflags=flags)
+                subprocess.run(["taskkill", "/F", "/IM", name, "/T"], capture_output=True, timeout=1, creationflags=flags)
             except Exception:
                 pass
 
