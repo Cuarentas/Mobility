@@ -38,15 +38,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 上一版本
-          LATEST="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true)"
-          if [ -z "${LATEST}" ]; then
-            LATEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)"
-          fi
-          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=5" --jq '.[0].name // empty' 2>/dev/null || true)"
-          BASE="${LATEST:-$LATEST_TAG}"
+          is_semver() {
+            local x="${1#v}"
+            [[ "$x" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$x" =~ ^[0-9]+\.[0-9]+$ ]]
+          }
 
-          # 自动补丁 +1：v1.2.3 -> v1.2.4；无法解析则 v0.1.0
           auto_bump() {
             local base="$1"
             base="$(echo "$base" | tr -d '[:space:]')"
@@ -57,29 +53,64 @@ jobs:
             elif [[ "$num" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
               echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1"
             else
-              echo "v0.1.0"
+              echo ""
             fi
           }
+
+          # 收集候选：最新 Release + 若干 tag，取有效且最新的 semver
+          LATEST_REL="$(gh release list --limit 5 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          LATEST_TAGS="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=20" --jq '.[].name' 2>/dev/null || true)"
+
+          BASE=""
+          BEST_N=0
+          while IFS= read -r cand; do
+            cand="$(echo "$cand" | tr -d '[:space:]')"
+            [ -z "$cand" ] && continue
+            is_semver "$cand" || continue
+            num="${cand#v}"
+            # 简单数值比较 major*1e6+minor*1e3+patch
+            if [[ "$num" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              n=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+            elif [[ "$num" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              n=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 ))
+            else
+              continue
+            fi
+            if [ "$n" -gt "$BEST_N" ]; then
+              BEST_N=$n
+              BASE="$cand"
+            fi
+          done < <(printf '%s\n%s\n' "$LATEST_REL" "$LATEST_TAGS")
+
+          echo "选中的上一有效版本: ${BASE:-（无）}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="$(echo "${INPUT_VERSION:-}" | tr -d '[:space:]')"
             if [ -z "${VERSION}" ]; then
-              VERSION="$(auto_bump "${BASE:-v0.0.0}")"
+              if [ -n "${BASE}" ]; then
+                VERSION="$(auto_bump "${BASE}")"
+              else
+                VERSION="v0.1.0"
+              fi
               echo "未填写版本号，已自动生成: ${VERSION}（基于 ${BASE:-无}）"
             fi
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
+
           VERSION="$(echo "${VERSION}" | tr -d '[:space:]')"
           if [[ ! "${VERSION}" =~ ^v ]]; then
             VERSION="v${VERSION}"
           fi
+          if [ -z "${VERSION}" ] || [ "${VERSION}" = "v" ] || ! is_semver "${VERSION}"; then
+            echo "::error::版本号无效: '${VERSION}'，请填写如 v0.20.5"
+            exit 1
+          fi
 
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "========================================"
-          echo "  上一版本: ${LATEST:-（无）}"
-          echo "  最新 Tag: ${LATEST_TAG:-（无）}"
-          echo "  本次版本: ${VERSION}"
+          echo "  上一有效版本: ${BASE:-（无）}"
+          echo "  本次版本    : ${VERSION}"
           echo "========================================"
 
           {
@@ -87,19 +118,15 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "|------|-----|"
-            echo "| 上一版本 | \`${LATEST:-无}\` |"
+            echo "| 上一有效版本 | \`${BASE:-无}\` |"
             echo "| 本次版本 | \`${VERSION}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -n "${LATEST}" ] && [ "${VERSION}" = "${LATEST}" ]; then
-            echo "::error::版本 ${VERSION} 与上一 Release 相同"
-            exit 1
-          fi
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "::error::Release ${VERSION} 已存在（上一版 ${LATEST:-未知}）"
+            echo "::error::Release ${VERSION} 已存在"
             exit 1
           fi
-          if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q "${VERSION}"; then
+          if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q "refs/tags/${VERSION}$"; then
             echo "::error::Git tag ${VERSION} 已存在"
             exit 1
           fi
