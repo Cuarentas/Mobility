@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.9"
+APP_VERSION = "0.20.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -976,9 +976,10 @@ class App(ctk.CTk):
         )
         self.import_menu_btn.pack(side="left", padx=2)
 
-        # ===== 第2行：并发 + 模式（单独一行）=====
+        # ===== 第2行：并发/模式（左）+ 启动/停止（右）=====
         opt_row = ctk.CTkFrame(body, fg_color="transparent")
         opt_row.pack(fill="x", pady=(0, 4))
+
         ctk.CTkLabel(opt_row, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
         self.workers_combo = ctk.CTkComboBox(opt_row, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
@@ -990,6 +991,15 @@ class App(ctk.CTk):
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=2)
+
+        # 启动/停止靠右，与并发同一行
+        self.stop_btn = ctk.CTkButton(
+            opt_row, text="停止", width=72, height=32,
+            fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
+        )
+        self.stop_btn.pack(side="right", padx=(4, 2))
+        self.start_btn = ctk.CTkButton(opt_row, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn.pack(side="right", padx=2)
 
         # 兼容旧引用
         self.add_sub_btn = self.sub_menu_btn
@@ -1007,21 +1017,11 @@ class App(ctk.CTk):
         self.move_up_btn = self.node_menu_btn
         self.move_down_btn = self.node_menu_btn
 
-        # ===== 运行状态条 + 启动/停止（同一行）=====
+        # ===== 运行状态条（不再放启动/停止）=====
         stats = ctk.CTkFrame(body, fg_color=("gray90", "gray20"), corner_radius=8, height=48)
         stats.pack(fill="x", pady=(2, 6))
         stats.pack_propagate(False)
 
-        # 右侧：启动/停止
-        self.stop_btn = ctk.CTkButton(
-            stats, text="停止", width=72, height=32,
-            fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
-        )
-        self.stop_btn.pack(side="right", padx=(4, 10), pady=8)
-        self.start_btn = ctk.CTkButton(stats, text="启动", width=72, height=32, command=self.start_proxy_thread)
-        self.start_btn.pack(side="right", padx=2, pady=8)
-
-        # 实时统计靠右、在按钮左侧
         self.live_stats_var = ctk.BooleanVar(value=False)
         self.live_stats_sw = ctk.CTkSwitch(
             stats, text="实时统计", variable=self.live_stats_var, width=90,
@@ -2443,6 +2443,12 @@ class App(ctk.CTk):
 
     def startup(self):
         """分阶段启动，减轻首屏卡顿。"""
+        # 若上次异常退出残留了系统代理指向 127.0.0.1，先清掉，避免影响其它软件
+        try:
+            self.clear_system_proxy_force()
+            self.log("已检查并清理可能残留的系统代理设置")
+        except Exception:
+            pass
         try:
             self.load_settings()
         except Exception as e:
@@ -3176,6 +3182,14 @@ class App(ctk.CTk):
     def tray_quit(self, icon=None, item=None):
         def _do():
             self.close_to_tray = False
+            try:
+                self.stop_proxy()
+            except Exception:
+                pass
+            try:
+                self.restore_network_environment(kill_cores=True)
+            except Exception:
+                pass
             self.on_closing()
         self.after(0, _do)
 
@@ -4143,12 +4157,98 @@ class App(ctk.CTk):
             return ok
         return self.set_system_proxy(True, port, pac=False)
 
+    def _notify_proxy_change(self):
+        """通知系统代理设置已变更。"""
+        try:
+            INTERNET_OPTION_SETTINGS_CHANGED = 39
+            INTERNET_OPTION_REFRESH = 37
+            INTERNET_OPTION_PROXY_SETTINGS_CHANGED = 95
+            fn = ctypes.windll.Wininet.InternetSetOptionW
+            fn(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)
+            fn(0, INTERNET_OPTION_PROXY_SETTINGS_CHANGED, 0, 0)
+            fn(0, INTERNET_OPTION_REFRESH, 0, 0)
+        except Exception:
+            pass
+
+    def clear_system_proxy_force(self) -> bool:
+        """强制关闭系统代理与 PAC（退出/崩溃恢复用，尽量彻底）。"""
+        ok = True
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            internet_settings = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS
+            )
+            try:
+                winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            except Exception:
+                ok = False
+            # 清掉 PAC
+            for name in ("AutoConfigURL", "ProxyOverride"):
+                try:
+                    winreg.DeleteValue(internet_settings, name)
+                except Exception:
+                    pass
+            # 若 ProxyServer 指向本机回环，一并清空，避免其它软件仍读到残留
+            try:
+                val, _ = winreg.QueryValueEx(internet_settings, "ProxyServer")
+                v = (val or "").lower().replace(" ", "")
+                if ("127.0.0.1" in v) or ("localhost" in v):
+                    try:
+                        winreg.DeleteValue(internet_settings, "ProxyServer")
+                    except Exception:
+                        winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
+            except Exception:
+                pass
+            winreg.CloseKey(internet_settings)
+        except Exception:
+            ok = False
+        self._notify_proxy_change()
+        return ok
+
+    def kill_stale_core_processes(self):
+        """结束可能残留的核心进程（避免 TUN/端口占用导致其它代理异常）。"""
+        names = ("xray.exe", "sing-box.exe", "sing-box", "mihomo.exe", "mihomo")
+        if sys.platform != "win32":
+            return
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        for name in names:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", name, "/T"],
+                    capture_output=True, timeout=5, creationflags=flags,
+                )
+            except Exception:
+                pass
+
+    def restore_network_environment(self, kill_cores: bool = True):
+        """停止本软件对系统网络的影响：关代理/PAC，必要时杀残留核心。"""
+        try:
+            self.stop_singbox()
+        except Exception:
+            pass
+        try:
+            self.stop_mihomo()
+        except Exception:
+            pass
+        if kill_cores:
+            try:
+                self.kill_stale_core_processes()
+            except Exception:
+                pass
+        try:
+            self.clear_system_proxy_force()
+        except Exception:
+            try:
+                self.set_system_proxy(False)
+            except Exception:
+                pass
+
     def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
             internet_settings = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-                0, winreg.KEY_WRITE
+                0, winreg.KEY_ALL_ACCESS
             )
             if enable and pac:
                 pac_path = self.write_pac_file(port)
@@ -4168,13 +4268,18 @@ class App(ctk.CTk):
                     winreg.DeleteValue(internet_settings, "AutoConfigURL")
                 except Exception:
                     pass
+                try:
+                    val, _ = winreg.QueryValueEx(internet_settings, "ProxyServer")
+                    v = (val or "").lower().replace(" ", "")
+                    if ("127.0.0.1" in v) or ("localhost" in v):
+                        try:
+                            winreg.DeleteValue(internet_settings, "ProxyServer")
+                        except Exception:
+                            winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
+                except Exception:
+                    pass
             winreg.CloseKey(internet_settings)
-
-            INTERNET_OPTION_SETTINGS_CHANGED = 39
-            INTERNET_OPTION_REFRESH = 37
-            internet_set_option = ctypes.windll.Wininet.InternetSetOptionW
-            internet_set_option(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)
-            internet_set_option(0, INTERNET_OPTION_REFRESH, 0, 0)
+            self._notify_proxy_change()
             return True
         except Exception as e:
             self.log("设置系统代理失败：%s" % e)
@@ -5179,14 +5284,6 @@ class App(ctk.CTk):
         self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
 
     def stop_proxy(self):
-        try:
-            self.stop_singbox()
-        except Exception:
-            pass
-        try:
-            self.stop_mihomo()
-        except Exception:
-            pass
         if self.xray_process:
             try:
                 self.xray_process.terminate()
@@ -5197,12 +5294,21 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             self.xray_process = None
-
+        # 清 TUN/核心残留 + 系统代理/PAC
         try:
-            self.set_system_proxy(False)
+            self.restore_network_environment(kill_cores=True)
+        except Exception:
+            try:
+                self.set_system_proxy(False)
+            except Exception:
+                pass
+        self.is_running = False
+        self.tun_enabled = False
+        try:
+            if hasattr(self, "tun_check"):
+                self.tun_check.deselect()
         except Exception:
             pass
-        self.is_running = False
         self._run_started_at = None
         try:
             self.status_label.configure(text="未运行", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#DC2626", "#F87171"))
@@ -5212,7 +5318,7 @@ class App(ctk.CTk):
             self.set_tray_state("disconnected")
         except Exception:
             pass
-        self.log("代理已停止，系统代理已关闭")
+        self.log("代理已停止，系统代理/PAC 已恢复")
         # 恢复启动按钮
         try:
             self.after(0, lambda: self.start_btn.configure(state="normal"))
@@ -5223,20 +5329,34 @@ class App(ctk.CTk):
                 pass
 
     def on_closing(self):
-        # 关闭到托盘
+        # 关闭到托盘（代理可继续跑）
         if self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
             self.save_settings()
             self.withdraw()
             self.log("已最小化到系统托盘")
             return
-        self.stop_proxy()
-        self.save_settings()
+        # 真正退出：必须恢复系统网络，否则其它代理/浏览器会无法上网
+        try:
+            self.stop_proxy()
+        except Exception:
+            pass
+        try:
+            self.restore_network_environment(kill_cores=True)
+        except Exception:
+            pass
+        try:
+            self.save_settings()
+        except Exception:
+            pass
         try:
             if self.tray_icon is not None:
                 self.tray_icon.stop()
         except Exception:
             pass
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 def ensure_single_instance() -> bool:
@@ -5257,6 +5377,45 @@ def ensure_single_instance() -> bool:
 
 
 if __name__ == "__main__":
+    import atexit
+
+    def _atexit_restore():
+        try:
+            # 进程被强杀以外的正常退出兜底
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            try:
+                winreg.DeleteValue(k, "AutoConfigURL")
+            except Exception:
+                pass
+            try:
+                val, _ = winreg.QueryValueEx(k, "ProxyServer")
+                v = (val or "").lower()
+                if "127.0.0.1" in v or "localhost" in v:
+                    try:
+                        winreg.DeleteValue(k, "ProxyServer")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            winreg.CloseKey(k)
+            try:
+                ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
+                ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        for name in ("xray.exe", "sing-box.exe", "mihomo.exe"):
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.run(["taskkill", "/F", "/IM", name, "/T"], capture_output=True, timeout=3, creationflags=flags)
+            except Exception:
+                pass
+
+    atexit.register(_atexit_restore)
+
     if not ensure_single_instance():
         try:
             import tkinter as tk
