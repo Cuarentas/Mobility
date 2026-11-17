@@ -64,7 +64,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.6"
+APP_VERSION = "0.20.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2449,18 +2449,6 @@ class App(ctk.CTk):
 
     def startup(self):
         """分阶段启动，减轻首屏卡顿。"""
-        # 若上次异常退出且系统代理仍指向本软件常用端口，才清理（避免误伤 v2rayN）
-        try:
-            cur = self._read_proxy_reg()
-            srv = (cur.get("ProxyServer") or "").replace(" ", "").lower()
-            en = int(cur.get("ProxyEnable") or 0)
-            our_ports = ("127.0.0.1:%s" % getattr(self, "http_port", 10809),
-                         "127.0.0.1:%s" % getattr(self, "socks_port", 10808))
-            if en and any(p in srv for p in our_ports):
-                self.clear_system_proxy_force()
-                self.log("已清理上次异常退出残留的系统代理")
-        except Exception:
-            pass
         try:
             self.load_settings()
         except Exception as e:
@@ -4292,18 +4280,23 @@ class App(ctk.CTk):
         return ok
 
     def kill_stale_core_processes(self):
-        """仅结束本软件可能残留的核心（快速、短超时）。"""
-        if sys.platform != "win32":
-            return
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        for name in ("xray.exe", "sing-box.exe", "mihomo.exe"):
+        """只结束后台由本软件拉起的核心进程，绝不按进程名全局 taskkill（会误杀 v2rayN 的 xray）。"""
+        procs = []
+        for attr in ("xray_process", "singbox_process", "mihomo_process"):
+            proc = getattr(self, attr, None)
+            if proc is not None:
+                procs.append((attr, proc))
+        for attr, proc in procs:
             try:
-                subprocess.run(
-                    ["taskkill", "/F", "/IM", name, "/T"],
-                    capture_output=True, timeout=1.5, creationflags=flags,
-                )
+                if proc.poll() is None:
+                    proc.kill()
             except Exception:
                 pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        # 不再使用 taskkill /IM xray.exe —— 那会杀掉 v2rayN 正在用的核心
 
     def restore_network_environment(self, kill_cores: bool = True):
         """停止核心并还原系统代理（优先还原进入前的设置，兼容 v2rayN）。"""
@@ -5481,31 +5474,8 @@ if __name__ == "__main__":
     import atexit
 
     def _atexit_restore():
-        # 轻量兜底：结束残留核心；系统代理若指向本机常见端口则关闭
-        try:
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-            try:
-                val, _ = winreg.QueryValueEx(k, "ProxyServer")
-                v = (val or "").lower().replace(" ", "")
-            except Exception:
-                v = ""
-            if "127.0.0.1:10808" in v or "127.0.0.1:10809" in v:
-                winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-            winreg.CloseKey(k)
-            try:
-                ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
-                ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
-            except Exception:
-                pass
-        except Exception:
-            pass
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        for name in ("xray.exe", "sing-box.exe", "mihomo.exe"):
-            try:
-                subprocess.run(["taskkill", "/F", "/IM", name, "/T"], capture_output=True, timeout=1, creationflags=flags)
-            except Exception:
-                pass
+        # 仅还原本进程若曾接管的系统代理；禁止全局 taskkill，避免误杀 v2rayN
+        pass
 
     atexit.register(_atexit_restore)
 
