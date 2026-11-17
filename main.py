@@ -64,7 +64,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.4"
+APP_VERSION = "0.20.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -943,70 +943,63 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        # ===== 订阅区：左输入 + 右操作（两行右对齐同一列）=====
+        # ===== 订阅区：URL 拉长到「加载」前，右侧两行右对齐 =====
         bar = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
         bar.pack(fill="x", pady=(0, 4))
         bar_inner = ctk.CTkFrame(bar, fg_color="transparent")
         bar_inner.pack(fill="x", padx=8, pady=6)
-        bar_inner.grid_columnconfigure(0, weight=1)
 
-        # 左列：订阅输入
-        left_col = ctk.CTkFrame(bar_inner, fg_color="transparent")
-        left_col.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 8))
-
-        sub_line = ctk.CTkFrame(left_col, fg_color="transparent")
-        sub_line.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(sub_line, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
+        # 第一行：订阅 + URL（伸展）+ 加载/菜单
+        row1 = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(row1, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
         self.sub_select = ctk.CTkComboBox(
-            sub_line, width=130, height=32, values=["（无订阅）"], state="readonly",
+            row1, width=120, height=32, values=["（无订阅）"], state="readonly",
             command=self.on_sub_select
         )
         self.sub_select.set("（无订阅）")
         self.sub_select.pack(side="left", padx=(6, 4))
-        self.entry = ctk.CTkEntry(sub_line, height=32, placeholder_text="订阅 URL 或节点链接")
-        self.entry.pack(side="left", fill="x", expand=True, padx=4)
-
-        # 右列：两行操作，同一右边缘
-        right_col = ctk.CTkFrame(bar_inner, fg_color="transparent")
-        right_col.grid(row=0, column=1, rowspan=2, sticky="ne")
-
-        r1 = ctk.CTkFrame(right_col, fg_color="transparent")
-        r1.pack(anchor="e", pady=(0, 6))
-        self.load_btn = ctk.CTkButton(r1, text="加载", width=60, height=32, command=self.load_nodes_thread)
-        self.load_btn.pack(side="left", padx=2)
-        self.sub_menu_btn = ctk.CTkButton(
-            r1, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
-            command=self.open_sub_menu
-        )
-        self.sub_menu_btn.pack(side="left", padx=2)
-        self.node_menu_btn = ctk.CTkButton(
-            r1, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
-            command=self.open_node_menu
-        )
-        self.node_menu_btn.pack(side="left", padx=2)
+        # 右侧按钮先 pack，URL 再 fill 中间剩余空间，一直顶到「加载」前
         self.import_menu_btn = ctk.CTkButton(
-            r1, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
+            row1, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
             command=self.open_import_menu
         )
-        self.import_menu_btn.pack(side="left", padx=(2, 0))
+        self.import_menu_btn.pack(side="right", padx=(2, 0))
+        self.node_menu_btn = ctk.CTkButton(
+            row1, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
+            command=self.open_node_menu
+        )
+        self.node_menu_btn.pack(side="right", padx=2)
+        self.sub_menu_btn = ctk.CTkButton(
+            row1, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
+            command=self.open_sub_menu
+        )
+        self.sub_menu_btn.pack(side="right", padx=2)
+        self.load_btn = ctk.CTkButton(row1, text="加载", width=60, height=32, command=self.load_nodes_thread)
+        self.load_btn.pack(side="right", padx=2)
+        self.entry = ctk.CTkEntry(row1, height=32, placeholder_text="订阅 URL 或节点链接")
+        self.entry.pack(side="left", fill="x", expand=True, padx=(4, 8))
 
-        r2 = ctk.CTkFrame(right_col, fg_color="transparent")
-        r2.pack(anchor="e")
-        ctk.CTkLabel(r2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
-        self.workers_combo = ctk.CTkComboBox(r2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        # 第二行：并发/模式/启动/停止 右对齐，停止与导入右边缘对齐
+        row2 = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        row2.pack(fill="x")
+        right2 = ctk.CTkFrame(row2, fg_color="transparent")
+        right2.pack(side="right")
+        ctk.CTkLabel(right2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
+        self.workers_combo = ctk.CTkComboBox(right2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(r2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
+        ctk.CTkLabel(right2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
         self.mode_combo = ctk.CTkComboBox(
-            r2, width=120, height=30, values=PROXY_MODES, state="readonly",
+            right2, width=120, height=30, values=PROXY_MODES, state="readonly",
             command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
         self.mode_combo.pack(side="left", padx=(2, 10))
-        self.start_btn = ctk.CTkButton(r2, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn = ctk.CTkButton(right2, text="启动", width=72, height=32, command=self.start_proxy_thread)
         self.start_btn.pack(side="left", padx=2)
         self.stop_btn = ctk.CTkButton(
-            r2, text="停止", width=72, height=32,
+            right2, text="停止", width=72, height=32,
             fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
         )
         self.stop_btn.pack(side="left", padx=(2, 0))
