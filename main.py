@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.0"
+APP_VERSION = "0.21.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -684,7 +684,9 @@ def tcp_ping(host: str, port: int, timeout: float = TEST_TIMEOUT) -> int | None:
 
 
 def build_outbound(node: dict) -> dict:
-    protocol = node["protocol"]
+    if not node or not isinstance(node, dict):
+        return None
+    protocol = (node.get("protocol") or "").lower()
 
     if protocol == "vmess":
         user = {
@@ -858,6 +860,8 @@ class App(ctk.CTk):
         self.group_nodes_by_sub = True
         self.rule_set_urls = []
         self._drag_data = None
+        self._pending_node = None
+        self._pending_label = None
         self._node_row_meta = []
         self._xray_ver = "未知"
         self.tun_enabled = False
@@ -916,6 +920,11 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         try:
             self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            self.bind("<Return>", self.confirm_pending_node)
+            self.bind("<KP_Enter>", self.confirm_pending_node)
         except Exception:
             pass
         self.after(50, self.startup)
@@ -1261,22 +1270,73 @@ class App(ctk.CTk):
             pass
 
     def on_node_button_click(self, node, btn):
-        self.current_node = node
-        self._selected_label = node.get("_label")
-        # 高亮
+        """左键仅预选节点，需按回车确认后才真正选用。"""
+        self._pending_node = node
+        self._pending_label = node.get("_label") or node.get("name")
+        # 预选高亮（蓝）；已确认使用的保持橙
+        cur_lb = (getattr(self, "current_node", None) or {}).get("_label")
         for b in self._node_buttons:
             try:
-                b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
+                txt = b.cget("text")
+            except Exception:
+                txt = ""
+            try:
+                if cur_lb and txt == cur_lb:
+                    b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
+                else:
+                    b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
             except Exception:
                 pass
         try:
-            btn.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
+            btn.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="white")
         except Exception:
             pass
+        try:
+            self.log(f"已预选：{node.get('name')}（按回车确认使用）")
+        except Exception:
+            pass
+
+    def confirm_pending_node(self, event=None):
+        """回车确认预选节点为当前使用节点。"""
+        node = getattr(self, "_pending_node", None)
+        if not node:
+            return "break"
+        # 若焦点在输入框，不抢回车
+        try:
+            focus = self.focus_get()
+            if focus is not None:
+                cls = focus.__class__.__name__.lower()
+                if "entry" in cls or "textbox" in cls or "text" in cls:
+                    return None
+        except Exception:
+            pass
+        self.current_node = node
+        self._selected_label = node.get("_label") or node.get("name")
+        for b in getattr(self, "_node_buttons", []) or []:
+            try:
+                txt = b.cget("text")
+            except Exception:
+                txt = ""
+            try:
+                if txt == self._selected_label:
+                    b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
+                else:
+                    b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
+            except Exception:
+                pass
         try:
             self.current_label.configure(text=self._short_node_text(node))
         except Exception:
             pass
+        try:
+            self.log(f"已确认使用节点：{node.get('name')}")
+        except Exception:
+            pass
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        return "break"
 
     def is_admin(self) -> bool:
         try:
@@ -4366,15 +4426,28 @@ class App(ctk.CTk):
         if self.is_running:
             self.log("域名规则已更改，请停止后重新启动代理以生效")
 
+
+    def _safe_widget_get(self, name: str, default=""):
+        """安全读取控件值，避免控件为 None 时 .get 报错。"""
+        w = getattr(self, name, None)
+        if w is None:
+            return default
+        try:
+            return w.get()
+        except Exception:
+            return default
+
     def build_routing_rules(self) -> list:
         """根据代理模式生成路由规则"""
         mode = self.proxy_mode or PROXY_MODE_DEFAULT
-        custom_direct = self.parse_domain_list(
-            self.direct_entry.get() if hasattr(self, "direct_entry") else self.direct_domains
-        )
-        custom_proxy = self.parse_domain_list(
-            self.proxy_entry.get() if hasattr(self, "proxy_entry") else self.proxy_domains
-        )
+        direct_txt = self._safe_widget_get("direct_entry", None)
+        if direct_txt is None:
+            direct_txt = getattr(self, "direct_domains", "") or ""
+        proxy_txt = self._safe_widget_get("proxy_entry", None)
+        if proxy_txt is None:
+            proxy_txt = getattr(self, "proxy_domains", "") or ""
+        custom_direct = self.parse_domain_list(direct_txt or "")
+        custom_proxy = self.parse_domain_list(proxy_txt or "")
 
         rules = []
         # 自定义域名优先
@@ -4435,13 +4508,19 @@ class App(ctk.CTk):
         listen_ip = "0.0.0.0" if self.allow_lan else "127.0.0.1"
 
         # DNS
-        dns_mode = self.dns_combo.get() if hasattr(self, "dns_combo") else self.dns_mode
-        dns_servers = DNS_PRESETS.get(dns_mode)
+        dns_mode = self._safe_widget_get("dns_combo", None)
+        if dns_mode is None:
+            dns_mode = getattr(self, "dns_mode", "系统默认") or "系统默认"
+        dns_servers = DNS_PRESETS.get(dns_mode) if isinstance(DNS_PRESETS, dict) else None
         if dns_mode == "自定义":
-            raw = self.dns_entry.get().strip() if hasattr(self, "dns_entry") else self.dns_custom
-            dns_servers = [x.strip() for x in raw.split(",") if x.strip()]
-        log_level_label = self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level
-        log_level = LOG_LEVEL_MAP.get(log_level_label, "warning")
+            raw = self._safe_widget_get("dns_entry", None)
+            if raw is None:
+                raw = getattr(self, "dns_custom", "") or ""
+            dns_servers = [x.strip() for x in str(raw).split(",") if x.strip()]
+        log_level_label = self._safe_widget_get("loglevel_combo", None)
+        if log_level_label is None:
+            log_level_label = getattr(self, "log_level", "警告") or "警告"
+        log_level = LOG_LEVEL_MAP.get(log_level_label, "warning") if isinstance(LOG_LEVEL_MAP, dict) else "warning"
 
         config = {
             "log": {
@@ -4501,7 +4580,7 @@ class App(ctk.CTk):
         rules.insert(0, {"inboundTag": ["api"], "outboundTag": "api", "type": "field"})
         config.setdefault("routing", {})["rules"] = rules
         outs = config.get("outbounds") or []
-        if not any(o.get("tag") == "api" for o in outs):
+        if not any((o or {}).get("tag") == "api" for o in outs if isinstance(o, dict)):
             outs.append({"tag": "api", "protocol": "freedom"})
             config["outbounds"] = outs
 
