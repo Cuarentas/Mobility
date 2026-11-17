@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.4"
+APP_VERSION = "0.19.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1519,25 +1519,42 @@ class App(ctk.CTk):
 
 
     def _popup_action_menu(self, title: str, actions: list, anchor_widget=None):
-        """轻量二级菜单：actions = [(显示名, 回调), ...]"""
+        """轻量二级菜单：actions = [(显示名, 回调), ...]
+        注意：不要用 FocusOut 立即关闭，否则在 Windows 上会一闪就消失。
+        """
+        # 关闭上一个弹出菜单，避免叠多个
+        try:
+            old = getattr(self, "_action_menu_win", None)
+            if old is not None and old.winfo_exists():
+                old.destroy()
+        except Exception:
+            pass
+
         win = ctk.CTkToplevel(self)
+        self._action_menu_win = win
         win.title(title)
         win.resizable(False, False)
-        win.attributes("-topmost", True)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
         try:
             win.transient(self)
         except Exception:
             pass
-        # 定位到按钮附近
+
+        h = 56 + 38 * max(1, len(actions))
+        w = 240
         try:
             if anchor_widget is not None:
+                anchor_widget.update_idletasks()
                 ax = anchor_widget.winfo_rootx()
-                ay = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
-                win.geometry("+%d+%d" % (ax, ay))
+                ay = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 2
+                win.geometry("%dx%d+%d+%d" % (w, h, ax, ay))
             else:
-                win.geometry("220x%d" % (48 + 36 * len(actions)))
+                win.geometry("%dx%d" % (w, h))
         except Exception:
-            win.geometry("220x%d" % (48 + 36 * len(actions)))
+            win.geometry("%dx%d" % (w, h))
 
         ctk.CTkLabel(win, text=title, font=("Microsoft YaHei UI", 13, "bold")).pack(
             anchor="w", padx=12, pady=(10, 6)
@@ -1545,12 +1562,17 @@ class App(ctk.CTk):
         box = ctk.CTkFrame(win, fg_color="transparent")
         box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
+        def _close():
+            try:
+                if getattr(self, "_action_menu_win", None) is win:
+                    self._action_menu_win = None
+                win.destroy()
+            except Exception:
+                pass
+
         def make_cmd(fn):
             def _run():
-                try:
-                    win.destroy()
-                except Exception:
-                    pass
+                _close()
                 try:
                     fn()
                 except Exception as e:
@@ -1565,13 +1587,17 @@ class App(ctk.CTk):
                 command=make_cmd(fn),
             ).pack(fill="x", pady=2)
 
-        def _close(_e=None):
-            try:
-                win.destroy()
-            except Exception:
-                pass
-        win.bind("<FocusOut>", lambda e: win.after(120, _close))
-        win.focus_force()
+        # Escape / 关闭按钮退出；不用 FocusOut（Windows 上会一闪消失）
+        win.bind("<Escape>", lambda e: _close())
+        try:
+            win.protocol("WM_DELETE_WINDOW", _close)
+        except Exception:
+            pass
+        try:
+            win.lift()
+            win.focus_force()
+        except Exception:
+            pass
 
     def open_sub_menu(self):
         self._popup_action_menu(
