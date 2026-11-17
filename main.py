@@ -30,6 +30,12 @@ ctk.set_default_color_theme("blue")
 TEST_WORKERS_DEFAULT = 32
 TEST_TIMEOUT = 5.0
 TEST_WORKERS_OPTIONS = ["8", "16", "32", "64", "128", "256"]
+DEFAULT_TEST_TIMEOUT = 5.0
+DEFAULT_CONNECTIVITY_URLS = [
+    ("https://www.gstatic.com/generate_204", "GStatic"),
+    ("https://www.google.com/generate_204", "Google"),
+    ("https://cp.cloudflare.com/", "Cloudflare"),
+]
 PROXY_MODES = ["规则模式", "全局模式", "直连模式", "PAC模式"]
 TUN_STACK_OPTIONS = ["system", "gvisor", "mixed"]
 TUN_MTU_OPTIONS = ["9000", "1500", "1400", "1280"]
@@ -64,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.7"
+APP_VERSION = "0.21.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -847,6 +853,12 @@ class App(ctk.CTk):
         self.current_node = None
         self.subscription_url = ""
         self.subscriptions = []
+        self.test_timeout = DEFAULT_TEST_TIMEOUT
+        self.connectivity_urls = list(DEFAULT_CONNECTIVITY_URLS)
+        self.group_nodes_by_sub = True
+        self.rule_set_urls = []
+        self._drag_data = None
+        self._node_row_meta = []
         self._xray_ver = "未知"
         self.tun_enabled = False
         self.tun_settings = dict(DEFAULT_TUN_SETTINGS)
@@ -1688,6 +1700,8 @@ class App(ctk.CTk):
                 ("连通性测试", self.connectivity_test_thread),
                 ("节点上移", lambda: self.move_selected_node(-1)),
                 ("节点下移", lambda: self.move_selected_node(1)),
+                ("测速/连通性设置", self.open_speed_settings_dialog),
+                ("连接诊断", self.open_diagnostics_dialog),
             ],
             getattr(self, "node_menu_btn", None),
         )
@@ -1778,6 +1792,8 @@ class App(ctk.CTk):
                 ("从剪贴板导入", self.import_clipboard_thread),
                 ("扫描屏幕二维码", self.scan_screen_qr_thread),
                 ("生成节点二维码", self.show_node_qr),
+                ("导出节点与设置", self.export_config_dialog),
+                ("导入节点与设置", self.import_config_dialog),
             ],
             getattr(self, "import_menu_btn", None),
         )
@@ -1895,11 +1911,232 @@ class App(ctk.CTk):
         ctk.CTkButton(btn_row, text="取消", width=90, command=do_cancel).pack(side="right", padx=(8, 0))
         ctk.CTkButton(btn_row, text="确定", width=90, fg_color="#2563EB", command=do_ok).pack(side="right")
 
+
+    def open_speed_settings_dialog(self):
+        win = ctk.CTkToplevel(self)
+        win.title("测速 / 连通性设置")
+        win.geometry("480x360")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(win, text="测速与连通性", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=16, pady=(14, 8)
+        )
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=16)
+        row = ctk.CTkFrame(form, fg_color="transparent")
+        row.pack(fill="x", pady=6)
+        ctk.CTkLabel(row, text="TCP 测速超时(秒)", width=140, anchor="w").pack(side="left")
+        timeout_entry = ctk.CTkEntry(row, width=100)
+        timeout_entry.insert(0, str(getattr(self, "test_timeout", DEFAULT_TEST_TIMEOUT)))
+        timeout_entry.pack(side="left", padx=8)
+        row2 = ctk.CTkFrame(form, fg_color="transparent")
+        row2.pack(fill="x", pady=6)
+        group_var = ctk.BooleanVar(value=bool(getattr(self, "group_nodes_by_sub", True)))
+        ctk.CTkCheckBox(row2, text="节点列表按订阅分组显示", variable=group_var).pack(side="left")
+        ctk.CTkLabel(form, text="连通性测试目标（每行：URL 或 URL|名称）", anchor="w").pack(fill="x", pady=(10, 4))
+        urls_box = ctk.CTkTextbox(form, height=140)
+        urls_box.pack(fill="both", expand=True)
+        lines = []
+        for item in getattr(self, "connectivity_urls", None) or DEFAULT_CONNECTIVITY_URLS:
+            if isinstance(item, (list, tuple)):
+                u, n = item[0], (item[1] if len(item) > 1 else item[0])
+            else:
+                u, n = item, item
+            lines.append(f"{u}|{n}" if n and n != u else str(u))
+        urls_box.insert("1.0", "\n".join(lines))
+
+        def save():
+            try:
+                self.test_timeout = max(1.0, float(timeout_entry.get().strip() or DEFAULT_TEST_TIMEOUT))
+            except Exception:
+                self.test_timeout = DEFAULT_TEST_TIMEOUT
+            self.group_nodes_by_sub = bool(group_var.get())
+            parsed = []
+            for line in urls_box.get("1.0", "end").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if "|" in line:
+                    u, n = line.split("|", 1)
+                    parsed.append((u.strip(), n.strip() or u.strip()))
+                else:
+                    parsed.append((line, line))
+            if parsed:
+                self.connectivity_urls = parsed
+            self.save_settings()
+            self.refresh_node_list(keep_selection=True, resort=False)
+            self.log(f"测速超时={self.test_timeout}s，分组={'开' if self.group_nodes_by_sub else '关'}")
+            win.destroy()
+
+        ctk.CTkButton(win, text="保存", width=100, command=save).pack(pady=12)
+
+    def open_diagnostics_dialog(self):
+        win = ctk.CTkToplevel(self)
+        win.title("连接诊断")
+        win.geometry("560x480")
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(win, text="连接诊断", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=16, pady=(14, 6)
+        )
+        box = ctk.CTkTextbox(win, height=360)
+        box.pack(fill="both", expand=True, padx=16, pady=6)
+        lines = []
+        lines.append(f"软件版本: v{APP_VERSION}")
+        lines.append(f"运行状态: {'运行中' if getattr(self, 'is_running', False) else '未运行'}")
+        lines.append(f"TUN: {'开' if getattr(self, 'tun_enabled', False) else '关'}")
+        lines.append(f"代理模式: {getattr(self, 'proxy_mode', '')}")
+        try:
+            sp, hp = self.get_ports()
+        except Exception:
+            sp, hp = 10808, 10809
+        lines.append(f"本地端口: SOCKS {sp} / HTTP {hp}")
+        node = getattr(self, "current_node", None)
+        if node:
+            lines.append(f"当前节点: [{node.get('protocol')}] {node.get('name')} {node.get('address')}:{node.get('port')}")
+        else:
+            lines.append("当前节点: 无")
+        for name, attr in (("Xray", "xray_process"), ("sing-box", "singbox_process"), ("Mihomo", "mihomo_process")):
+            proc = getattr(self, attr, None)
+            if proc and proc.poll() is None:
+                lines.append(f"{name} 进程: PID {proc.pid}")
+            else:
+                lines.append(f"{name} 进程: 未运行")
+        try:
+            reg = self._read_proxy_reg()
+            lines.append(f"系统代理启用: {reg.get('ProxyEnable')}")
+            lines.append(f"ProxyServer: {reg.get('ProxyServer') or '（空）'}")
+            lines.append(f"AutoConfigURL: {reg.get('AutoConfigURL') or '（空）'}")
+        except Exception as e:
+            lines.append(f"读取系统代理失败: {e}")
+        for port in (sp, hp):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.4)
+                ok = s.connect_ex(("127.0.0.1", int(port))) == 0
+                s.close()
+                lines.append(f"127.0.0.1:{port} 监听: {'是' if ok else '否'}")
+            except Exception as e:
+                lines.append(f"127.0.0.1:{port} 探测失败: {e}")
+        for fn in ("xray.exe", "sing-box.exe", "mihomo.exe", "geoip.dat", "geosite.dat", "wintun.dll"):
+            fp = self.core_dir / fn
+            lines.append(f"core/{fn}: {'存在' if fp.exists() else '缺失'}")
+        text = "\n".join(lines)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+
+        def copy_all():
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(text)
+                self.log("诊断信息已复制")
+            except Exception as e:
+                self.log(f"复制失败：{e}")
+
+        bf = ctk.CTkFrame(win, fg_color="transparent")
+        bf.pack(fill="x", padx=16, pady=10)
+        ctk.CTkButton(bf, text="复制全部", width=100, command=copy_all).pack(side="left")
+        ctk.CTkButton(bf, text="关闭", width=80, command=win.destroy).pack(side="right")
+
+    def export_config_dialog(self):
+        try:
+            from tkinter import filedialog
+        except Exception:
+            self.log("无法打开文件对话框")
+            return
+        path = filedialog.asksaveasfilename(
+            title="导出节点与设置", defaultextension=".json",
+            initialfile="Mobility-backup.json",
+            filetypes=[("JSON", "*.json"), ("All", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            self.save_settings()
+            Path(path).write_text(self.settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+            self.log(f"已导出：{path}")
+        except Exception as e:
+            self.log(f"导出失败：{e}")
+
+    def import_config_dialog(self):
+        try:
+            from tkinter import filedialog
+        except Exception:
+            self.log("无法打开文件对话框")
+            return
+        path = filedialog.askopenfilename(
+            title="导入节点与设置",
+            filetypes=[("JSON", "*.json"), ("All", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                self.log("导入文件格式无效")
+                return
+            self.settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.load_settings()
+            self.refresh_node_list(keep_selection=False, resort=False)
+            try:
+                self.refresh_sub_select()
+            except Exception:
+                pass
+            self.log(f"已导入：{path}")
+        except Exception as e:
+            self.log(f"导入失败：{e}")
+
+    def fetch_rule_set_and_merge(self, url: str, kind: str = "direct"):
+        url = (url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            self.log("规则集 URL 无效")
+            return
+        try:
+            self.log(f"正在拉取规则集：{url}")
+            resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
+            resp.raise_for_status()
+            domains = []
+            for line in (resp.text or "").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("//"):
+                    continue
+                if line.startswith("domain:"):
+                    line = line[7:].strip()
+                elif line.startswith("full:"):
+                    line = line[5:].strip()
+                elif line.startswith("regexp:"):
+                    continue
+                line = line.split("#")[0].strip()
+                if line:
+                    domains.append(line)
+            if not domains:
+                self.log("规则集中未解析到域名")
+                return
+            attr = {"direct": "routing_extra_direct", "proxy": "routing_extra_proxy", "block": "routing_extra_block"}.get(kind, "routing_extra_direct")
+            old = getattr(self, attr, "") or ""
+            existing = set(x.strip() for x in old.replace(",", "\n").splitlines() if x.strip())
+            added = 0
+            for d in domains:
+                if d not in existing:
+                    existing.add(d)
+                    added += 1
+            setattr(self, attr, "\n".join(sorted(existing)))
+            self.save_settings()
+            self.log(f"规则集合并完成：新增 {added}，总计 {len(existing)}（{kind}）")
+        except Exception as e:
+            self.log(f"拉取规则集失败：{e}")
+
     def open_routing_dialog(self):
         """路由与分流增强设置。"""
         win = ctk.CTkToplevel(self)
         win.title("路由与分流设置")
-        win.geometry("520x480")
+        win.geometry("520x580")
         win.transient(self)
         try:
             win.grab_set()
@@ -1940,6 +2177,38 @@ class App(ctk.CTk):
         tb_direct = box("强制直连（含原直连域名）", d0)
         tb_proxy = box("强制代理（含原代理域名）", p0)
         tb_block = box("拦截（黑名单）", getattr(self, "routing_extra_block", "") or "")
+
+        ctk.CTkLabel(form, text="从 URL 更新规则集", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(10, 2))
+        ru = ctk.CTkFrame(form, fg_color="transparent")
+        ru.pack(fill="x", pady=4)
+        rule_url_entry = ctk.CTkEntry(ru, height=30, placeholder_text="规则列表 URL（每行一个域名）")
+        rule_url_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        kind_cb = ctk.CTkComboBox(ru, width=90, values=["direct", "proxy", "block"], state="readonly")
+        kind_cb.set("direct")
+        kind_cb.pack(side="left", padx=4)
+
+        def do_fetch_rules():
+            u = rule_url_entry.get().strip()
+            k = kind_cb.get() or "direct"
+            def _run():
+                self.fetch_rule_set_and_merge(u, k)
+                def _ui():
+                    try:
+                        if k == "direct":
+                            tb_direct.delete("1.0", "end")
+                            tb_direct.insert("1.0", getattr(self, "routing_extra_direct", "") or "")
+                        elif k == "proxy":
+                            tb_proxy.delete("1.0", "end")
+                            tb_proxy.insert("1.0", getattr(self, "routing_extra_proxy", "") or "")
+                        else:
+                            tb_block.delete("1.0", "end")
+                            tb_block.insert("1.0", getattr(self, "routing_extra_block", "") or "")
+                    except Exception:
+                        pass
+                self.after(0, _ui)
+            Thread(target=_run, daemon=True).start()
+
+        ctk.CTkButton(ru, text="拉取合并", width=88, command=do_fetch_rules).pack(side="left", padx=4)
 
         btn_row = ctk.CTkFrame(win, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
@@ -2609,11 +2878,7 @@ class App(ctk.CTk):
             self.log("  未选择节点，跳过节点 TCP 测试")
 
         # 2) HTTP 目标
-        targets = [
-            ("https://www.google.com/generate_204", "Google"),
-            ("https://www.youtube.com", "YouTube"),
-            ("https://www.cloudflare.com", "Cloudflare"),
-        ]
+        targets = list(getattr(self, "connectivity_urls", None) or DEFAULT_CONNECTIVITY_URLS)
         proxies = None
         if self.is_running:
             _, http_port = self.get_ports()
@@ -2741,6 +3006,9 @@ class App(ctk.CTk):
         if not nodes:
             self.log("剪贴板中未识别到有效节点或订阅链接")
             return
+        for n in nodes:
+            if isinstance(n, dict) and not n.get("_group"):
+                n["_group"] = "当前订阅"
         self.nodes = nodes
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
@@ -3239,6 +3507,13 @@ class App(ctk.CTk):
                 "log_level": self.loglevel_combo.get() if hasattr(self, "loglevel_combo") else self.log_level,
                 "proxy_core": getattr(self, "proxy_core", "Xray"),
                 "core_map": getattr(self, "core_map", dict(DEFAULT_CORE_MAP)),
+                "test_timeout": float(getattr(self, "test_timeout", DEFAULT_TEST_TIMEOUT) or DEFAULT_TEST_TIMEOUT),
+                "group_nodes_by_sub": bool(getattr(self, "group_nodes_by_sub", True)),
+                "rule_set_urls": list(getattr(self, "rule_set_urls", []) or []),
+                "connectivity_urls": [
+                    list(x) if isinstance(x, (list, tuple)) else [x.get("url"), x.get("name")]
+                    for x in (getattr(self, "connectivity_urls", None) or DEFAULT_CONNECTIVITY_URLS)
+                ],
             }
             self.settings_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -3319,6 +3594,22 @@ class App(ctk.CTk):
             self.routing_extra_direct = data.get("routing_extra_direct") or ""
             self.routing_extra_proxy = data.get("routing_extra_proxy") or ""
             self.routing_extra_block = data.get("routing_extra_block") or ""
+            try:
+                self.test_timeout = float(data.get("test_timeout") or DEFAULT_TEST_TIMEOUT)
+            except Exception:
+                self.test_timeout = DEFAULT_TEST_TIMEOUT
+            self.group_nodes_by_sub = bool(data.get("group_nodes_by_sub", True))
+            self.rule_set_urls = data.get("rule_set_urls") if isinstance(data.get("rule_set_urls"), list) else []
+            cu = data.get("connectivity_urls")
+            if isinstance(cu, list) and cu:
+                parsed = []
+                for item in cu:
+                    if isinstance(item, (list, tuple)) and item:
+                        parsed.append((item[0], item[1] if len(item) > 1 else item[0]))
+                    elif isinstance(item, dict) and item.get("url"):
+                        parsed.append((item.get("url"), item.get("name") or item.get("url")))
+                if parsed:
+                    self.connectivity_urls = parsed
             try:
                 self.settings_refresh_hours = float(data.get("settings_refresh_hours") or 0)
             except Exception:
@@ -3461,20 +3752,23 @@ class App(ctk.CTk):
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
     def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
-        """刷新左侧节点列表（滚动列表，不再用 ComboBox）。
-        resort=True 时才按延迟排序（测速后调用）；平时保持用户顺序。
-        """
+        """刷新节点列表：按订阅分组 + 拖拽排序。"""
         try:
             nodes = list(self.nodes or [])
             self.clear_node_list_ui()
+            self._node_row_meta = []
 
             if not nodes:
-                self.node_count_label.configure(text="节点：0")
-                empty = ctk.CTkLabel(self.node_list, text="（请先加载订阅或节点）",
-                                     font=("Microsoft YaHei UI", 12), text_color=("gray50", "gray55"))
+                try:
+                    self.node_count_label.configure(text="节点：0")
+                except Exception:
+                    pass
+                empty = ctk.CTkLabel(
+                    self.node_list, text="（请先加载订阅或节点）",
+                    font=("Microsoft YaHei UI", 12), text_color=("gray50", "gray55"),
+                )
                 empty.pack(pady=20)
                 self._node_buttons.append(empty)
-                self.log("节点列表为空")
                 return
 
             if resort:
@@ -3500,52 +3794,154 @@ class App(ctk.CTk):
             prev = self._selected_label if keep_selection else None
             shown = 0
             selected_btn = None
-            for i, n in enumerate(self.nodes):
+            group_by = bool(getattr(self, "group_nodes_by_sub", True))
+
+            display = []
+            if group_by:
+                groups, order = {}, []
+                for n in self.nodes:
+                    g = n.get("_group") or n.get("sub") or "未分组"
+                    if g not in groups:
+                        groups[g] = []
+                        order.append(g)
+                    groups[g].append(n)
+                for g in order:
+                    display.append(("group", g))
+                    for n in groups[g]:
+                        display.append(("node", n))
+            else:
+                for n in self.nodes:
+                    display.append(("node", n))
+
+            for kind, payload in display:
+                if kind == "group":
+                    ctk.CTkLabel(
+                        self.node_list, text=f"▾ {payload}", anchor="w",
+                        font=("Microsoft YaHei UI", 12, "bold"),
+                        text_color=("#2563EB", "#93C5FD"),
+                    ).pack(fill="x", padx=6, pady=(8, 2))
+                    continue
+                n = payload
                 try:
                     lb = node_label(n)
                 except Exception:
-                    lb = f"节点{i+1}"
+                    lb = n.get("name") or "节点"
                 n["_label"] = lb
-                n["_index"] = i
                 if kw:
-                    blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')}".lower()
+                    blob = f"{n.get('name','')} {n.get('address','')} {n.get('protocol','')} {n.get('_group','')}".lower()
                     if kw not in blob:
                         continue
+                row = ctk.CTkFrame(self.node_list, fg_color="transparent")
+                row.pack(fill="x", pady=1, padx=2)
                 btn = ctk.CTkButton(
-                    self.node_list,
-                    text=lb,
-                    anchor="w",
-                    height=30,
-                    fg_color=("gray85", "gray25"),
-                    text_color=("gray10", "gray90"),
-                    hover_color=("#93C5FD", "#1E3A8A"),
-                    font=("Microsoft YaHei UI", 12),
+                    row, text=lb, anchor="w", height=30,
+                    fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"),
+                    hover_color=("#93C5FD", "#1E3A8A"), font=("Microsoft YaHei UI", 12),
                 )
+                btn.pack(side="left", fill="x", expand=True)
                 btn.configure(command=lambda node=n, b=btn: self.on_node_button_click(node, b))
-                btn.pack(fill="x", pady=1, padx=2)
+                btn.bind("<ButtonPress-1>", lambda e, node=n, b=btn: self._node_drag_start(e, node, b))
+                btn.bind("<B1-Motion>", lambda e, node=n, b=btn: self._node_drag_motion(e, node, b))
+                btn.bind("<ButtonRelease-1>", lambda e, node=n, b=btn: self._node_drag_end(e, node, b))
                 self._node_buttons.append(btn)
+                self._node_row_meta.append({"node": n, "btn": btn, "row": row})
                 shown += 1
                 if prev and lb == prev:
-                    selected_btn = (n, btn)
+                    selected_btn = btn
+                    try:
+                        btn.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
+                    except Exception:
+                        pass
 
-            self.node_count_label.configure(text=f"节点：{shown}/{len(self.nodes)}")
-            if selected_btn:
-                self.on_node_button_click(selected_btn[0], selected_btn[1])
-            elif self._node_buttons and isinstance(self._node_buttons[0], ctk.CTkButton):
-                # 默认选第一个可见节点
-                first_node = None
-                for n in self.nodes:
-                    if n.get("_label") == self._node_buttons[0].cget("text"):
-                        first_node = n
+            try:
+                self.node_count_label.configure(text=f"节点：{shown}/{len(self.nodes)}")
+            except Exception:
+                pass
+            if selected_btn is None:
+                for b in self._node_buttons:
+                    if isinstance(b, ctk.CTkButton):
+                        try:
+                            self.on_node_button_click(
+                                next(m["node"] for m in self._node_row_meta if m.get("btn") is b), b
+                            )
+                        except Exception:
+                            pass
                         break
-                if first_node is None and self.nodes:
-                    first_node = self.nodes[0]
-                if first_node is not None:
-                    self.on_node_button_click(first_node, self._node_buttons[0])
-            self.log(f"节点列表已更新：{shown} 条")
         except Exception as e:
-            self.log(f"刷新节点列表失败：{type(e).__name__}: {e}")
+            try:
+                self.log(f"刷新节点列表失败：{e}")
+            except Exception:
+                pass
 
+    def _node_drag_start(self, event, node, btn):
+        self._drag_data = {"node": node, "btn": btn, "start_y": event.y_root, "moved": False}
+        try:
+            btn.configure(fg_color=("#FDBA74", "#9A3412"))
+        except Exception:
+            pass
+
+    def _node_drag_motion(self, event, node, btn):
+        d = getattr(self, "_drag_data", None)
+        if not d or d.get("node") is not node:
+            return
+        if abs(event.y_root - d.get("start_y", 0)) > 6:
+            d["moved"] = True
+
+    def _node_drag_end(self, event, node, btn):
+        d = getattr(self, "_drag_data", None)
+        self._drag_data = None
+        if not d or d.get("node") is not node:
+            return
+        if not d.get("moved"):
+            try:
+                self.on_node_button_click(node, btn)
+            except Exception:
+                pass
+            return
+        target = None
+        try:
+            y = event.y_root
+            nearest, best_dist = None, 10**9
+            for meta in getattr(self, "_node_row_meta", []) or []:
+                b = meta.get("btn")
+                n2 = meta.get("node")
+                if not b or n2 is None:
+                    continue
+                try:
+                    by = b.winfo_rooty()
+                    bh = b.winfo_height() or 30
+                    if by <= y <= by + bh:
+                        target = n2
+                        break
+                    dist = abs(by + bh / 2 - y)
+                    if dist < best_dist:
+                        best_dist, nearest = dist, n2
+                except Exception:
+                    continue
+            if target is None:
+                target = nearest
+        except Exception:
+            target = None
+        if not target or target is node:
+            try:
+                self.on_node_button_click(node, btn)
+            except Exception:
+                pass
+            return
+        try:
+            nodes = list(self.nodes or [])
+            i = nodes.index(node)
+            j = nodes.index(target)
+            nodes.pop(i)
+            nodes.insert(j, node)
+            self.nodes = nodes
+            self.current_node = node
+            self._selected_label = node.get("_label")
+            self.refresh_node_list(keep_selection=True, resort=False)
+            self.save_settings()
+            self.log("已拖拽调整节点顺序")
+        except Exception as e:
+            self.log(f"拖拽排序失败：{e}")
 
 
     def refresh_sub_select(self):
@@ -3674,7 +4070,9 @@ class App(ctk.CTk):
                 resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
                 resp.raise_for_status()
                 nodes = parse_subscription_content(resp.text)
+                gname = s.get("name") or (url[:24] if url else "订阅")
                 for n in nodes:
+                    n["_group"] = gname
                     key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}"
                     if key in seen:
                         continue
@@ -3853,13 +4251,14 @@ class App(ctk.CTk):
         except Exception:
             chosen = TEST_WORKERS_DEFAULT
         workers = min(chosen, max(1, total))
-        self.log(f"开始并行测速：{total} 个节点，并发 {workers}，超时 {TEST_TIMEOUT}s")
+        timeout = float(getattr(self, "test_timeout", DEFAULT_TEST_TIMEOUT) or DEFAULT_TEST_TIMEOUT)
+        self.log(f"开始并行测速：{total} 个节点，并发 {workers}，超时 {timeout}s")
 
         t_start = time.perf_counter()
 
         def _one(pair):
             i, node = pair
-            ms = tcp_ping(node["address"], int(node["port"]), timeout=TEST_TIMEOUT)
+            ms = tcp_ping(node["address"], int(node["port"]), timeout=timeout)
             return i, ms
 
         ok = 0
