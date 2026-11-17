@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.6"
+APP_VERSION = "0.19.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -990,12 +990,9 @@ class App(ctk.CTk):
         self.move_up_btn = self.node_menu_btn
         self.move_down_btn = self.node_menu_btn
 
-        # 第二行：左侧预留给后续功能按钮，右侧并发 + 模式
+        # 第二行：紧凑，仅右侧并发 + 模式（与去提示前一致）
         tools = ctk.CTkFrame(body, fg_color="transparent")
         tools.pack(fill="x", pady=(0, 4))
-        self.tools_left = ctk.CTkFrame(tools, fg_color="transparent")
-        self.tools_left.pack(side="left", fill="x", expand=True)
-
         right_opts = ctk.CTkFrame(tools, fg_color="transparent")
         right_opts.pack(side="right", padx=(8, 0))
         ctk.CTkLabel(right_opts, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
@@ -1518,13 +1515,19 @@ class App(ctk.CTk):
 
     def _popup_action_menu(self, title: str, actions: list, anchor_widget=None):
         """轻量二级菜单：actions = [(显示名, 回调), ...]
-        注意：不要用 FocusOut 立即关闭，否则在 Windows 上会一闪就消失。
+        - 不用 FocusOut（Windows 上会闪退）
+        - 支持 Esc / 关闭按钮 / 点击主窗口空白处收起
         """
-        # 关闭上一个弹出菜单，避免叠多个
         try:
             old = getattr(self, "_action_menu_win", None)
             if old is not None and old.winfo_exists():
                 old.destroy()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_menu_outside_bound", False):
+                self.unbind("<Button-1>")
+                self._menu_outside_bound = False
         except Exception:
             pass
 
@@ -1540,13 +1543,11 @@ class App(ctk.CTk):
             win.transient(self)
         except Exception:
             pass
-        # 与主程序一致的窗口图标
         try:
             ico = self.icons_dir / "mobility.ico"
             if ico.exists():
                 win.iconbitmap(str(ico))
             else:
-                # 回退 png
                 for name in ("logo-main.png", "logo-main-32.png"):
                     png = self.icons_dir / name
                     if png.exists():
@@ -1580,17 +1581,24 @@ class App(ctk.CTk):
         box = ctk.CTkFrame(win, fg_color="transparent")
         box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        def _close():
+        def dismiss():
+            try:
+                if getattr(self, "_menu_outside_bound", False):
+                    self.unbind("<Button-1>")
+                    self._menu_outside_bound = False
+            except Exception:
+                pass
             try:
                 if getattr(self, "_action_menu_win", None) is win:
                     self._action_menu_win = None
-                win.destroy()
+                if win.winfo_exists():
+                    win.destroy()
             except Exception:
                 pass
 
         def make_cmd(fn):
             def _run():
-                _close()
+                dismiss()
                 try:
                     fn()
                 except Exception as e:
@@ -1605,10 +1613,31 @@ class App(ctk.CTk):
                 command=make_cmd(fn),
             ).pack(fill="x", pady=2)
 
-        # Escape / 关闭按钮退出；不用 FocusOut（Windows 上会一闪消失）
-        win.bind("<Escape>", lambda e: _close())
+        def on_outside(event):
+            try:
+                if not win.winfo_exists():
+                    dismiss()
+                    return
+                x, y = int(event.x_root), int(event.y_root)
+                wx, wy = int(win.winfo_rootx()), int(win.winfo_rooty())
+                ww, wh = int(win.winfo_width()), int(win.winfo_height())
+                if wx <= x <= wx + ww and wy <= y <= wy + wh:
+                    return
+                dismiss()
+            except Exception:
+                dismiss()
+
+        def enable_outside():
+            try:
+                self.bind("<Button-1>", on_outside, add="+")
+                self._menu_outside_bound = True
+            except Exception:
+                pass
+
+        win.after(220, enable_outside)
+        win.bind("<Escape>", lambda e: dismiss())
         try:
-            win.protocol("WM_DELETE_WINDOW", _close)
+            win.protocol("WM_DELETE_WINDOW", dismiss)
         except Exception:
             pass
         try:
