@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.19.7"
+APP_VERSION = "0.19.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -891,9 +891,18 @@ class App(ctk.CTk):
         self._custom_refresh_hours = 0
         self.icons_dir = get_icons_dir()
 
+        try:
+            ctk.set_widget_scaling(1.0)
+            ctk.set_window_scaling(1.0)
+        except Exception:
+            pass
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.after(200, self.startup)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        self.after(50, self.startup)
 
     def create_widgets(self):
         # 窗口图标
@@ -904,16 +913,10 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        # ===== 顶栏 =====
-        top = ctk.CTkFrame(self, fg_color=("gray90", "gray17"), corner_radius=0, height=52)
+        # ===== 顶栏：仅状态信息 =====
+        top = ctk.CTkFrame(self, fg_color=("gray90", "gray17"), corner_radius=0, height=48)
         top.pack(fill="x")
         top.pack_propagate(False)
-        # 右侧按钮先 pack，避免长节点名把按钮挤出窗口
-        self.stop_btn = ctk.CTkButton(top, text="停止", width=72, height=32,
-                                      fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy)
-        self.stop_btn.pack(side="right", padx=(4, 12), pady=10)
-        self.start_btn = ctk.CTkButton(top, text="启动", width=72, height=32, command=self.start_proxy_thread)
-        self.start_btn.pack(side="right", padx=4, pady=10)
 
         self.title_label = ctk.CTkLabel(
             top, text="Mobility", font=("Microsoft YaHei UI", 18, "bold"),
@@ -925,7 +928,6 @@ class App(ctk.CTk):
         self.app_ver_label.pack(side="left", padx=(4, 10))
         self.status_label = ctk.CTkLabel(top, text="未运行", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#DC2626", "#F87171"))
         self.status_label.pack(side="left", padx=8)
-        # 核心版本固定在状态后，避免被长节点名挤掉
         self.version_label = ctk.CTkLabel(
             top, text="",
             font=("Microsoft YaHei UI", 11), text_color=("gray45", "gray55")
@@ -940,41 +942,74 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        # ===== 工具栏（精简：主操作 + 二级菜单）=====
-        sub = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
-        sub.pack(fill="x", pady=(0, 6), ipady=4)
-        inner = ctk.CTkFrame(sub, fg_color="transparent")
-        inner.pack(fill="x", padx=8, pady=4)
+        # ===== 工具区：左订阅 + 右三排右对齐 =====
+        bar = ctk.CTkFrame(body, fg_color=("gray92", "gray18"), corner_radius=10)
+        bar.pack(fill="x", pady=(0, 6))
+        bar_inner = ctk.CTkFrame(bar, fg_color="transparent")
+        bar_inner.pack(fill="x", padx=8, pady=6)
 
-        ctk.CTkLabel(inner, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
+        left_bar = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        left_bar.pack(side="left", fill="both", expand=True)
+
+        row1 = ctk.CTkFrame(left_bar, fg_color="transparent")
+        row1.pack(fill="x")
+        ctk.CTkLabel(row1, text="订阅", font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
         self.sub_select = ctk.CTkComboBox(
-            inner, width=130, height=32, values=["（无订阅）"], state="readonly",
+            row1, width=130, height=32, values=["（无订阅）"], state="readonly",
             command=self.on_sub_select
         )
         self.sub_select.set("（无订阅）")
         self.sub_select.pack(side="left", padx=(6, 4))
-        self.entry = ctk.CTkEntry(inner, height=32, placeholder_text="订阅 URL 或节点链接")
+        self.entry = ctk.CTkEntry(row1, height=32, placeholder_text="订阅 URL 或节点链接")
         self.entry.pack(side="left", fill="x", expand=True, padx=4)
 
-        self.load_btn = ctk.CTkButton(inner, text="加载", width=60, height=32, command=self.load_nodes_thread)
+        right_stack = ctk.CTkFrame(bar_inner, fg_color="transparent")
+        right_stack.pack(side="right", padx=(10, 0))
+
+        r0 = ctk.CTkFrame(right_stack, fg_color="transparent")
+        r0.pack(anchor="e", pady=(0, 4))
+        self.start_btn = ctk.CTkButton(r0, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn.pack(side="left", padx=2)
+        self.stop_btn = ctk.CTkButton(
+            r0, text="停止", width=72, height=32,
+            fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
+        )
+        self.stop_btn.pack(side="left", padx=2)
+
+        r1 = ctk.CTkFrame(right_stack, fg_color="transparent")
+        r1.pack(anchor="e", pady=(0, 4))
+        self.load_btn = ctk.CTkButton(r1, text="加载", width=60, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="left", padx=2)
         self.sub_menu_btn = ctk.CTkButton(
-            inner, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
+            r1, text="订阅管理 ▾", width=96, height=32, fg_color="#0D9488",
             command=self.open_sub_menu
         )
         self.sub_menu_btn.pack(side="left", padx=2)
         self.node_menu_btn = ctk.CTkButton(
-            inner, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
+            r1, text="节点工具 ▾", width=96, height=32, fg_color="#7C3AED",
             command=self.open_node_menu
         )
         self.node_menu_btn.pack(side="left", padx=2)
         self.import_menu_btn = ctk.CTkButton(
-            inner, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
+            r1, text="导入 ▾", width=72, height=32, fg_color="#0EA5E9",
             command=self.open_import_menu
         )
         self.import_menu_btn.pack(side="left", padx=2)
 
-        # 兼容旧代码引用的隐藏按钮（逻辑仍在，不占布局）
+        r2 = ctk.CTkFrame(right_stack, fg_color="transparent")
+        r2.pack(anchor="e")
+        ctk.CTkLabel(r2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
+        self.workers_combo = ctk.CTkComboBox(r2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
+        self.workers_combo.pack(side="left", padx=2)
+        ctk.CTkLabel(r2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(8, 2))
+        self.mode_combo = ctk.CTkComboBox(
+            r2, width=120, height=30, values=PROXY_MODES, state="readonly",
+            command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
+        )
+        self.mode_combo.set(PROXY_MODE_DEFAULT)
+        self.mode_combo.pack(side="left", padx=2)
+
         self.add_sub_btn = self.sub_menu_btn
         self.del_sub_btn = self.sub_menu_btn
         self.rename_sub_btn = self.sub_menu_btn
@@ -989,23 +1024,6 @@ class App(ctk.CTk):
         self.ping_btn = self.node_menu_btn
         self.move_up_btn = self.node_menu_btn
         self.move_down_btn = self.node_menu_btn
-
-        # 第二行：紧凑，仅右侧并发 + 模式（与去提示前一致）
-        tools = ctk.CTkFrame(body, fg_color="transparent")
-        tools.pack(fill="x", pady=(0, 4))
-        right_opts = ctk.CTkFrame(tools, fg_color="transparent")
-        right_opts.pack(side="right", padx=(8, 0))
-        ctk.CTkLabel(right_opts, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(10, 2))
-        self.workers_combo = ctk.CTkComboBox(right_opts, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
-        self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
-        self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(right_opts, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(8, 2))
-        self.mode_combo = ctk.CTkComboBox(
-            right_opts, width=150, height=32, values=PROXY_MODES, state="readonly",
-            command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
-        )
-        self.mode_combo.set(PROXY_MODE_DEFAULT)
-        self.mode_combo.pack(side="left", padx=2)
 
         # ===== 运行状态条 =====
         stats = ctk.CTkFrame(body, fg_color=("gray90", "gray20"), corner_radius=8, height=48)
@@ -2334,32 +2352,31 @@ class App(ctk.CTk):
 
 
     def log(self, msg: str):
+        """写日志；限制行数并节流滚动，减轻卡顿。"""
         try:
-            # 限制日志行数，避免 Text 过长卡顿
             if not hasattr(self, "_log_lines"):
                 self._log_lines = []
-            self._log_lines.append(str(msg))
-            if not hasattr(self, "_log_lines"):
-                self._log_lines = []
-            self._log_lines.append(str(msg))
-            if len(self._log_lines) > 1000:
-                self._log_lines = self._log_lines[-800:]
-            self.log_box.insert("end", str(msg) + "\n")
-            # 自动滚动开启时，每次都滚到末尾
+            line = str(msg)
+            self._log_lines.append(line)
+            if len(self._log_lines) > 800:
+                self._log_lines = self._log_lines[-500:]
+            if not hasattr(self, "log_box"):
+                return
+            self.log_box.insert("end", line + "\n")
             if getattr(self, "_log_autoscroll", True):
-                self.log_box.see("end")
+                now = time.time()
+                last = getattr(self, "_log_scroll_ts", 0) or 0
+                if now - last >= 0.12:
+                    self._log_scroll_ts = now
+                    self.log_box.see("end")
             try:
                 end_idx = self.log_box.index("end-1c")
-                if float(str(end_idx).split(".")[0]) > 800:
-                    self.log_box.delete("1.0", "200.0")
-                    # 同步裁剪缓存
-                    if hasattr(self, "_log_lines") and len(self._log_lines) > 800:
-                        self._log_lines = self._log_lines[-600:]
+                if float(str(end_idx).split(".")[0]) > 600:
+                    self.log_box.delete("1.0", "150.0")
             except Exception:
                 pass
         except Exception:
             pass
-
 
 
     def apply_log_filter(self):
@@ -2432,45 +2449,62 @@ class App(ctk.CTk):
             self.log(f"检查更新失败：{e}")
 
     def startup(self):
-        self.prepare_core()
+        """分阶段启动，减轻首屏卡顿。"""
+        try:
+            self.load_settings()
+        except Exception as e:
+            try:
+                self.log("加载设置失败：%s" % e)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "app_ver_label"):
+                self.app_ver_label.configure(text="v%s" % APP_VERSION)
+        except Exception:
+            pass
+        self.after(80, self._startup_core)
+        self.after(350, self._startup_tray_hotkeys)
+        self.after(1500, self.update_home_stats)
+        try:
+            self.schedule_subscription_refresh()
+        except Exception:
+            pass
+        if getattr(self, "start_minimized", False) and TRAY_AVAILABLE:
+            self.after(500, self.withdraw)
+            self.log("已按设置启动后最小化到托盘")
+        if getattr(self, "auto_connect", False) and self.nodes:
+            self.log("已开启启动自动连接，正在启动代理...")
+            self.after(1200, self.start_proxy_thread)
+
+    def _startup_core(self):
+        try:
+            self.prepare_core()
+        except Exception:
+            pass
         try:
             self._xray_ver = get_xray_version(getattr(self, "xray_path", None) or find_xray())
         except Exception:
             self._xray_ver = "未知"
-        self.load_settings()
-        try:
-            if hasattr(self, "app_ver_label"):
-                self.app_ver_label.configure(text=f"v{APP_VERSION}")
-        except Exception:
-            pass
         try:
             self.refresh_version_label()
         except Exception:
             try:
-                self.version_label.configure(text=f"Xray {self._xray_ver}")
+                self.version_label.configure(text="Xray %s" % self._xray_ver)
             except Exception:
                 pass
+
+    def _startup_tray_hotkeys(self):
         try:
             self.start_hotkey_listener()
         except Exception:
             pass
         if TRAY_AVAILABLE:
-            self.setup_tray()
-            pass  # tray ready
+            try:
+                self.setup_tray()
+            except Exception as e:
+                self.log("托盘初始化失败：%s" % e)
         else:
             self.log("系统托盘不可用（缺少 pystray）")
-        # 首页状态刷新
-        self.after(1500, self.update_home_stats)
-        # 订阅定时更新
-        self.schedule_subscription_refresh()
-        # 启动后最小化到托盘
-        if self.start_minimized and TRAY_AVAILABLE:
-            self.after(300, self.withdraw)
-            self.log("已按设置启动后最小化到托盘")
-        # 启动时自动连接
-        if self.auto_connect and self.nodes:
-            self.log("已开启启动自动连接，正在启动代理...")
-            self.after(800, self.start_proxy_thread)
 
     def prepare_core(self):
         xray_exe = self.core_dir / "xray.exe"
