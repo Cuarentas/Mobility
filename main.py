@@ -63,7 +63,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.20.1"
+APP_VERSION = "0.20.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -976,30 +976,33 @@ class App(ctk.CTk):
         )
         self.import_menu_btn.pack(side="left", padx=2)
 
-        # ===== 第2行：并发/模式（左）+ 启动/停止（右）=====
+        # ===== 第2行：并发/模式/启动/停止 全部靠右，与上一行「导入」右对齐 =====
         opt_row = ctk.CTkFrame(body, fg_color="transparent")
-        opt_row.pack(fill="x", pady=(0, 4))
+        opt_row.pack(fill="x", pady=(0, 4), padx=(0, 8))  # 与订阅行 sub_inner 右侧内边距对齐
 
-        ctk.CTkLabel(opt_row, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
-        self.workers_combo = ctk.CTkComboBox(opt_row, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        # 先 pack 右侧按钮组，保证右边缘与上一行导入对齐
+        right_actions = ctk.CTkFrame(opt_row, fg_color="transparent")
+        right_actions.pack(side="right")
+
+        ctk.CTkLabel(right_actions, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
+        self.workers_combo = ctk.CTkComboBox(right_actions, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(opt_row, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(12, 2))
+        ctk.CTkLabel(right_actions, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
         self.mode_combo = ctk.CTkComboBox(
-            opt_row, width=120, height=30, values=PROXY_MODES, state="readonly",
+            right_actions, width=120, height=30, values=PROXY_MODES, state="readonly",
             command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
-        self.mode_combo.pack(side="left", padx=2)
+        self.mode_combo.pack(side="left", padx=(2, 10))
 
-        # 启动/停止靠右，与并发同一行
+        self.start_btn = ctk.CTkButton(right_actions, text="启动", width=72, height=32, command=self.start_proxy_thread)
+        self.start_btn.pack(side="left", padx=2)
         self.stop_btn = ctk.CTkButton(
-            opt_row, text="停止", width=72, height=32,
+            right_actions, text="停止", width=72, height=32,
             fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
         )
-        self.stop_btn.pack(side="right", padx=(4, 2))
-        self.start_btn = ctk.CTkButton(opt_row, text="启动", width=72, height=32, command=self.start_proxy_thread)
-        self.start_btn.pack(side="right", padx=2)
+        self.stop_btn.pack(side="left", padx=(2, 0))
 
         # 兼容旧引用
         self.add_sub_btn = self.sub_menu_btn
