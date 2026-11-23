@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.4"
+APP_VERSION = "0.23.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2519,24 +2519,163 @@ class App(ctk.CTk):
         ctk.CTkButton(bf, text="关闭", width=80, command=win.destroy).pack(side="right")
 
     def export_config_dialog(self):
+        """导出：可选 URI列表 / Clash YAML / 软件备份JSON。"""
+        win = ctk.CTkToplevel(self)
+        win.title("导出节点")
+        win.geometry("380x280")
+        win.transient(self)
         try:
-            from tkinter import filedialog
+            win.grab_set()
         except Exception:
-            self.log("无法打开文件对话框")
-            return
-        path = filedialog.asksaveasfilename(
-            title="导出节点与设置", defaultextension=".json",
-            initialfile="Mobility-backup.json",
-            filetypes=[("JSON", "*.json"), ("All", "*.*")],
+            pass
+        ctk.CTkLabel(win, text="选择导出格式", font=("Microsoft YaHei UI", 15, "bold")).pack(
+            anchor="w", padx=18, pady=(16, 8)
         )
-        if not path:
-            return
+        fmt_var = ctk.StringVar(value="URI 节点列表 (.txt)")
+        options = [
+            "URI 节点列表 (.txt)",
+            "Clash / Mihomo proxies (.yaml)",
+            "软件备份 JSON（节点+设置）",
+        ]
+        box = ctk.CTkComboBox(win, values=options, variable=fmt_var, width=320, state="readonly")
+        box.pack(padx=18, pady=6)
+        ctk.CTkLabel(
+            win,
+            text="URI：vmess/vless/trojan/ss 等链接\nClash：可导入其他 Clash 客户端\n备份 JSON：本软件完整恢复用",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=8)
+
+        def do_export():
+            fmt = fmt_var.get()
+            try:
+                from tkinter import filedialog
+            except Exception:
+                self.log("无法打开文件对话框")
+                return
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            if "备份" in fmt or "JSON" in fmt:
+                path = filedialog.asksaveasfilename(
+                    title="导出备份", defaultextension=".json",
+                    initialfile="Mobility-backup.json",
+                    filetypes=[("JSON", "*.json"), ("All", "*.*")],
+                )
+                if not path:
+                    return
+                try:
+                    self.save_settings()
+                    Path(path).write_text(self.settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+                    self.log("已导出备份：%s" % path)
+                except Exception as e:
+                    self.log("导出失败：%s" % e)
+                return
+            if "Clash" in fmt or "yaml" in fmt.lower():
+                path = filedialog.asksaveasfilename(
+                    title="导出 Clash", defaultextension=".yaml",
+                    initialfile="Mobility-clash.yaml",
+                    filetypes=[("YAML", "*.yaml *.yml"), ("All", "*.*")],
+                )
+                if not path:
+                    return
+                try:
+                    Path(path).write_text(self.export_nodes_clash_yaml(), encoding="utf-8")
+                    self.log("已导出 Clash：%s（%s 个节点）" % (path, len(self.nodes or [])))
+                except Exception as e:
+                    self.log("导出 Clash 失败：%s" % e)
+                return
+            # URI list
+            path = filedialog.asksaveasfilename(
+                title="导出 URI 列表", defaultextension=".txt",
+                initialfile="Mobility-nodes.txt",
+                filetypes=[("Text", "*.txt"), ("All", "*.*")],
+            )
+            if not path:
+                return
+            try:
+                lines = []
+                for n in (self.nodes or []):
+                    u = self.node_to_share_uri(n)
+                    if u:
+                        lines.append(u)
+                Path(path).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+                self.log("已导出 URI：%s（%s 条）" % (path, len(lines)))
+            except Exception as e:
+                self.log("导出 URI 失败：%s" % e)
+
+        bf = ctk.CTkFrame(win, fg_color="transparent")
+        bf.pack(fill="x", padx=18, pady=16)
+        ctk.CTkButton(bf, text="导出", width=100, command=do_export).pack(side="left")
+        ctk.CTkButton(bf, text="取消", width=80, command=win.destroy).pack(side="right")
+
+    def node_to_share_uri(self, node: dict) -> str:
+        """尽量还原分享链接；不支持的返回空。"""
+        if not node:
+            return ""
+        if node.get("raw") and str(node.get("raw")).startswith(("vmess://", "vless://", "trojan://", "ss://", "hy2://", "hysteria2://", "tuic://")):
+            return str(node.get("raw")).strip()
+        proto = (node.get("protocol") or "").lower()
+        name = node.get("name") or "node"
+        host = node.get("address") or ""
+        port = node.get("port") or ""
+        if not host or not port:
+            return ""
         try:
-            self.save_settings()
-            Path(path).write_text(self.settings_path.read_text(encoding="utf-8"), encoding="utf-8")
-            self.log(f"已导出：{path}")
-        except Exception as e:
-            self.log(f"导出失败：{e}")
+            from urllib.parse import quote
+            if proto == "trojan":
+                pwd = quote(node.get("password") or "", safe="")
+                sni = node.get("sni") or host
+                return "trojan://%s@%s:%s?sni=%s#%s" % (pwd, host, port, quote(sni), quote(name))
+            if proto in ("ss", "shadowsocks"):
+                import base64
+                method = node.get("method") or "aes-256-gcm"
+                password = node.get("password") or ""
+                userinfo = base64.urlsafe_b64encode(("%s:%s" % (method, password)).encode()).decode().rstrip("=")
+                return "ss://%s@%s:%s#%s" % (userinfo, host, port, quote(name))
+            if proto == "vless":
+                uuid = node.get("uuid") or ""
+                return "vless://%s@%s:%s?encryption=none#%s" % (uuid, host, port, quote(name))
+            if proto in ("hysteria2", "hy2"):
+                pwd = quote(node.get("password") or "", safe="")
+                return "hysteria2://%s@%s:%s#%s" % (pwd, host, port, quote(name))
+        except Exception:
+            return ""
+        return ""
+
+    def export_nodes_clash_yaml(self) -> str:
+        """导出为简易 Clash proxies YAML。"""
+        lines = ["# Mobility exported proxies", "proxies:"]
+        for n in (self.nodes or []):
+            if not isinstance(n, dict):
+                continue
+            try:
+                proxy = self.node_to_mihomo_proxy(n)
+            except Exception:
+                continue
+            lines.append("  - name: %s" % json.dumps(proxy.get("name") or "node", ensure_ascii=False))
+            for k, v in proxy.items():
+                if k == "name":
+                    continue
+                if isinstance(v, bool):
+                    lines.append("    %s: %s" % (k, "true" if v else "false"))
+                elif isinstance(v, (int, float)):
+                    lines.append("    %s: %s" % (k, v))
+                elif isinstance(v, list):
+                    lines.append("    %s: [%s]" % (k, ", ".join(str(x) for x in v)))
+                elif isinstance(v, dict):
+                    lines.append("    %s:" % k)
+                    for k2, v2 in v.items():
+                        if isinstance(v2, dict):
+                            lines.append("      %s: %s" % (k2, json.dumps(v2, ensure_ascii=False)))
+                        else:
+                            lines.append("      %s: %s" % (k2, json.dumps(v2, ensure_ascii=False) if isinstance(v2, str) else v2))
+                else:
+                    lines.append("    %s: %s" % (k, json.dumps(str(v), ensure_ascii=False)))
+        return "\n".join(lines) + "\n"
+
 
     def import_local_nodes_dialog(self):
         """从本地文件导入节点：支持 URI 订阅、Clash、V2Ray/sing-box JSON、Surge/Loon。"""
@@ -6561,6 +6700,44 @@ class App(ctk.CTk):
             proxy["type"] = "ss"
             proxy["cipher"] = node.get("method") or "aes-256-gcm"
             proxy["password"] = node.get("password") or ""
+        elif proto in ("hysteria2", "hy2"):
+            proxy["type"] = "hysteria2"
+            proxy["password"] = node.get("password") or ""
+            proxy["sni"] = node.get("sni") or server
+            proxy["skip-cert-verify"] = bool(node.get("insecure"))
+        elif proto == "tuic":
+            proxy["type"] = "tuic"
+            proxy["uuid"] = node.get("uuid") or ""
+            proxy["password"] = node.get("password") or ""
+            proxy["sni"] = node.get("sni") or server
+            proxy["congestion-controller"] = node.get("congestion_control") or "bbr"
+            proxy["udp-relay-mode"] = node.get("udp_relay_mode") or "native"
+            proxy["skip-cert-verify"] = bool(node.get("allow_insecure"))
+        elif proto == "masque":
+            proxy["type"] = "masque"
+            proxy["private-key"] = node.get("private_key") or node.get("private-key") or ""
+            proxy["public-key"] = node.get("public_key") or node.get("public-key") or ""
+            if node.get("ip"):
+                proxy["ip"] = node.get("ip")
+            if node.get("ipv6"):
+                proxy["ipv6"] = node.get("ipv6")
+            if node.get("uri"):
+                proxy["uri"] = node.get("uri")
+            try:
+                proxy["mtu"] = int(node.get("mtu") or 1280)
+            except Exception:
+                proxy["mtu"] = 1280
+            proxy["udp"] = True
+            proxy["remote-dns-resolve"] = True
+            proxy["congestion-controller"] = node.get("congestion_controller") or node.get("congestion-controller") or "bbr"
+            proxy["sni"] = node.get("sni") or "www.cloudflareaccess.com"
+            dns = node.get("dns") or ""
+            if isinstance(dns, str) and dns.strip():
+                proxy["dns"] = [x.strip() for x in dns.split(",") if x.strip()]
+            elif isinstance(dns, list):
+                proxy["dns"] = dns
+            else:
+                proxy["dns"] = ["1.1.1.1", "8.8.8.8"]
         else:
             raise ValueError(f"Mihomo 暂不支持协议：{proto}")
         return proxy
@@ -6983,6 +7160,71 @@ class App(ctk.CTk):
             except Exception as e:
                 self.log(f"启动 sing-box 失败：{e}")
                 self.singbox_process = None
+            self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+            return
+
+        # ========== Mihomo 核心 ==========
+        if core_name.lower().startswith("mihomo") or core_name.lower() == "clash":
+            mh = ensure_mihomo(self.core_dir, log_fn=self.log)
+            if not mh:
+                self.log("错误：找不到 Mihomo 核心")
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                return
+            if getattr(self, "tun_enabled", False):
+                try:
+                    ensure_wintun(self.core_dir, log_fn=self.log)
+                except Exception:
+                    pass
+            try:
+                mh_cfg = self.create_mihomo_config(
+                    node, socks_port, http_port, bool(getattr(self, "tun_enabled", False))
+                )
+                self.log("Mihomo 配置已生成")
+            except Exception as e:
+                self.log("生成 Mihomo 配置失败：%s" % e)
+                self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                return
+            try:
+                mh_log = self.core_dir / "mihomo.log"
+                try:
+                    mh_log_handle = open(mh_log, "w", encoding="utf-8", errors="ignore")
+                except Exception:
+                    mh_log_handle = subprocess.DEVNULL
+                self.mihomo_process = subprocess.Popen(
+                    [str(mh), "-f", str(mh_cfg)],
+                    cwd=str(self.core_dir),
+                    creationflags=flags,
+                    stdout=mh_log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+                time.sleep(1.2)
+                if self.mihomo_process.poll() is not None:
+                    self.log("Mihomo 启动失败，请查看 core/mihomo.log")
+                    try:
+                        if mh_log.exists():
+                            txt = mh_log.read_text(encoding="utf-8", errors="ignore")
+                            for ln in txt.strip().splitlines()[-15:]:
+                                self.log("  " + ln[:220])
+                    except Exception:
+                        pass
+                    self.mihomo_process = None
+                    self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
+                    return
+                if not getattr(self, "tun_enabled", False):
+                    if self.apply_system_proxy_for_mode(http_port):
+                        self.log("系统代理已设置 127.0.0.1:%s" % http_port)
+                self.is_running = True
+                self.after(0, lambda: self.status_label.configure(
+                    text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
+                ))
+                tun_s = " + TUN" if getattr(self, "tun_enabled", False) else ""
+                self.log("代理已启动（Mihomo%s）" % tun_s)
+                self._run_started_at = time.time()
+                self.set_tray_state("connected")
+                self.save_settings()
+            except Exception as e:
+                self.log("启动 Mihomo 失败：%s" % e)
+                self.mihomo_process = None
             self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
             return
 
