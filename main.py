@@ -50,9 +50,10 @@ DEFAULT_TUN_SETTINGS = {
     "interface_name": "Mobility0",
 }
 
-CORE_OPTIONS = ["Xray", "sing-box", "Mihomo"]
+CORE_OPTIONS = ["自动", "Xray", "sing-box", "Mihomo"]
 CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http"]
-DEFAULT_CORE_MAP = {p: "Xray" for p in CORE_PROTOCOLS}
+# 默认「自动」：仅在选自动时由软件推荐；用户指定 Xray/sing-box/Mihomo 则严格使用
+DEFAULT_CORE_MAP = {p: "自动" for p in CORE_PROTOCOLS}
 PROXY_MODE_DEFAULT = "规则模式"
 REFRESH_OPTIONS = ["不自动更新", "1小时", "6小时", "12小时", "24小时", "自定义"]
 REFRESH_HOURS = {"不自动更新": 0, "1小时": 1, "6小时": 6, "12小时": 12, "24小时": 24}
@@ -70,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.5"
+APP_VERSION = "0.22.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1465,7 +1466,7 @@ class App(ctk.CTk):
         )
         ctk.CTkLabel(
             win,
-            text="为每种协议指定默认核心，启动时按节点协议自动选用。",
+            text="为每种协议指定核心。选「自动」才由软件推荐；\n选 Xray / sing-box / Mihomo 则严格按你的选择启动。",
             font=("Microsoft YaHei UI", 11),
             text_color=("gray40", "gray60"),
         ).pack(anchor="w", padx=20, pady=(0, 10))
@@ -1507,14 +1508,14 @@ class App(ctk.CTk):
 
         def do_reset():
             for proto, cb in combos.items():
-                cb.set("Xray")
+                cb.set("自动")
 
         def do_ok():
             if not getattr(self, "core_map", None):
                 self.core_map = dict(DEFAULT_CORE_MAP)
             for proto, cb in combos.items():
-                val = (cb.get() or "Xray").strip()
-                self.core_map[proto] = val if val in CORE_OPTIONS else "Xray"
+                val = (cb.get() or "自动").strip()
+                self.core_map[proto] = val if val in CORE_OPTIONS else "自动"
             self.save_settings()
             try:
                 self.refresh_version_label()
@@ -1541,7 +1542,7 @@ class App(ctk.CTk):
     def on_core_map_change(self, proto: str, value=None):
         if not getattr(self, "core_map", None):
             self.core_map = dict(DEFAULT_CORE_MAP)
-        self.core_map[proto] = (value or "Xray").strip()
+        self.core_map[proto] = (value or "自动").strip()
         self.save_settings()
         self.log(f"协议 {proto} → 核心 {self.core_map[proto]}")
         try:
@@ -1550,12 +1551,28 @@ class App(ctk.CTk):
             pass
 
     def resolve_core_for_node(self, node: dict) -> str:
+        """按用户在「核心设置」中的映射选择核心。
+        - 指定 Xray / sing-box / Mihomo：严格使用，不再改判
+        - 选择「自动」：再按协议做推荐
+        """
         proto = (node.get("protocol") or "").lower()
         if proto == "ss":
             proto = "shadowsocks"
         cmap = getattr(self, "core_map", None) or DEFAULT_CORE_MAP
-        core = cmap.get(proto) or getattr(self, "proxy_core", None) or "Xray"
-        return str(core).strip() or "Xray"
+        chosen = str(cmap.get(proto) or "自动").strip()
+        if chosen in ("Xray", "sing-box", "Mihomo"):
+            return chosen
+        # 自动推荐
+        if chosen not in ("自动", "auto", "Auto", ""):
+            # 未知值回退自动
+            pass
+        # 简单推荐：绝大多数协议 Xray；可按扩展调整
+        # hysteria / tuic 等若以后支持可走 sing-box / mihomo
+        name = (node.get("name") or "").lower()
+        network = (node.get("network") or "").lower()
+        if proto in ("hysteria", "hysteria2", "tuic", "wireguard"):
+            return "sing-box"
+        return "Xray"
 
     def on_core_change(self, value=None):
         try:
@@ -6247,7 +6264,11 @@ class App(ctk.CTk):
 
         core_name = self.resolve_core_for_node(node)
         self.proxy_core = core_name
-        self.log(f"节点协议 [{node.get('protocol')}] → 核心 {core_name}")
+        _p = (node.get("protocol") or "").lower()
+        if _p == "ss":
+            _p = "shadowsocks"
+        mapped = (getattr(self, "core_map", {}) or {}).get(_p, "")
+        self.log(f"节点协议 [{node.get('protocol')}] 映射={mapped or '自动'} → 实际核心 {core_name}")
         try:
             self.after(0, lambda: self.refresh_version_label(core_name))
         except Exception:
