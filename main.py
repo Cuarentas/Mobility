@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.0"
+APP_VERSION = "0.22.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1257,6 +1257,10 @@ class App(ctk.CTk):
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
+        try:
+            self._setup_log_tags()
+        except Exception:
+            pass
         self.log("Mobility 已启动")
         try:
             # 强制刷新右侧栏，减轻首次绘制发虚
@@ -2683,11 +2687,55 @@ class App(ctk.CTk):
             tmp.write_bytes(r.content)
             core_dir = get_base_dir() / "core"
             core_dir.mkdir(parents=True, exist_ok=True)
+            # 写入前释放正在运行的 xray.exe，避免 Permission denied
+            try:
+                proc = getattr(self, "xray_process", None)
+                if proc is not None and proc.poll() is None:
+                    self.log("检测到 Xray 正在运行，先停止再更新核心...")
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    self.xray_process = None
+                    self.is_running = False
+                    try:
+                        self.after(0, self.restore_proxy_backup)
+                    except Exception:
+                        pass
+                    time.sleep(0.4)
+            except Exception:
+                pass
+            try:
+                self.kill_stale_core_processes()
+            except Exception:
+                pass
+
             with zipfile.ZipFile(tmp, "r") as zf:
                 for name in zf.namelist():
                     if name.lower().endswith("xray.exe"):
-                        (core_dir / "xray.exe").write_bytes(zf.read(name))
-                        self.log("xray.exe 已更新")
+                        data = zf.read(name)
+                        dest = core_dir / "xray.exe"
+                        tmp_exe = core_dir / "xray.exe.new"
+                        tmp_exe.write_bytes(data)
+                        try:
+                            if dest.exists():
+                                try:
+                                    dest.unlink()
+                                except PermissionError:
+                                    self.log("xray.exe 仍被占用，请先点「停止」再更新核心")
+                                    self.log("已另存为 core/xray.exe.new，停止代理后可手动替换")
+                                    break
+                            tmp_exe.replace(dest)
+                            self.log("xray.exe 已更新")
+                        except Exception as we:
+                            self.log("写入 xray.exe 失败：%s" % we)
                         break
             for geo_name, geo_url in [
                 ("geoip.dat", "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"),
@@ -2750,8 +2798,52 @@ class App(ctk.CTk):
             self.log(f"更新核心失败：{e}")
 
 
+    def _setup_log_tags(self):
+        """为运行日志配置颜色标签。"""
+        try:
+            tb = getattr(self.log_box, "_textbox", None) or self.log_box
+            tb.tag_configure("log_error", foreground="#DC2626")
+            tb.tag_configure("log_warn", foreground="#D97706")
+            tb.tag_configure("log_ok", foreground="#16A34A")
+            tb.tag_configure("log_update", foreground="#2563EB")
+        except Exception:
+            pass
+
+    def _log_tag_for(self, line: str) -> str:
+        low = (line or "").lower()
+        for k in ("失败", "错误", "异常", "error", "exception", "traceback",
+                  "permission denied", "access is denied", "denied", "崩溃", "fatal", "critical"):
+            if k in low:
+                return "log_error"
+        for k in ("警告", "warning", "warn]", "[warn", "deprecated"):
+            if k in low:
+                return "log_warn"
+        for k in ("已更新", "完成", "成功", "已启动", "success"):
+            if k in low:
+                return "log_ok"
+        for k in ("更新", "下载", "update", "download", "拉取", "检查并更新"):
+            if k in low:
+                return "log_update"
+        return ""
+
+    def _insert_log_line(self, line: str):
+        tag = self._log_tag_for(line)
+        try:
+            tb = getattr(self.log_box, "_textbox", None)
+            if tb is not None and tag:
+                tb.insert("end", line + "\n", tag)
+            elif tb is not None:
+                tb.insert("end", line + "\n")
+            else:
+                self.log_box.insert("end", line + "\n")
+        except Exception:
+            try:
+                self.log_box.insert("end", line + "\n")
+            except Exception:
+                pass
+
     def log(self, msg: str):
-        """写界面日志 + logs/mobility.log；默认记录全部动作。"""
+        """写界面日志（带颜色）+ logs/mobility.log。"""
         try:
             if not hasattr(self, "_log_lines"):
                 self._log_lines = []
@@ -2773,19 +2865,29 @@ class App(ctk.CTk):
                 self._log_lines = self._log_lines[-1200:]
             if not hasattr(self, "log_box"):
                 return
-            self.log_box.insert("end", line + "\n")
-            if getattr(self, "_log_autoscroll", True):
-                now = time.time()
-                last = getattr(self, "_log_scroll_ts", 0) or 0
-                if now - last >= 0.12:
-                    self._log_scroll_ts = now
-                    self.log_box.see("end")
+
+            def _ui():
+                try:
+                    self._insert_log_line(line)
+                    if getattr(self, "_log_autoscroll", True):
+                        now = time.time()
+                        last = getattr(self, "_log_scroll_ts", 0) or 0
+                        if now - last >= 0.12:
+                            self._log_scroll_ts = now
+                            self.log_box.see("end")
+                    try:
+                        end_idx = self.log_box.index("end-1c")
+                        if float(str(end_idx).split(".")[0]) > 800:
+                            self.log_box.delete("1.0", "200.0")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
             try:
-                end_idx = self.log_box.index("end-1c")
-                if float(str(end_idx).split(".")[0]) > 800:
-                    self.log_box.delete("1.0", "200.0")
+                self.after(0, _ui)
             except Exception:
-                pass
+                _ui()
         except Exception:
             pass
 
@@ -2798,7 +2900,7 @@ class App(ctk.CTk):
             self.log_box.delete("1.0", "end")
             for line in self._log_lines:
                 if not filt or filt in line.lower():
-                    self.log_box.insert("end", line + "\n")
+                    self._insert_log_line(line)
             if getattr(self, "_log_autoscroll", True):
                 self.log_box.see("end")
         except Exception:
