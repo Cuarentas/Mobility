@@ -214,6 +214,19 @@ jobs:
           Write-Host "sing-box.exe 已内置到 core/ ($($sb.Length) bytes)"
           Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
+      - name: Sync APP_VERSION with release tag
+        shell: pwsh
+        run: |
+          $ver = "${{ env.VERSION }}"
+          if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "${{ steps.version.outputs.tag }}" }
+          $ver = $ver.Trim()
+          if ($ver.StartsWith("v") -or $ver.StartsWith("V")) { $ver = $ver.Substring(1) }
+          Write-Host "写入 APP_VERSION = $ver"
+          $py = Get-Content -Path "main.py" -Raw -Encoding UTF8
+          $py2 = [regex]::Replace($py, 'APP_VERSION\s*=\s*"[^"]*"', ('APP_VERSION = "{0}"' -f $ver))
+          [System.IO.File]::WriteAllText((Resolve-Path "main.py").Path, $py2, [System.Text.UTF8Encoding]::new($false))
+          Select-String -Path main.py -Pattern 'APP_VERSION' | Select-Object -First 1
+
       - name: Build with PyInstaller (onedir)
         shell: cmd
         run: |
