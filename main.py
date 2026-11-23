@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.8"
+APP_VERSION = "0.21.9"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -816,6 +816,18 @@ def build_outbound(node: dict) -> dict:
     return None
 
 
+def node_key(node: dict) -> str:
+    """节点唯一键，用于高亮/选中（避免同名同延迟标签撞车）。"""
+    if not isinstance(node, dict):
+        return ""
+    return "%s|%s|%s|%s" % (
+        node.get("protocol") or "",
+        node.get("address") or "",
+        node.get("port") or "",
+        node.get("name") or "",
+    )
+
+
 def node_label(node: dict) -> str:
     lat = node.get("latency")
     if lat is None:
@@ -1274,24 +1286,40 @@ class App(ctk.CTk):
             pass
 
     def _paint_node_buttons(self):
-        """只高亮：一个预选（蓝）+ 一个已确认（橙）。"""
-        pend = getattr(self, "_pending_label", None)
-        cur = None
+        """只高亮：一个预选（蓝）+ 一个已确认（橙）；按节点唯一键匹配，不按显示文本。"""
+        pend_key = None
+        pn = getattr(self, "_pending_node", None)
+        if isinstance(pn, dict):
+            pend_key = node_key(pn)
+        cur_key = None
         cn = getattr(self, "current_node", None)
         if isinstance(cn, dict):
-            cur = cn.get("_label") or cn.get("name")
-        for b in getattr(self, "_node_buttons", []) or []:
-            try:
-                txt = b.cget("text")
-            except Exception:
+            cur_key = node_key(cn)
+        # 优先用 row_meta（带 node 引用）
+        metas = getattr(self, "_node_row_meta", None) or []
+        painted = set()
+        for meta in metas:
+            b = meta.get("btn")
+            n = meta.get("node")
+            if not b or not isinstance(n, dict):
                 continue
+            k = node_key(n)
+            painted.add(id(b))
             try:
-                if pend and txt == pend:
+                if pend_key and k == pend_key:
                     b.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="white")
-                elif cur and txt == cur:
+                elif cur_key and k == cur_key:
                     b.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
                 else:
                     b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
+            except Exception:
+                pass
+        # 兼容无 meta 的按钮：全部置灰
+        for b in getattr(self, "_node_buttons", []) or []:
+            if id(b) in painted:
+                continue
+            try:
+                b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
             except Exception:
                 pass
 
@@ -1301,6 +1329,7 @@ class App(ctk.CTk):
             return
         self._pending_node = node
         self._pending_label = node.get("_label") or node.get("name")
+        self._pending_key = node_key(node)
         self._paint_node_buttons()
 
     def confirm_pending_node(self, event=None):
@@ -1316,11 +1345,12 @@ class App(ctk.CTk):
                     return None
         except Exception:
             pass
-        # 确认后预选与当前合并为同一节点，只保留一个橙色
+        # 确认后仅此一个为当前代理节点
         self.current_node = node
         self._selected_label = node.get("_label") or node.get("name")
         self._pending_node = node
         self._pending_label = self._selected_label
+        self._pending_key = node_key(node)
         self._paint_node_buttons()
         try:
             self.current_label.configure(text=self._short_node_text(node))
@@ -4004,27 +4034,23 @@ class App(ctk.CTk):
                 self._node_buttons.append(btn)
                 self._node_row_meta.append({"node": n, "btn": btn, "row": row})
                 shown += 1
-                if prev and lb == prev:
-                    selected_btn = btn
-                    try:
-                        btn.configure(fg_color=("#EA580C", "#C2410C"), text_color="white")
-                    except Exception:
-                        pass
+                # 不在这里按文本高亮，统一走 _paint_node_buttons，避免同延迟同名多选
 
             try:
                 self.node_count_label.configure(text=f"节点：{shown}/{len(self.nodes)}")
             except Exception:
                 pass
-            if selected_btn is None:
-                for b in self._node_buttons:
-                    if isinstance(b, ctk.CTkButton):
-                        try:
-                            self.on_node_button_click(
-                                next(m["node"] for m in self._node_row_meta if m.get("btn") is b), b
-                            )
-                        except Exception:
-                            pass
-                        break
+            # 恢复唯一高亮（按节点键，不会把同延迟节点全选中）
+            try:
+                self._paint_node_buttons()
+            except Exception:
+                pass
+            try:
+                cn = getattr(self, "current_node", None)
+                if isinstance(cn, dict):
+                    self.current_label.configure(text=self._short_node_text(cn))
+            except Exception:
+                pass
         except Exception as e:
             try:
                 self.log(f"刷新节点列表失败：{e}")
@@ -4496,12 +4522,27 @@ class App(ctk.CTk):
             if lat is not None and lat >= 0:
                 if best is None or lat < best["latency"]:
                     best = n
+                elif best is not None and lat == best["latency"]:
+                    # 相同延迟只保留一个：按唯一键稳定选取
+                    if node_key(n) < node_key(best):
+                        best = n
         if best is None:
             self.log("没有测速成功的节点，请先点「测速全部」")
             return
         self.current_node = best
-        self._selected_label = best.get("_label")
-        self.refresh_node_list(keep_selection=True)
+        self._selected_label = best.get("_label") or best.get("name")
+        self._pending_node = best
+        self._pending_label = self._selected_label
+        self._pending_key = node_key(best)
+        self.refresh_node_list(keep_selection=True, resort=False)
+        try:
+            self._paint_node_buttons()
+        except Exception:
+            pass
+        try:
+            self.current_label.configure(text=self._short_node_text(best, f"{best.get('latency')}ms"))
+        except Exception:
+            pass
         self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
         self.save_settings()
 
