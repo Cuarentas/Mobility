@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.9"
+APP_VERSION = "0.22.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1130,11 +1130,7 @@ class App(ctk.CTk):
         self.lan_check.pack(anchor="w", padx=8, pady=3)
         self.tun_check = ctk.CTkCheckBox(right, text="TUN 模式", command=self.on_tun_toggle)
         self.tun_check.pack(anchor="w", padx=8, pady=3)
-        # 显眼入口，避免埋在设置底部
-        tun_btns = ctk.CTkFrame(right, fg_color="transparent")
-        tun_btns.pack(fill="x", padx=8, pady=(0, 4))
-        ctk.CTkButton(tun_btns, text="TUN 设置", height=28, width=100, command=self.open_tun_settings_dialog).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(tun_btns, text="路由设置", height=28, width=100, command=self.open_routing_dialog).pack(side="left")
+        # TUN/路由 详细设置见下方按钮区，避免重复入口
 
         # 端口：标签固定宽 + 输入框填满，避免启动时被裁切
         pr1 = ctk.CTkFrame(right, fg_color="transparent")
@@ -2577,6 +2573,38 @@ class App(ctk.CTk):
         else:
             self.start_proxy_thread()
 
+    def get_download_proxies(self):
+        """若本软件代理已运行，返回供 requests 使用的本地代理，加速 GitHub 下载。"""
+        if not getattr(self, "is_running", False):
+            return None
+        try:
+            _sp, hp = self.get_ports()
+            hp = int(hp)
+        except Exception:
+            hp = int(getattr(self, "http_port", 10809) or 10809)
+        url = "http://127.0.0.1:%s" % hp
+        return {"http": url, "https": url}
+
+    def http_get(self, url: str, timeout: int = 120, headers=None):
+        """带可选本地代理的 GET；代理失败时回退直连一次。"""
+        headers = headers or {"User-Agent": "Mobility"}
+        proxies = None
+        try:
+            proxies = self.get_download_proxies()
+        except Exception:
+            proxies = None
+        if proxies:
+            try:
+                self.log("通过本地代理下载：%s" % url[:80])
+                r = requests.get(url, timeout=timeout, headers=headers, proxies=proxies)
+                r.raise_for_status()
+                return r
+            except Exception as e:
+                self.log("代理下载失败，改直连：%s" % e)
+        r = requests.get(url, timeout=timeout, headers=headers)
+        r.raise_for_status()
+        return r
+
     def update_geo_thread(self):
         Thread(target=self.update_geo_only, daemon=True).start()
 
@@ -2590,8 +2618,7 @@ class App(ctk.CTk):
                 ("geosite.dat", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"),
             ]:
                 self.log(f"下载 {geo_name} ...")
-                gr = requests.get(geo_url, timeout=90, headers={"User-Agent": "Mobility"})
-                gr.raise_for_status()
+                gr = self.http_get(geo_url, timeout=90)
                 (core_dir / geo_name).write_bytes(gr.content)
                 self.log(f"{geo_name} 已更新（{len(gr.content)} 字节）")
             self.log("规则文件更新完成")
@@ -2652,8 +2679,7 @@ class App(ctk.CTk):
             url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
             tmp = Path(tempfile.gettempdir()) / "xray_update.zip"
             self.log(f"下载：{url}")
-            r = requests.get(url, timeout=120, headers={"User-Agent": "Mobility"})
-            r.raise_for_status()
+            r = self.http_get(url, timeout=120)
             tmp.write_bytes(r.content)
             core_dir = get_base_dir() / "core"
             core_dir.mkdir(parents=True, exist_ok=True)
@@ -2669,35 +2695,52 @@ class App(ctk.CTk):
             ]:
                 try:
                     self.log(f"更新 {geo_name} ...")
-                    gr = requests.get(geo_url, timeout=60, headers={"User-Agent": "Mobility"})
+                    gr = self.http_get(geo_url, timeout=90)
                     if gr.status_code == 200:
                         (core_dir / geo_name).write_bytes(gr.content)
                         self.log(f"{geo_name} 已更新")
                 except Exception as ge:
                     self.log(f"{geo_name} 更新失败：{ge}")
-            # 同步更新 sing-box / mihomo
+            # 同步更新 sing-box / mihomo（尽量走本地代理）
+            _old_http = os.environ.get("HTTP_PROXY")
+            _old_https = os.environ.get("HTTPS_PROXY")
             try:
-                self.log("更新 sing-box ...")
-                dest = self.core_dir / "sing-box.exe"
-                if dest.exists():
-                    try:
-                        dest.unlink()
-                    except Exception:
-                        pass
-                ensure_singbox(self.core_dir, log_fn=self.log)
-            except Exception as se:
-                self.log(f"sing-box 更新失败：{se}")
-            try:
-                self.log("更新 Mihomo ...")
-                dest = self.core_dir / "mihomo.exe"
-                if dest.exists():
-                    try:
-                        dest.unlink()
-                    except Exception:
-                        pass
-                ensure_mihomo(self.core_dir, log_fn=self.log)
-            except Exception as me:
-                self.log(f"Mihomo 更新失败：{me}")
+                px = self.get_download_proxies()
+                if px:
+                    os.environ["HTTP_PROXY"] = px.get("http") or ""
+                    os.environ["HTTPS_PROXY"] = px.get("https") or ""
+                    self.log("sing-box/mihomo 下载将尝试使用本地代理")
+                try:
+                    self.log("更新 sing-box ...")
+                    dest = self.core_dir / "sing-box.exe"
+                    if dest.exists():
+                        try:
+                            dest.unlink()
+                        except Exception:
+                            pass
+                    ensure_singbox(self.core_dir, log_fn=self.log)
+                except Exception as se:
+                    self.log(f"sing-box 更新失败：{se}")
+                try:
+                    self.log("更新 Mihomo ...")
+                    dest = self.core_dir / "mihomo.exe"
+                    if dest.exists():
+                        try:
+                            dest.unlink()
+                        except Exception:
+                            pass
+                    ensure_mihomo(self.core_dir, log_fn=self.log)
+                except Exception as me:
+                    self.log(f"Mihomo 更新失败：{me}")
+            finally:
+                if _old_http is None:
+                    os.environ.pop("HTTP_PROXY", None)
+                else:
+                    os.environ["HTTP_PROXY"] = _old_http
+                if _old_https is None:
+                    os.environ.pop("HTTPS_PROXY", None)
+                else:
+                    os.environ["HTTPS_PROXY"] = _old_https
             self.log("核心/规则文件更新完成（建议重启软件）")
             try:
                 self.xray_path = find_xray()
