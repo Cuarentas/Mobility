@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.6"
+APP_VERSION = "0.21.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -4735,35 +4735,63 @@ class App(ctk.CTk):
             pass
         return data
 
+    def _proxy_backup_path(self) -> Path:
+        base = Path(getattr(self, "base_dir", Path(".")))
+        d = base / "logs"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return d / "proxy_backup.json"
+
     def save_proxy_before_override(self):
         """在本软件写入系统代理前，备份当前设置（便于退出后还给 v2rayN）。"""
+        # 已接管过则保留首次备份，避免把 Mobility 自己的代理当备份
         if self._proxy_owned and self._proxy_backup is not None:
             return
         self._proxy_backup = self._read_proxy_reg()
-        # WinHTTP 当前代理（文本）
+        try:
+            import json as _json
+            self._proxy_backup_path().write_text(
+                _json.dumps(self._proxy_backup, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         self._winhttp_backup = None
-        if sys.platform == "win32":
-            try:
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                r = subprocess.run(
-                    ["netsh", "winhttp", "show", "proxy"],
-                    capture_output=True, text=True, timeout=3, creationflags=flags,
-                )
-                self._winhttp_backup = (r.stdout or "") + (r.stderr or "")
-            except Exception:
-                self._winhttp_backup = None
 
     def restore_proxy_backup(self):
-        """还原进入本软件前的系统代理；若无备份则关闭代理。"""
+        """还原进入本软件前的系统代理（优先内存备份，其次磁盘备份）。"""
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
         b = self._proxy_backup
+        if b is None:
+            try:
+                import json as _json
+                bp = self._proxy_backup_path()
+                if bp.exists():
+                    b = _json.loads(bp.read_text(encoding="utf-8"))
+                    self._proxy_backup = b
+            except Exception:
+                b = None
         try:
             k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-            if b is None:
-                winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                for name in ("AutoConfigURL", "ProxyServer"):
+            if not b:
+                # 无备份：仅当我们确实改过代理时才关闭，否则不动（避免误伤 v2rayN）
+                if getattr(self, "_proxy_owned", False):
+                    winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                    # 只有 ProxyServer 仍指向本软件常用端口才删
                     try:
-                        winreg.DeleteValue(k, name)
+                        val, _ = winreg.QueryValueEx(k, "ProxyServer")
+                        v = (val or "").lower().replace(" ", "")
+                        ours = (
+                            "127.0.0.1:%s" % int(getattr(self, "http_port", 10809) or 10809),
+                            "127.0.0.1:%s" % int(getattr(self, "socks_port", 10808) or 10808),
+                        )
+                        if any(p in v for p in ours):
+                            try:
+                                winreg.DeleteValue(k, "ProxyServer")
+                            except Exception:
+                                pass
                     except Exception:
                         pass
             else:
@@ -4771,7 +4799,6 @@ class App(ctk.CTk):
                     winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, int(b.get("ProxyEnable") or 0))
                 except Exception:
                     winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                # ProxyServer
                 if b.get("had_server") and (b.get("ProxyServer") or ""):
                     winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, str(b.get("ProxyServer") or ""))
                 else:
@@ -4782,7 +4809,6 @@ class App(ctk.CTk):
                             winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, "")
                         except Exception:
                             pass
-                # PAC
                 if b.get("had_auto") and (b.get("AutoConfigURL") or ""):
                     winreg.SetValueEx(k, "AutoConfigURL", 0, winreg.REG_SZ, str(b.get("AutoConfigURL") or ""))
                 else:
@@ -4793,10 +4819,19 @@ class App(ctk.CTk):
             winreg.CloseKey(k)
         except Exception:
             pass
-        self._notify_proxy_change()
+        # 多次通知，确保浏览器/v2rayN 能读到变更
+        for _ in range(2):
+            try:
+                self._notify_proxy_change()
+            except Exception:
+                pass
         self._proxy_owned = False
-        # 不主动 reset WinHTTP：避免把 v2rayN 的 WinHTTP 代理清掉
-        # 仅当备份显示 WinHTTP 直连且我们曾改过时再处理（这里保持不动）
+        try:
+            bp = self._proxy_backup_path()
+            if bp.exists():
+                bp.unlink()
+        except Exception:
+            pass
 
     def clear_system_proxy_force(self) -> bool:
         """强制关闭系统代理（仅在无备份或明确需要清空时使用）。"""
@@ -4865,16 +4900,18 @@ class App(ctk.CTk):
                     pass
             # 关键点：还原备份，而不是粗暴清空（否则 v2rayN 需换节点重写代理）
             try:
+                # 只要曾经写过系统代理或存在备份，就还原；绝不强制清空
                 if self._proxy_owned or self._proxy_backup is not None:
                     self.restore_proxy_backup()
                 else:
-                    # 未接管过系统代理则不动注册表
-                    pass
+                    # 尝试从磁盘备份还原（异常退出后的二次打开再退出）
+                    try:
+                        if self._proxy_backup_path().exists():
+                            self.restore_proxy_backup()
+                    except Exception:
+                        pass
             except Exception:
-                try:
-                    self.clear_system_proxy_force()
-                except Exception:
-                    pass
+                pass
             try:
                 self.clear_local_proxy_env()
             except Exception:
@@ -4884,52 +4921,39 @@ class App(ctk.CTk):
 
     def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
-            if enable:
+            # 关闭：只还原备份，绝不先清空（否则会把 v2rayN 的系统代理弄丢）
+            if not enable:
                 try:
-                    self.save_proxy_before_override()
+                    self.restore_proxy_backup()
                 except Exception:
                     pass
+                self._proxy_owned = False
+                return True
+
+            try:
+                self.save_proxy_before_override()
+            except Exception:
+                pass
             internet_settings = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
                 0, winreg.KEY_ALL_ACCESS
             )
-            if enable and pac:
+            if pac:
                 pac_path = self.write_pac_file(port)
                 url = pac_path.resolve().as_uri()
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
                 winreg.SetValueEx(internet_settings, "AutoConfigURL", 0, winreg.REG_SZ, url)
-            elif enable:
+            else:
                 try:
                     winreg.DeleteValue(internet_settings, "AutoConfigURL")
                 except Exception:
                     pass
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "127.0.0.1:%s" % port)
-            else:
-                winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                try:
-                    winreg.DeleteValue(internet_settings, "AutoConfigURL")
-                except Exception:
-                    pass
-                try:
-                    winreg.DeleteValue(internet_settings, "ProxyServer")
-                except Exception:
-                    try:
-                        winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "")
-                    except Exception:
-                        pass
             winreg.CloseKey(internet_settings)
             self._notify_proxy_change()
-            if enable:
-                self._proxy_owned = True
-            else:
-                # 关闭时走还原逻辑更稳
-                try:
-                    self.restore_proxy_backup()
-                except Exception:
-                    pass
-                self._proxy_owned = False
+            self._proxy_owned = True
             return True
         except Exception as e:
             self.log("设置系统代理失败：%s" % e)
@@ -6047,6 +6071,11 @@ class App(ctk.CTk):
         # 真正退出：只清理一次，避免重复 taskkill/netsh 导致退出很慢
         try:
             self.stop_proxy()
+        except Exception:
+            pass
+        # 再保险还原一次系统代理（兼容 v2rayN）
+        try:
+            self.restore_proxy_backup()
         except Exception:
             pass
         try:
