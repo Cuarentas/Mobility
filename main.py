@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.5"
+APP_VERSION = "0.23.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1622,7 +1622,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=280, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=360, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -6745,6 +6745,9 @@ class App(ctk.CTk):
     def create_mihomo_config(self, node: dict, socks_port: int, http_port: int, enable_tun: bool) -> Path:
         """生成 Mihomo (Clash Meta) 配置。"""
         proxy = self.node_to_mihomo_proxy(node)
+        # 代理名避免特殊符号导致分组引用失败
+        pname = str(proxy.get("name") or "node").strip() or "node"
+        proxy["name"] = pname
         mode = self.proxy_mode or "规则模式"
         if "全局" in mode:
             clash_mode = "global"
@@ -6753,28 +6756,56 @@ class App(ctk.CTk):
         else:
             clash_mode = "rule"
 
+        # MASQUE / 部分协议更依赖 IPv6 与 fake-ip DNS
+        proto = (node.get("protocol") or "").lower()
+        need_v6 = proto in ("masque",) or (":" in str(node.get("address") or ""))
+
+        rules = [
+            "IP-CIDR,127.0.0.0/8,DIRECT",
+            "IP-CIDR,10.0.0.0/8,DIRECT",
+            "IP-CIDR,172.16.0.0/12,DIRECT",
+            "IP-CIDR,192.168.0.0/16,DIRECT",
+            "IP-CIDR,169.254.0.0/16,DIRECT",
+            "IP-CIDR,224.0.0.0/4,DIRECT",
+        ]
+        if clash_mode == "rule":
+            rules.extend([
+                "GEOIP,private,DIRECT",
+                "GEOIP,CN,DIRECT",
+                "MATCH,PROXY",
+            ])
+        elif clash_mode == "direct":
+            rules.append("MATCH,DIRECT")
+        else:
+            # global：仍保留内网直连，其余走代理
+            rules.append("MATCH,PROXY")
+
         cfg = {
             "mixed-port": int(http_port),
             "socks-port": int(socks_port),
             "allow-lan": bool(getattr(self, "allow_lan", False)),
+            "bind-address": "*" if getattr(self, "allow_lan", False) else "127.0.0.1",
             "mode": clash_mode,
-            "log-level": "warning",
-            "ipv6": False,
-            "external-controller": "",
+            "log-level": "info",
+            "ipv6": True if need_v6 else True,
+            "unified-delay": True,
+            "tcp-concurrent": True,
+            "find-process-mode": "off",
             "dns": {
                 "enable": True,
+                "ipv6": True,
                 "enhanced-mode": "fake-ip",
-                "nameserver": ["8.8.8.8", "1.1.1.1"],
-                "fallback": ["1.0.0.1"],
+                "fake-ip-range": "198.18.0.1/16",
+                "use-hosts": True,
+                "default-nameserver": ["223.5.5.5", "119.29.29.29"],
+                "nameserver": ["https://dns.alidns.com/dns-query", "1.1.1.1", "8.8.8.8"],
+                "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29"],
             },
             "proxies": [proxy],
             "proxy-groups": [
-                {"name": "PROXY", "type": "select", "proxies": [proxy["name"]]},
+                {"name": "PROXY", "type": "select", "proxies": [pname]},
             ],
-            "rules": [
-                "GEOIP,lan,DIRECT",
-                "MATCH,PROXY",
-            ],
+            "rules": rules,
         }
         if enable_tun:
             cfg["tun"] = {
@@ -6784,8 +6815,8 @@ class App(ctk.CTk):
                 "auto-detect-interface": True,
                 "dns-hijack": ["any:53"],
             }
-        path = self.core_dir / "mihomo.yaml"
-        # Mihomo 支持 JSON；用 JSON 避免依赖 PyYAML
+            cfg["dns"]["listen"] = "127.0.0.1:1053"
+        # Mihomo 支持 JSON
         path_json = self.core_dir / "mihomo.json"
         with open(path_json, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
