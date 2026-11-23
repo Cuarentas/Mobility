@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.1"
+APP_VERSION = "0.22.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1220,7 +1220,7 @@ class App(ctk.CTk):
         self.update_btn = ctk.CTkButton(btn_box, text="检查更新", height=bh, command=self.check_update_thread)
         self.update_btn.grid(row=2, column=1, sticky="ew", pady=3, padx=(3, 0))
 
-        self.core_update_btn = ctk.CTkButton(btn_box, text="更新核心", height=bh, command=self.update_core_thread)
+        self.core_update_btn = ctk.CTkButton(btn_box, text="更新核心", height=bh, command=self.open_core_update_dialog)
         self.core_update_btn.grid(row=3, column=0, sticky="ew", pady=3, padx=(0, 3))
         self.geo_update_btn = ctk.CTkButton(btn_box, text="更新规则", height=bh, command=self.update_geo_thread)
         self.geo_update_btn.grid(row=3, column=1, sticky="ew", pady=3, padx=(3, 0))
@@ -2613,21 +2613,29 @@ class App(ctk.CTk):
         Thread(target=self.update_geo_only, daemon=True).start()
 
     def update_geo_only(self):
-        self.log("开始更新 Geo 规则文件...")
+        """更新 geoip.dat + geosite.dat 两个规则文件。"""
+        self.log("开始更新规则文件（geoip.dat + geosite.dat）...")
         try:
-            core_dir = get_base_dir() / "core"
+            core_dir = Path(get_base_dir()) / "core"
             core_dir.mkdir(parents=True, exist_ok=True)
-            for geo_name, geo_url in [
+            items = [
                 ("geoip.dat", "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"),
                 ("geosite.dat", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"),
-            ]:
-                self.log(f"下载 {geo_name} ...")
-                gr = self.http_get(geo_url, timeout=90)
-                (core_dir / geo_name).write_bytes(gr.content)
-                self.log(f"{geo_name} 已更新（{len(gr.content)} 字节）")
-            self.log("规则文件更新完成")
+            ]
+            ok = 0
+            for geo_name, geo_url in items:
+                try:
+                    self.log("下载 %s ..." % geo_name)
+                    gr = self.http_get(geo_url, timeout=120)
+                    data = gr.content
+                    (core_dir / geo_name).write_bytes(data)
+                    self.log("%s 已更新（%s 字节）" % (geo_name, len(data)))
+                    ok += 1
+                except Exception as ge:
+                    self.log("%s 更新失败：%s" % (geo_name, ge))
+            self.log("规则文件更新结束：成功 %s/2（geoip.dat、geosite.dat）" % ok)
         except Exception as e:
-            self.log(f"更新规则失败：{e}")
+            self.log("更新规则失败：%s" % e)
 
     def open_releases_page(self):
         import webbrowser
@@ -2672,130 +2680,202 @@ class App(ctk.CTk):
         except Exception as e:
             self.log(f"打开关于失败：{e}")
 
-    def update_core_thread(self):
-        Thread(target=self.update_core, daemon=True).start()
-
-    def update_core(self):
-        self.log("开始检查并更新 Xray-core ...")
+    def open_core_update_dialog(self):
+        """二级窗口：分别更新 Xray / sing-box / Mihomo，或全部更新。"""
+        win = ctk.CTkToplevel(self)
+        win.title("更新核心")
+        win.geometry("380x320")
+        win.transient(self)
         try:
-            import tempfile
-            import zipfile
-            url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
-            tmp = Path(tempfile.gettempdir()) / "xray_update.zip"
-            self.log(f"下载：{url}")
-            r = self.http_get(url, timeout=120)
-            tmp.write_bytes(r.content)
-            core_dir = get_base_dir() / "core"
-            core_dir.mkdir(parents=True, exist_ok=True)
-            # 写入前释放正在运行的 xray.exe，避免 Permission denied
+            win.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(win, text="选择要更新的核心", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 6)
+        )
+        ctk.CTkLabel(
+            win,
+            text="建议先停止代理再更新，避免文件被占用。\n规则文件（geoip/geosite）请用「更新规则」。",
+            font=("Microsoft YaHei UI", 11),
+            text_color=("gray40", "gray60"),
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        def run(fn):
             try:
-                proc = getattr(self, "xray_process", None)
-                if proc is not None and proc.poll() is None:
-                    self.log("检测到 Xray 正在运行，先停止再更新核心...")
+                win.destroy()
+            except Exception:
+                pass
+            Thread(target=fn, daemon=True).start()
+
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20)
+        for text, fn in (
+            ("更新 Xray", self.update_xray_core),
+            ("更新 sing-box", self.update_singbox_core),
+            ("更新 Mihomo", self.update_mihomo_core),
+            ("全部更新（三个核心）", self.update_all_cores),
+        ):
+            ctk.CTkButton(body, text=text, height=36, command=lambda f=fn: run(f)).pack(fill="x", pady=5)
+        ctk.CTkButton(win, text="关闭", width=90, command=win.destroy).pack(pady=12)
+
+    def _stop_core_process(self, attr: str, name: str):
+        """停止指定核心进程，便于覆盖 exe。"""
+        try:
+            proc = getattr(self, attr, None)
+            if proc is not None and proc.poll() is None:
+                self.log(f"检测到 {name} 正在运行，先停止...")
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
                     try:
-                        proc.terminate()
+                        proc.kill()
                     except Exception:
                         pass
-                    try:
-                        proc.wait(timeout=3)
-                    except Exception:
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                    self.xray_process = None
+                setattr(self, attr, None)
+                if attr == "xray_process":
                     self.is_running = False
                     try:
                         self.after(0, self.restore_proxy_backup)
                     except Exception:
                         pass
-                    time.sleep(0.4)
-            except Exception:
-                pass
+                time.sleep(0.35)
+        except Exception:
+            pass
+
+    def _replace_exe(self, dest: Path, data: bytes, label: str) -> bool:
+        dest = Path(dest)
+        tmp_exe = dest.with_suffix(dest.suffix + ".new")
+        try:
+            tmp_exe.write_bytes(data)
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except PermissionError:
+                    self.log(f"{label} 仍被占用，请先点「停止」再更新")
+                    self.log(f"已另存为 {tmp_exe.name}")
+                    return False
+            tmp_exe.replace(dest)
+            self.log(f"{label} 已更新")
+            return True
+        except Exception as e:
+            self.log(f"写入 {label} 失败：{e}")
+            return False
+
+    def _with_proxy_env(self, fn):
+        _old_http = os.environ.get("HTTP_PROXY")
+        _old_https = os.environ.get("HTTPS_PROXY")
+        try:
+            px = self.get_download_proxies()
+            if px:
+                os.environ["HTTP_PROXY"] = px.get("http") or ""
+                os.environ["HTTPS_PROXY"] = px.get("https") or ""
+                self.log("下载将尝试使用本地代理")
+            return fn()
+        finally:
+            if _old_http is None:
+                os.environ.pop("HTTP_PROXY", None)
+            else:
+                os.environ["HTTP_PROXY"] = _old_http
+            if _old_https is None:
+                os.environ.pop("HTTPS_PROXY", None)
+            else:
+                os.environ["HTTPS_PROXY"] = _old_https
+
+    def update_xray_core(self):
+        self.log("开始更新 Xray 核心 ...")
+        try:
+            import tempfile, zipfile
+            url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+            tmp = Path(tempfile.gettempdir()) / "xray_update.zip"
+            self.log("下载：%s" % url)
+            r = self.http_get(url, timeout=120)
+            tmp.write_bytes(r.content)
+            core_dir = Path(get_base_dir()) / "core"
+            core_dir.mkdir(parents=True, exist_ok=True)
+            self._stop_core_process("xray_process", "Xray")
             try:
                 self.kill_stale_core_processes()
             except Exception:
                 pass
-
             with zipfile.ZipFile(tmp, "r") as zf:
                 for name in zf.namelist():
                     if name.lower().endswith("xray.exe"):
-                        data = zf.read(name)
-                        dest = core_dir / "xray.exe"
-                        tmp_exe = core_dir / "xray.exe.new"
-                        tmp_exe.write_bytes(data)
-                        try:
-                            if dest.exists():
-                                try:
-                                    dest.unlink()
-                                except PermissionError:
-                                    self.log("xray.exe 仍被占用，请先点「停止」再更新核心")
-                                    self.log("已另存为 core/xray.exe.new，停止代理后可手动替换")
-                                    break
-                            tmp_exe.replace(dest)
-                            self.log("xray.exe 已更新")
-                        except Exception as we:
-                            self.log("写入 xray.exe 失败：%s" % we)
+                        self._replace_exe(core_dir / "xray.exe", zf.read(name), "xray.exe")
                         break
-            for geo_name, geo_url in [
-                ("geoip.dat", "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"),
-                ("geosite.dat", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"),
-            ]:
-                try:
-                    self.log(f"更新 {geo_name} ...")
-                    gr = self.http_get(geo_url, timeout=90)
-                    if gr.status_code == 200:
-                        (core_dir / geo_name).write_bytes(gr.content)
-                        self.log(f"{geo_name} 已更新")
-                except Exception as ge:
-                    self.log(f"{geo_name} 更新失败：{ge}")
-            # 同步更新 sing-box / mihomo（尽量走本地代理）
-            _old_http = os.environ.get("HTTP_PROXY")
-            _old_https = os.environ.get("HTTPS_PROXY")
             try:
-                px = self.get_download_proxies()
-                if px:
-                    os.environ["HTTP_PROXY"] = px.get("http") or ""
-                    os.environ["HTTPS_PROXY"] = px.get("https") or ""
-                    self.log("sing-box/mihomo 下载将尝试使用本地代理")
-                try:
-                    self.log("更新 sing-box ...")
-                    dest = self.core_dir / "sing-box.exe"
-                    if dest.exists():
-                        try:
-                            dest.unlink()
-                        except Exception:
-                            pass
-                    ensure_singbox(self.core_dir, log_fn=self.log)
-                except Exception as se:
-                    self.log(f"sing-box 更新失败：{se}")
-                try:
-                    self.log("更新 Mihomo ...")
-                    dest = self.core_dir / "mihomo.exe"
-                    if dest.exists():
-                        try:
-                            dest.unlink()
-                        except Exception:
-                            pass
-                    ensure_mihomo(self.core_dir, log_fn=self.log)
-                except Exception as me:
-                    self.log(f"Mihomo 更新失败：{me}")
-            finally:
-                if _old_http is None:
-                    os.environ.pop("HTTP_PROXY", None)
-                else:
-                    os.environ["HTTP_PROXY"] = _old_http
-                if _old_https is None:
-                    os.environ.pop("HTTPS_PROXY", None)
-                else:
-                    os.environ["HTTPS_PROXY"] = _old_https
-            self.log("核心/规则文件更新完成（建议重启软件）")
-            try:
-                self.xray_path = find_xray()
+                self.refresh_version_label("Xray")
             except Exception:
                 pass
+            self.log("Xray 核心更新流程结束")
         except Exception as e:
-            self.log(f"更新核心失败：{e}")
+            self.log("更新 Xray 失败：%s" % e)
+
+    def update_singbox_core(self):
+        self.log("开始更新 sing-box 核心 ...")
+        try:
+            self._stop_core_process("singbox_process", "sing-box")
+            dest = self.core_dir / "sing-box.exe"
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except Exception:
+                    pass
+
+            def _do():
+                ensure_singbox(self.core_dir, log_fn=self.log)
+
+            self._with_proxy_env(_do)
+            try:
+                self.refresh_version_label("sing-box")
+            except Exception:
+                pass
+            self.log("sing-box 核心更新流程结束")
+        except Exception as e:
+            self.log("更新 sing-box 失败：%s" % e)
+
+    def update_mihomo_core(self):
+        self.log("开始更新 Mihomo 核心 ...")
+        try:
+            self._stop_core_process("mihomo_process", "Mihomo")
+            dest = self.core_dir / "mihomo.exe"
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except Exception:
+                    pass
+
+            def _do():
+                ensure_mihomo(self.core_dir, log_fn=self.log)
+
+            self._with_proxy_env(_do)
+            try:
+                self.refresh_version_label("Mihomo")
+            except Exception:
+                pass
+            self.log("Mihomo 核心更新流程结束")
+        except Exception as e:
+            self.log("更新 Mihomo 失败：%s" % e)
+
+    def update_all_cores(self):
+        """仅更新三个核心，不更新 Geo 规则。"""
+        self.log("开始全部更新核心（Xray / sing-box / Mihomo）...")
+        self.update_xray_core()
+        self.update_singbox_core()
+        self.update_mihomo_core()
+        self.log("全部核心更新流程结束（规则文件请使用「更新规则」）")
+
+    def update_core_thread(self):
+        # 兼容旧入口：打开选择对话框
+        self.after(0, self.open_core_update_dialog)
+
+    def update_core(self):
+        # 兼容旧调用
+        self.update_all_cores()
 
 
     def _setup_log_tags(self):
