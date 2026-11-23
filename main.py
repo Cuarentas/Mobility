@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.0"
+APP_VERSION = "0.23.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -994,7 +994,7 @@ class App(ctk.CTk):
         self.routing_extra_block = ""
         self.proxy_core = "Xray"
         self.core_map = dict(DEFAULT_CORE_MAP)
-        self.live_stats_enabled = False  # 实时网速/内存，默认关闭
+        self.live_stats_enabled = True  # 实时网速/内存，默认开启
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
         self.hotkey_proxy = "ctrl+shift+p"
@@ -1172,7 +1172,8 @@ class App(ctk.CTk):
         stats.pack(fill="x", pady=(2, 6))
         stats.pack_propagate(False)
 
-        self.live_stats_var = ctk.BooleanVar(value=False)
+        self.live_stats_var = ctk.BooleanVar(value=True)
+        self.live_stats_enabled = True
         self.live_stats_sw = ctk.CTkSwitch(
             stats, text="实时统计", variable=self.live_stats_var, width=90,
             command=self.on_live_stats_toggle
@@ -1360,7 +1361,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=200, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=280, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -1369,7 +1370,6 @@ class App(ctk.CTk):
         except Exception:
             pass
         self.log("Mobility 已启动")
-        self.log("第十六阶段：Hysteria2/TUIC · 托盘增强 · PAC加固 · 订阅重试")
         try:
             # 强制刷新右侧栏，减轻首次绘制发虚
             self.update_idletasks()
@@ -4203,7 +4203,7 @@ class App(ctk.CTk):
                 "subscription_url": getattr(self, "subscription_url", "") or entry_txt,
                 "subscriptions": list(getattr(self, "subscriptions", []) or []),
                 "tun_enabled": bool(getattr(self, "tun_enabled", False)),
-                "live_stats_enabled": False,
+                "live_stats_enabled": True,
                 "tun_settings": dict(getattr(self, "tun_settings", {}) or {}),
                 "routing_extra_direct": getattr(self, "routing_extra_direct", "") or "",
                 "routing_extra_proxy": getattr(self, "routing_extra_proxy", "") or "",
@@ -4300,7 +4300,7 @@ class App(ctk.CTk):
                     cb.set(self.core_map.get(proto, "Xray"))
             except Exception:
                 pass
-            self.live_stats_enabled = bool(data.get("live_stats_enabled", False))
+            self.live_stats_enabled = bool(data.get("live_stats_enabled", True))
             try:
                 if hasattr(self, "live_stats_var"):
                     self.live_stats_var.set(self.live_stats_enabled)
@@ -5324,7 +5324,7 @@ class App(ctk.CTk):
         # Stats API 常驻（占用很小）；界面是否轮询由「实时统计」开关控制
         api_port = int(getattr(self, "api_port", 10085))
         config["stats"] = {}
-        config["api"] = {"tag": "api", "services": ["StatsService"]}
+        config["api"] = {"tag": "api", "services": ["StatsService", "HandlerService"]}
         config["policy"] = {
             "system": {
                 "statsOutboundUplink": True,
@@ -5717,40 +5717,87 @@ class App(ctk.CTk):
                 return None
             flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             api_port = int(getattr(self, "api_port", 10085))
+            import re as _re
+
+            def _parse_value(out: str) -> int:
+                out = out or ""
+                for line in out.splitlines():
+                    if "value" in line.lower():
+                        ms = _re.findall(r"(-?\d+)", line)
+                        if ms:
+                            return max(0, int(ms[-1]))
+                ms = _re.findall(r"\b(\d{2,})\b", out)
+                if ms:
+                    return max(0, int(ms[-1]))
+                return 0
 
             def _one(name: str) -> int:
+                cmds = [
+                    [str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name=%s" % name],
+                    [str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name", name],
+                ]
+                for cmd in cmds:
+                    try:
+                        r = subprocess.run(
+                            cmd, capture_output=True, text=True, timeout=2.0,
+                            creationflags=flags, cwd=str(self.core_dir),
+                        )
+                        out = (r.stdout or "") + (r.stderr or "")
+                        val = _parse_value(out)
+                        if val > 0 or "value" in out.lower():
+                            return val
+                    except Exception:
+                        continue
+                return 0
+
+            def _query_all():
+                up = down = 0
                 try:
                     r = subprocess.run(
-                        [str(xray_exe), "api", "stats", f"--server=127.0.0.1:{api_port}", f"-name={name}"],
-                        capture_output=True, text=True, timeout=1.5,
+                        [str(xray_exe), "api", "statsquery",
+                         "--server=127.0.0.1:%d" % api_port, "-pattern", ""],
+                        capture_output=True, text=True, timeout=2.5,
                         creationflags=flags, cwd=str(self.core_dir),
                     )
                     out = (r.stdout or "") + (r.stderr or "")
-                    # value: 12345
+                    for m in _re.finditer(
+                        r"(outbound>>>proxy>>>uplink|outbound>>>proxy>>>downlink)[^\d]*(\d+)",
+                        out, _re.I,
+                    ):
+                        if "uplink" in m.group(1).lower():
+                            up = max(up, int(m.group(2)))
+                        else:
+                            down = max(down, int(m.group(2)))
+                    # 名称/值分行
+                    cur = ""
                     for line in out.splitlines():
-                        line = line.strip()
-                        if "value:" in line.lower() or line.isdigit():
-                            num = "".join(ch for ch in line if ch.isdigit() or ch == "-")
-                            if num:
-                                return max(0, int(num))
-                    # JSON-ish
-                    import re as _re
-                    ms = _re.findall(r"(\d+)", out)
-                    if ms:
-                        return max(0, int(ms[-1]))
+                        if ">>>" in line and "name" in line.lower():
+                            cur = line
+                        elif "value" in line.lower() and cur:
+                            ms = _re.findall(r"(\d+)", line)
+                            if not ms:
+                                continue
+                            v = int(ms[-1])
+                            if "proxy>>>uplink" in cur.lower():
+                                up = max(up, v)
+                            elif "proxy>>>downlink" in cur.lower():
+                                down = max(down, v)
+                            cur = ""
                 except Exception:
-                    return 0
-                return 0
+                    pass
+                return up, down
 
-            # 优先 outbound proxy；TUN 下同时累加 inbound tun-in
-            up = _one("outbound>>>proxy>>>uplink")
-            down = _one("outbound>>>proxy>>>downlink")
+            up, down = _query_all()
+            if up == 0 and down == 0:
+                up = _one("outbound>>>proxy>>>uplink")
+                down = _one("outbound>>>proxy>>>downlink")
             if getattr(self, "tun_enabled", False):
                 up = max(up, _one("inbound>>>tun-in>>>uplink"))
                 down = max(down, _one("inbound>>>tun-in>>>downlink"))
             return up, down
         except Exception:
             return None
+
 
 
     def _xray_memory_mb(self) -> str:
@@ -5900,7 +5947,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(12000 if getattr(self, "tun_enabled", False) else 8000, self.update_home_stats)
+        self.after(2000 if getattr(self, "live_stats_enabled", True) else 8000, self.update_home_stats)
 
 
 
@@ -6673,14 +6720,7 @@ class App(ctk.CTk):
 
             if proxy_ok:
                 self.is_running = True
-                # TUN 时默认关闭实时统计，避免额外开销
-                if getattr(self, "tun_enabled", False):
-                    try:
-                        self.live_stats_enabled = False
-                        if hasattr(self, "live_stats_var"):
-                            self.live_stats_var.set(False)
-                    except Exception:
-                        pass
+                # 实时统计默认保持用户开关（不再因 TUN 强制关闭）
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
                 ))
