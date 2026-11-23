@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.7"
+APP_VERSION = "0.23.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -6156,15 +6156,38 @@ class App(ctk.CTk):
                 winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 0)
                 winreg.SetValueEx(internet_settings, "AutoConfigURL", 0, winreg.REG_SZ, url)
             else:
+                # 必须清掉 PAC，否则浏览器仍走旧 AutoConfigURL
+                for _ in range(2):
+                    try:
+                        winreg.DeleteValue(internet_settings, "AutoConfigURL")
+                    except Exception:
+                        pass
+                    try:
+                        winreg.SetValueEx(internet_settings, "AutoConfigURL", 0, winreg.REG_SZ, "")
+                    except Exception:
+                        pass
+                winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                ps = "http=127.0.0.1:%(p)s;https=127.0.0.1:%(p)s" % {"p": int(port)}
+                winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, ps)
                 try:
-                    winreg.DeleteValue(internet_settings, "AutoConfigURL")
+                    winreg.SetValueEx(
+                        internet_settings, "ProxyOverride", 0, winreg.REG_SZ,
+                        "localhost;127.*;10.*;192.168.*;<local>",
+                    )
                 except Exception:
                     pass
-                winreg.SetValueEx(internet_settings, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                winreg.SetValueEx(internet_settings, "ProxyServer", 0, winreg.REG_SZ, "127.0.0.1:%s" % port)
             winreg.CloseKey(internet_settings)
             self._notify_proxy_change()
             self._proxy_owned = True
+            try:
+                cur = self._read_proxy_reg()
+                self.log(
+                    "系统代理状态：Enable=%s Server=%s PAC=%s"
+                    % (cur.get("ProxyEnable"), (cur.get("ProxyServer") or "")[:80],
+                       "有" if (cur.get("AutoConfigURL") or "").strip() else "无")
+                )
+            except Exception:
+                pass
             return True
         except Exception as e:
             self.log("设置系统代理失败：%s" % e)
@@ -6798,11 +6821,9 @@ class App(ctk.CTk):
             "dns": {
                 "enable": True,
                 "ipv6": True,
-                "enhanced-mode": "fake-ip",
-                "fake-ip-range": "198.18.0.1/16",
-                "use-hosts": True,
-                "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-                "nameserver": ["https://dns.alidns.com/dns-query", "1.1.1.1", "8.8.8.8"],
+                "enhanced-mode": "redir-host",
+                "default-nameserver": ["223.5.5.5", "8.8.8.8"],
+                "nameserver": ["1.1.1.1", "8.8.8.8", "223.5.5.5"],
                 "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29"],
             },
             "proxies": [proxy],
@@ -7248,6 +7269,13 @@ class App(ctk.CTk):
                 if not getattr(self, "tun_enabled", False):
                     if self.apply_system_proxy_for_mode(http_port):
                         self.log("系统代理已设置 127.0.0.1:%s" % http_port)
+                try:
+                    if wait_local_port(int(http_port), timeout=5):
+                        self.log("本地端口 %s 已监听" % http_port)
+                    else:
+                        self.log("警告：本地端口 %s 未监听，浏览器可能无法走代理" % http_port)
+                except Exception:
+                    pass
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
