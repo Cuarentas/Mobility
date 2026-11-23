@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.9"
+APP_VERSION = "0.24.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1241,7 +1241,7 @@ class App(ctk.CTk):
         self.subscriptions = []
         self.test_timeout = DEFAULT_TEST_TIMEOUT
         self.connectivity_urls = list(DEFAULT_CONNECTIVITY_URLS)
-        self.group_nodes_by_sub = False
+        self.group_nodes_by_sub = True
         self.rule_set_urls = []
         self._drag_data = None
         self._pending_node = None
@@ -2721,9 +2721,10 @@ class App(ctk.CTk):
                 n["_group"] = "默认"
             merged.append(n)
         self.nodes = merged
+        self.group_nodes_by_sub = True
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
-        self.log("本地导入成功：%s 个节点（来自 %s）" % (len(nodes), Path(path).name))
+        self.log("本地导入成功：%s 个节点（组：%s）" % (len(nodes), group_name))
 
     def import_config_dialog(self):
         try:
@@ -4830,7 +4831,7 @@ class App(ctk.CTk):
                 self.test_timeout = float(data.get("test_timeout") or DEFAULT_TEST_TIMEOUT)
             except Exception:
                 self.test_timeout = DEFAULT_TEST_TIMEOUT
-            self.group_nodes_by_sub = bool(data.get("group_nodes_by_sub", False))
+            self.group_nodes_by_sub = bool(data.get("group_nodes_by_sub", True))
             self.rule_set_urls = data.get("rule_set_urls") if isinstance(data.get("rule_set_urls"), list) else []
             cu = data.get("connectivity_urls")
             if isinstance(cu, list) and cu:
@@ -5053,10 +5054,12 @@ class App(ctk.CTk):
                     order.append(g)
                 groups[g].append(n)
 
-            # 多订阅且开启分组时才显示分组标题；单一「未分组」不显示
-            show_headers = group_by and len(order) > 1
-            if group_by and len(order) == 1 and order[0] not in ("未分组",):
-                show_headers = True  # 单个真实订阅名也可显示，便于识别来源
+            # 超过一组就显示分组标题；设置里可关
+            show_headers = len(order) > 1
+            if not group_by:
+                show_headers = False
+            if group_by and len(order) == 1 and order[0] not in ("未分组", "默认"):
+                show_headers = True
 
             if show_headers:
                 for g in order:
@@ -5322,8 +5325,20 @@ class App(ctk.CTk):
                 self.log("没有可更新的订阅")
                 return
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
+        # 保留本地导入等非在线订阅组
+        keep_nodes = []
+        for n in list(self.nodes or []):
+            if not isinstance(n, dict):
+                continue
+            g = str(n.get("_group") or n.get("group") or "")
+            if g.startswith("本地:") or n.get("from_local"):
+                keep_nodes.append(n)
         all_nodes = []
         seen = set()
+        for n in keep_nodes:
+            key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}|{n.get('name')}"
+            seen.add(key)
+            all_nodes.append(n)
         for s in self.subscriptions:
             url = s.get("url") or ""
             if not url:
@@ -5332,33 +5347,33 @@ class App(ctk.CTk):
                 self.log(f"更新订阅：{s.get('name')} ...")
                 resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
                 resp.raise_for_status()
-                nodes = parse_subscription_content(resp.text)
+                nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
                 gname = s.get("name") or (url[:24] if url else "订阅")
-                for n in nodes:
+                cnt = 0
+                for n in nodes or []:
+                    if not isinstance(n, dict):
+                        continue
                     n["_group"] = gname
-                    key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}"
+                    n["group"] = gname
+                    n["from_sub"] = s.get("name")
+                    key = f"{n.get('protocol')}|{n.get('address')}|{n.get('port')}|{n.get('name')}"
                     if key in seen:
                         continue
                     seen.add(key)
-                    n["from_sub"] = s.get("name")
                     all_nodes.append(n)
-                self.log(f"  -> {len(nodes)} 个节点")
+                    cnt += 1
+                self.log(f"  -> {cnt} 个节点（组：{gname}）")
             except Exception as e:
                 self.log(f"  失败：{e}")
         self.nodes = all_nodes
-        # 多订阅时自动开启分组显示
-        try:
-            gset = set((n.get("_group") or "") for n in all_nodes if n.get("_group"))
-            if len(gset) > 1:
-                self.group_nodes_by_sub = True
-        except Exception:
-            pass
+        self.group_nodes_by_sub = True
 
         def _ui():
             self.refresh_node_list(keep_selection=False)
             self.save_settings()
             self.load_btn.configure(state="normal")
-            self.log(f"全部订阅更新完成，去重后共 {len(self.nodes)} 个节点")
+            local_n = sum(1 for n in self.nodes if str(n.get('_group') or '').startswith('本地:'))
+            self.log(f"全部订阅更新完成：合计 {len(self.nodes)}（其中本地保留 {local_n}）")
         self.after(0, _ui)
 
     def load_nodes_thread(self):
@@ -5430,6 +5445,7 @@ class App(ctk.CTk):
                     n for n in (new_nodes or []) if isinstance(n, dict)
                 ]
                 self.nodes = merged
+                self.group_nodes_by_sub = True
                 self.log(f"订阅解析完成：本组 {len(new_nodes or [])} 个，合计 {len(self.nodes)} 个（按订阅分组保留）")
             else:
                 self.subscription_url = ""
