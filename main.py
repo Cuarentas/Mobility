@@ -51,7 +51,7 @@ DEFAULT_TUN_SETTINGS = {
 }
 
 CORE_OPTIONS = ["自动", "Xray", "sing-box", "Mihomo"]
-CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http", "hysteria2", "tuic"]
+CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http", "hysteria2", "tuic", "masque"]
 # 默认「自动」：仅在选自动时由软件推荐；用户指定 Xray/sing-box/Mihomo 则严格使用
 DEFAULT_CORE_MAP = {p: "自动" for p in CORE_PROTOCOLS}
 PROXY_MODE_DEFAULT = "规则模式"
@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.3"
+APP_VERSION = "0.23.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -782,33 +782,55 @@ def _safe_yaml_unquote(s: str) -> str:
 
 
 def parse_clash_proxies(text: str) -> list:
-    """轻量解析 Clash YAML 中的 proxies 列表（不依赖 PyYAML）。"""
+    """轻量解析 Clash / Mihomo YAML 的 proxies（含 masque）。"""
     nodes = []
-    if not text or ("proxies:" not in text and "type:" not in text):
+    if not text:
         return nodes
     import re as _re
-    blocks = _re.split(r"\n\s*-\s+", "\n" + text)
+    # 只取 proxies: 段，避免 proxy-groups 干扰
+    section = text
+    msec = _re.search(r"(?m)^proxies:\s*\n", text)
+    if msec:
+        start = msec.end()
+        # 直到下一个顶层键（无缩进且以 word: 开头）
+        mend = _re.search(r"(?m)^[A-Za-z0-9_-]+:\s*$", text[start:])
+        section = text[start: start + mend.start()] if mend else text[start:]
+    elif "type:" not in text:
+        return nodes
+
+    blocks = _re.split(r"\n(?=\s*-\s+(?:name:|\{))", "\n" + section)
+    if len(blocks) <= 1:
+        blocks = _re.split(r"\n\s*-\s+", "\n" + section)
     for block in blocks:
         if "type:" not in block and "type :" not in block:
             continue
         fields = {}
         for line in block.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or ":" not in line:
+            raw = line.rstrip()
+            if not raw.strip() or raw.strip().startswith("#"):
+                continue
+            # 去掉列表前缀
+            line = raw.strip()
+            if line.startswith("- "):
+                line = line[2:].strip()
+            if ":" not in line:
                 continue
             k, v = line.split(":", 1)
-            k = k.strip().lstrip("- ").strip().lower()
+            k = k.strip().lower()
             v = _safe_yaml_unquote(v.strip())
+            # 简单数组 dns: [ a, b ]
+            if v.startswith("[") and v.endswith("]"):
+                v = v[1:-1]
             if k:
                 fields[k] = v
         typ = (fields.get("type") or "").lower()
         server = fields.get("server") or fields.get("address") or ""
         port = fields.get("port") or ""
-        name = fields.get("name") or server or "clash"
+        name = fields.get("name") or server or typ or "clash"
         if not server or not port:
             continue
         try:
-            port_i = int(float(port))
+            port_i = int(float(str(port).split()[0]))
         except Exception:
             continue
         node = None
@@ -849,10 +871,29 @@ def parse_clash_proxies(text: str) -> list:
             node = {"protocol": "tuic", "name": name, "address": server, "port": port_i,
                     "uuid": fields.get("uuid") or "", "password": fields.get("password") or "",
                     "sni": fields.get("sni") or server,
-                    "congestion_control": fields.get("congestion-controller") or "bbr"}
+                    "congestion_control": fields.get("congestion-controller") or fields.get("congestion_controller") or "bbr"}
+        elif typ == "masque":
+            # Cloudflare MASQUE：仅 Mihomo/Clash Meta 可跑，先导入节点供选择
+            node = {
+                "protocol": "masque",
+                "name": name,
+                "address": server,
+                "port": port_i,
+                "private_key": fields.get("private-key") or fields.get("private_key") or "",
+                "public_key": fields.get("public-key") or fields.get("public_key") or "",
+                "ip": fields.get("ip") or "",
+                "ipv6": fields.get("ipv6") or "",
+                "uri": fields.get("uri") or "",
+                "mtu": fields.get("mtu") or "1280",
+                "sni": fields.get("sni") or "www.cloudflareaccess.com",
+                "congestion_controller": fields.get("congestion-controller") or "bbr",
+                "dns": fields.get("dns") or "",
+                "udp": True,
+            }
         if node:
             nodes.append(node)
     return nodes
+
 
 
 def parse_json_nodes(text: str) -> list:
@@ -961,6 +1002,11 @@ def parse_nodes_any(text: str) -> list:
     text = (text or "").strip()
     if not text:
         return []
+    # Clash/Mihomo YAML 优先（避免被 base64/URI 误判）
+    if "proxies:" in text and ("type:" in text or "type :" in text):
+        nodes = parse_clash_proxies(text)
+        if nodes:
+            return nodes
     nodes = []
     try:
         nodes = parse_subscription_content(text)
@@ -972,7 +1018,7 @@ def parse_nodes_any(text: str) -> list:
         nodes = parse_json_nodes(text)
         if nodes:
             return nodes
-    if "proxies:" in text or ("type:" in text and "server:" in text):
+    if "type:" in text and "server:" in text:
         nodes = parse_clash_proxies(text)
         if nodes:
             return nodes
@@ -1855,6 +1901,8 @@ class App(ctk.CTk):
         # Hysteria2 / TUIC 仅 sing-box 可出站
         if proto in ("hysteria", "hysteria2", "hy2", "tuic"):
             return "sing-box"
+        if proto in ("masque", "wireguard"):
+            return "Mihomo"
         if chosen in ("Xray", "sing-box", "Mihomo"):
             return chosen
         if proto in ("wireguard",):
@@ -6079,28 +6127,32 @@ class App(ctk.CTk):
                 except Exception:
                     return ""
 
-            def _val_from_text(out):
-                if not out:
-                    return 0
-                for line in out.splitlines():
-                    if "value" in line.lower():
-                        ms = _re.findall(r"(-?\d+)", line)
-                        if ms:
-                            return max(0, int(ms[-1]))
-                ms = _re.findall(r"\b(\d+)\b", out)
-                return max(0, int(ms[-1])) if ms else 0
-
-            def _one(name):
-                out = _run([
-                    str(xray_exe), "api", "stats",
-                    "--server=127.0.0.1:%d" % api_port, "-name", name,
-                ])
-                if not out:
-                    out = _run([
-                        str(xray_exe), "api", "stats",
-                        "--server=127.0.0.1:%d" % api_port, "-name=%s" % name,
-                    ])
-                return _val_from_text(out)
+            def _collect_from_mapping(items):
+                up = down = 0
+                up_i = down_i = 0
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    name = str(it.get("name") or "").lower()
+                    try:
+                        val = int(it.get("value") or 0)
+                    except Exception:
+                        val = 0
+                    if val < 0:
+                        val = 0
+                    if "outbound>>>proxy>>>uplink" in name:
+                        up = max(up, val)
+                    elif "outbound>>>proxy>>>downlink" in name:
+                        down = max(down, val)
+                    elif "inbound>>>socks>>>uplink" in name or "inbound>>>http>>>uplink" in name:
+                        up_i += val
+                    elif "inbound>>>socks>>>downlink" in name or "inbound>>>http>>>downlink" in name:
+                        down_i += val
+                if up or down:
+                    return up, down
+                if up_i or down_i:
+                    return up_i, down_i
+                return 0, 0
 
             up = down = 0
             out = _run([
@@ -6108,37 +6160,58 @@ class App(ctk.CTk):
                 "--server=127.0.0.1:%d" % api_port, "-pattern", "",
             ])
             if out:
-                up_p = down_p = up_i = down_i = 0
-                cur = ""
-                for line in out.splitlines():
-                    low = line.lower()
-                    if ">>>" in line:
-                        cur = low
-                    if "value" in low and cur:
-                        ms = _re.findall(r"(\d+)", line)
-                        if not ms:
+                # JSON
+                js = None
+                try:
+                    s = out.find("{")
+                    if s >= 0:
+                        js = json.loads(out[s:])
+                except Exception:
+                    js = None
+                if isinstance(js, dict):
+                    items = js.get("stat") or js.get("stats") or js.get("Stat") or []
+                    if isinstance(items, dict):
+                        items = [items]
+                    up, down = _collect_from_mapping(items or [])
+                if up == 0 and down == 0:
+                    # 文本格式 name / value
+                    cur = ""
+                    up_p = down_p = up_i = down_i = 0
+                    for line in out.splitlines():
+                        low = line.lower().strip()
+                        if ">>>" in low:
+                            cur = low
+                        if "value" in low and cur:
+                            ms = _re.findall(r"(\d+)", line)
+                            if not ms:
+                                cur = ""
+                                continue
+                            v = int(ms[-1])
+                            if "outbound>>>proxy>>>uplink" in cur:
+                                up_p = max(up_p, v)
+                            elif "outbound>>>proxy>>>downlink" in cur:
+                                down_p = max(down_p, v)
+                            elif "inbound>>>socks>>>uplink" in cur or "inbound>>>http>>>uplink" in cur:
+                                up_i += v
+                            elif "inbound>>>socks>>>downlink" in cur or "inbound>>>http>>>downlink" in cur:
+                                down_i += v
                             cur = ""
-                            continue
-                        v = int(ms[-1])
-                        if "outbound>>>proxy>>>uplink" in cur:
-                            up_p = max(up_p, v)
-                        elif "outbound>>>proxy>>>downlink" in cur:
-                            down_p = max(down_p, v)
-                        elif "inbound>>>socks>>>uplink" in cur or "inbound>>>http>>>uplink" in cur:
-                            up_i += v
-                        elif "inbound>>>socks>>>downlink" in cur or "inbound>>>http>>>downlink" in cur:
-                            down_i += v
-                        cur = ""
-                if up_p or down_p:
-                    up, down = up_p, down_p
-                elif up_i or down_i:
-                    up, down = up_i, down_i
+                    if up_p or down_p:
+                        up, down = up_p, down_p
+                    elif up_i or down_i:
+                        up, down = up_i, down_i
 
             if up == 0 and down == 0:
                 for n in ("outbound>>>proxy>>>uplink", "inbound>>>socks>>>uplink", "inbound>>>http>>>uplink"):
-                    up = max(up, _one(n))
+                    o2 = _run([str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name", n])
+                    ms = _re.findall(r"(\d+)", o2 or "")
+                    if ms:
+                        up = max(up, int(ms[-1]))
                 for n in ("outbound>>>proxy>>>downlink", "inbound>>>socks>>>downlink", "inbound>>>http>>>downlink"):
-                    down = max(down, _one(n))
+                    o2 = _run([str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name", n])
+                    ms = _re.findall(r"(\d+)", o2 or "")
+                    if ms:
+                        down = max(down, int(ms[-1]))
             return up, down
         except Exception:
             return None
@@ -6841,6 +6914,11 @@ class App(ctk.CTk):
             _p = "shadowsocks"
         mapped = (getattr(self, "core_map", {}) or {}).get(_p, "")
         self.log(f"节点协议 [{node.get('protocol')}] 映射={mapped or '自动'} → 实际核心 {core_name}")
+        if (node.get("protocol") or "").lower() == "masque":
+            self.log("提示：MASQUE 节点需 Mihomo 核心；若启动失败请更新 Mihomo 到最新版")
+            core_name = "Mihomo"
+            self.proxy_core = core_name
+
         try:
             self.after(0, lambda: self.refresh_version_label(core_name))
         except Exception:
