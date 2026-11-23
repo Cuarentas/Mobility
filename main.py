@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.6"
+APP_VERSION = "0.23.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -4755,8 +4755,9 @@ class App(ctk.CTk):
             nodes = data.get("nodes") or []
             if url:
                 self.subscription_url = url
-                self.entry.delete(0, "end")
-                self.entry.insert(0, url)
+                if getattr(self, "entry", None) is not None:
+                    self.entry.delete(0, "end")
+                    self.entry.insert(0, url)
             self.subscriptions = data.get("subscriptions") or []
             if not self.subscriptions and url.startswith("http"):
                 self.subscriptions = [{"name": "订阅1", "url": url}]
@@ -4868,9 +4869,10 @@ class App(ctk.CTk):
                 self.http_port = int(data.get("http_port", 10809))
             except Exception:
                 self.socks_port, self.http_port = 10808, 10809
-            if hasattr(self, "socks_entry"):
+            if getattr(self, "socks_entry", None) is not None:
                 self.socks_entry.delete(0, "end")
                 self.socks_entry.insert(0, str(self.socks_port))
+            if getattr(self, "http_entry", None) is not None:
                 self.http_entry.delete(0, "end")
                 self.http_entry.insert(0, str(self.http_port))
             rl = data.get("refresh_label") or "不自动更新"
@@ -4901,16 +4903,17 @@ class App(ctk.CTk):
                     pass
             self.direct_domains = data.get("direct_domains") or ""
             self.proxy_domains = data.get("proxy_domains") or ""
-            if hasattr(self, "direct_entry"):
+            if getattr(self, "direct_entry", None) is not None:
                 self.direct_entry.delete(0, "end")
                 self.direct_entry.insert(0, self.direct_domains)
+            if getattr(self, "proxy_entry", None) is not None:
                 self.proxy_entry.delete(0, "end")
                 self.proxy_entry.insert(0, self.proxy_domains)
             self.dns_mode = data.get("dns_mode") or "系统默认"
             if self.dns_mode in DNS_OPTIONS and hasattr(self, "dns_combo"):
                 self.dns_combo.set(self.dns_mode)
             self.dns_custom = data.get("dns_custom") or "8.8.8.8,1.1.1.1"
-            if hasattr(self, "dns_entry"):
+            if getattr(self, "dns_entry", None) is not None:
                 self.dns_entry.delete(0, "end")
                 self.dns_entry.insert(0, self.dns_custom)
                 try:
@@ -6749,15 +6752,16 @@ class App(ctk.CTk):
         pname = str(proxy.get("name") or "node").strip() or "node"
         proxy["name"] = pname
         mode = self.proxy_mode or "规则模式"
-        if "全局" in mode:
+        proto = (node.get("protocol") or "").lower()
+        if proto == "masque" and "直连" not in (mode or ""):
+            clash_mode = "global"
+        elif "全局" in mode:
             clash_mode = "global"
         elif "直连" in mode:
             clash_mode = "direct"
         else:
             clash_mode = "rule"
 
-        # MASQUE / 部分协议更依赖 IPv6 与 fake-ip DNS
-        proto = (node.get("protocol") or "").lower()
         need_v6 = proto in ("masque",) or (":" in str(node.get("address") or ""))
 
         rules = [
@@ -7123,7 +7127,7 @@ class App(ctk.CTk):
         mapped = (getattr(self, "core_map", {}) or {}).get(_p, "")
         self.log(f"节点协议 [{node.get('protocol')}] 映射={mapped or '自动'} → 实际核心 {core_name}")
         if (node.get("protocol") or "").lower() == "masque":
-            self.log("提示：MASQUE 节点需 Mihomo 核心；若启动失败请更新 Mihomo 到最新版")
+            self.log("提示：MASQUE 使用 Mihomo；为提高连通性将按全局代理生成配置")
             core_name = "Mihomo"
             self.proxy_core = core_name
 
