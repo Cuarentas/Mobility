@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.21.7"
+APP_VERSION = "0.21.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -861,7 +861,7 @@ class App(ctk.CTk):
         self.subscriptions = []
         self.test_timeout = DEFAULT_TEST_TIMEOUT
         self.connectivity_urls = list(DEFAULT_CONNECTIVITY_URLS)
-        self.group_nodes_by_sub = True
+        self.group_nodes_by_sub = False
         self.rule_set_urls = []
         self._drag_data = None
         self._pending_node = None
@@ -3078,7 +3078,7 @@ class App(ctk.CTk):
             return
         for n in nodes:
             if isinstance(n, dict) and not n.get("_group"):
-                n["_group"] = "当前订阅"
+                n["_group"] = n.get("group") or "手动导入"
         self.nodes = nodes
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
@@ -3723,7 +3723,7 @@ class App(ctk.CTk):
                 self.test_timeout = float(data.get("test_timeout") or DEFAULT_TEST_TIMEOUT)
             except Exception:
                 self.test_timeout = DEFAULT_TEST_TIMEOUT
-            self.group_nodes_by_sub = bool(data.get("group_nodes_by_sub", True))
+            self.group_nodes_by_sub = bool(data.get("group_nodes_by_sub", False))
             self.rule_set_urls = data.get("rule_set_urls") if isinstance(data.get("rule_set_urls"), list) else []
             cu = data.get("connectivity_urls")
             if isinstance(cu, list) and cu:
@@ -3876,6 +3876,16 @@ class App(ctk.CTk):
         if self.allow_lan:
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
+    def _toggle_group_collapse(self, name: str):
+        """点击分组标题折叠/展开。"""
+        if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+            self._collapsed_groups = set()
+        if name in self._collapsed_groups:
+            self._collapsed_groups.discard(name)
+        else:
+            self._collapsed_groups.add(name)
+        self.refresh_node_list(keep_selection=True, resort=False)
+
     def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
         """刷新节点列表：按订阅分组 + 拖拽排序。"""
         try:
@@ -3919,19 +3929,31 @@ class App(ctk.CTk):
             prev = self._selected_label if keep_selection else None
             shown = 0
             selected_btn = None
-            group_by = bool(getattr(self, "group_nodes_by_sub", True))
+            group_by = bool(getattr(self, "group_nodes_by_sub", False))
+            collapsed = getattr(self, "_collapsed_groups", None)
+            if not isinstance(collapsed, set):
+                collapsed = set()
+                self._collapsed_groups = collapsed
 
             display = []
-            if group_by:
-                groups, order = {}, []
-                for n in self.nodes:
-                    g = n.get("_group") or n.get("sub") or "未分组"
-                    if g not in groups:
-                        groups[g] = []
-                        order.append(g)
-                    groups[g].append(n)
+            groups, order = {}, []
+            for n in self.nodes:
+                g = (n.get("_group") or n.get("group") or n.get("sub") or "").strip() or "未分组"
+                if g not in groups:
+                    groups[g] = []
+                    order.append(g)
+                groups[g].append(n)
+
+            # 多订阅且开启分组时才显示分组标题；单一「未分组」不显示
+            show_headers = group_by and len(order) > 1
+            if group_by and len(order) == 1 and order[0] not in ("未分组",):
+                show_headers = True  # 单个真实订阅名也可显示，便于识别来源
+
+            if show_headers:
                 for g in order:
                     display.append(("group", g))
+                    if g in collapsed:
+                        continue
                     for n in groups[g]:
                         display.append(("node", n))
             else:
@@ -3940,11 +3962,22 @@ class App(ctk.CTk):
 
             for kind, payload in display:
                 if kind == "group":
-                    ctk.CTkLabel(
-                        self.node_list, text=f"▾ {payload}", anchor="w",
-                        font=("Microsoft YaHei UI", 12, "bold"),
+                    g = payload
+                    is_collapsed = g in collapsed
+                    mark = "▸" if is_collapsed else "▾"
+                    cnt = len(groups.get(g, []))
+                    hdr = ctk.CTkButton(
+                        self.node_list,
+                        text=f"{mark} {g}  ({cnt})",
+                        anchor="w",
+                        height=26,
+                        fg_color="transparent",
                         text_color=("#2563EB", "#93C5FD"),
-                    ).pack(fill="x", padx=6, pady=(8, 2))
+                        hover_color=("gray90", "gray25"),
+                        font=("Microsoft YaHei UI", 12, "bold"),
+                    )
+                    hdr.pack(fill="x", padx=4, pady=(6, 1))
+                    hdr.configure(command=lambda name=g: self._toggle_group_collapse(name))
                     continue
                 n = payload
                 try:
@@ -4208,6 +4241,13 @@ class App(ctk.CTk):
             except Exception as e:
                 self.log(f"  失败：{e}")
         self.nodes = all_nodes
+        # 多订阅时自动开启分组显示
+        try:
+            gset = set((n.get("_group") or "") for n in all_nodes if n.get("_group"))
+            if len(gset) > 1:
+                self.group_nodes_by_sub = True
+        except Exception:
+            pass
 
         def _ui():
             self.refresh_node_list(keep_selection=False)
@@ -4268,6 +4308,31 @@ class App(ctk.CTk):
             return
 
         count = len(self.nodes)
+        # 按当前订阅名写入分组
+        gname = None
+        try:
+            for s in self.subscriptions or []:
+                if (s.get("url") or "") == text:
+                    gname = s.get("name") or None
+                    break
+            if not gname:
+                try:
+                    gname = self.sub_select.get()
+                    if gname in ("", "（无订阅）"):
+                        gname = None
+                except Exception:
+                    gname = None
+            if not gname and text.startswith("http"):
+                from urllib.parse import urlparse
+                gname = (urlparse(text).netloc or "")[:24] or "订阅"
+            if not gname:
+                gname = "手动导入"
+            for n in self.nodes:
+                if isinstance(n, dict):
+                    n["_group"] = gname
+                    n["group"] = gname
+        except Exception:
+            pass
         # 所有 UI 操作丢回主线程
         def _ui_ok():
             try:
