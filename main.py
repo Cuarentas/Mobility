@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.4"
+APP_VERSION = "0.22.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -368,47 +368,55 @@ def ensure_mihomo(core_dir: Path, log_fn=None):
         return None
 
 
+
 def get_core_binary_version(exe_path, name_hint="") -> str:
     """尝试读取核心 exe 版本号。"""
     if not exe_path:
         return "未安装"
     try:
         path = Path(exe_path)
-        if not path.exists():
+        if not path.exists() or path.stat().st_size < 1000:
             return "未安装"
     except Exception:
         return "未安装"
+    hint = (name_hint or path.name or "").lower()
     try:
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        # 常见：version / -version / -v
-        for args in ([str(path), "version"], [str(path), "-version"], [str(path), "-v"]):
+        arg_lists = [
+            [str(path), "-v"],
+            [str(path), "version"],
+            [str(path), "-version"],
+            [str(path), "--version"],
+        ]
+        for args in arg_lists:
             try:
-                r = subprocess.run(args, capture_output=True, text=True, timeout=5, creationflags=flags)
-                out = (r.stdout or "") + (r.stderr or "")
-                out = out.strip()
+                r = subprocess.run(args, capture_output=True, text=True, timeout=6, creationflags=flags)
+                out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
                 if not out:
                     continue
-                # Xray: Xray 1.8.x / 26.x
-                m = re.search(r"Xray\s+([0-9.]+)", out, re.I)
-                if m:
-                    return m.group(1)
-                # sing-box: version x.y.z
-                m = re.search(r"version\s+([0-9.]+)", out, re.I)
-                if m:
-                    return m.group(1)
-                m = re.search(r"sing-box\s+.*?([0-9]+\.[0-9]+\.[0-9]+)", out, re.I)
-                if m:
-                    return m.group(1)
-                # mihomo / clash meta
-                m = re.search(r"(?:Mihomo|Clash)\s*(?:Meta)?\s*v?([0-9.]+)", out, re.I)
-                if m:
-                    return m.group(1)
-                m = re.search(r"\bv?([0-9]+\.[0-9]+\.[0-9]+)\b", out)
-                if m:
-                    return m.group(1)
-                # 取第一行截断
-                line = out.splitlines()[0].strip()
-                return line[:32] if line else "未知"
+                if "mihomo" in hint or "clash" in hint:
+                    patterns = [
+                        r"(?:Mihomo|Clash(?:\s*Meta)?)[^0-9\n]*v?([0-9]+\.[0-9]+\.[0-9]+(?:-[\w.]+)?)",
+                        r"\bv([0-9]+\.[0-9]+\.[0-9]+)\b",
+                        r"\b([0-9]+\.[0-9]+\.[0-9]+)\b",
+                    ]
+                elif "sing" in hint:
+                    patterns = [
+                        r"version\s+([0-9]+\.[0-9]+\.[0-9]+)",
+                        r"sing-box[^0-9\n]*([0-9]+\.[0-9]+\.[0-9]+)",
+                        r"\b([0-9]+\.[0-9]+\.[0-9]+)\b",
+                    ]
+                else:
+                    patterns = [
+                        r"Xray\s+([0-9.]+)",
+                        r"(?:Mihomo|Clash(?:\s*Meta)?)[^0-9\n]*v?([0-9]+\.[0-9]+\.[0-9]+)",
+                        r"version\s+([0-9]+\.[0-9]+\.[0-9]+)",
+                        r"\b([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)\b",
+                    ]
+                for pat in patterns:
+                    m = re.search(pat, out, re.I)
+                    if m and m.group(1) and m.group(1) not in (".", "0", "0.0"):
+                        return m.group(1)
             except Exception:
                 continue
     except Exception:
@@ -2705,38 +2713,30 @@ class App(ctk.CTk):
             self.log(f"打开关于失败：{e}")
 
     def open_core_update_dialog(self):
-        """二级窗口：显示本地版本，可选更新各核心。"""
+        """二级窗口：每核心「仅检查」+「更新」共 6 个按钮；打开时不联网、不跑版本对比。"""
         win = ctk.CTkToplevel(self)
         win.title("更新核心")
-        win.geometry("420x400")
+        win.geometry("400x460")
         win.transient(self)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
         try:
             win.grab_set()
         except Exception:
             pass
+
         ctk.CTkLabel(win, text="更新核心", font=("Microsoft YaHei UI", 16, "bold")).pack(
             anchor="w", padx=20, pady=(16, 4)
         )
-        tip = ctk.CTkLabel(
+        ctk.CTkLabel(
             win,
-            text="正在读取本地版本…",
+            text="打开本窗口不检查版本（避免卡顿）。\n「仅检查」：对比本地与最新版；「更新」：下载并替换。\n规则文件请使用主界面「更新规则」。",
             font=("Microsoft YaHei UI", 11),
             text_color=("gray40", "gray60"),
             justify="left",
-        )
-        tip.pack(anchor="w", padx=20, pady=(0, 8))
-
-        # 本地版本
-        xv = get_xray_version(getattr(self, "xray_path", None) or find_xray())
-        sv = get_core_binary_version(self.core_dir / "sing-box.exe", "sing-box")
-        mv = get_core_binary_version(self.core_dir / "mihomo.exe", "mihomo")
-        info = ctk.CTkLabel(
-            win,
-            text="本地版本\n  Xray：%s\n  sing-box：%s\n  Mihomo：%s\n\n规则文件请使用「更新规则」。" % (xv, sv, mv),
-            font=("Microsoft YaHei UI", 12),
-            justify="left",
-        )
-        info.pack(anchor="w", padx=20, pady=(0, 10))
+        ).pack(anchor="w", padx=20, pady=(0, 10))
 
         def run(fn):
             try:
@@ -2747,14 +2747,88 @@ class App(ctk.CTk):
 
         body = ctk.CTkFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=20)
-        for text, fn in (
-            ("检查并更新 Xray", self.update_xray_core),
-            ("检查并更新 sing-box", self.update_singbox_core),
-            ("检查并更新 Mihomo", self.update_mihomo_core),
-            ("检查并全部更新", self.update_all_cores),
-        ):
-            ctk.CTkButton(body, text=text, height=34, command=lambda f=fn: run(f)).pack(fill="x", pady=4)
+
+        rows = [
+            ("仅检查 Xray 版本", self.check_xray_version_only, "更新 Xray 核心", self.update_xray_core),
+            ("仅检查 sing-box 版本", self.check_singbox_version_only, "更新 sing-box 核心", self.update_singbox_core),
+            ("仅检查 Mihomo 版本", self.check_mihomo_version_only, "更新 Mihomo 核心", self.update_mihomo_core),
+        ]
+        for c1, f1, c2, f2 in rows:
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=4)
+            row.grid_columnconfigure(0, weight=1)
+            row.grid_columnconfigure(1, weight=1)
+            ctk.CTkButton(row, text=c1, height=34, command=lambda f=f1: run(f)).grid(
+                row=0, column=0, sticky="ew", padx=(0, 4)
+            )
+            ctk.CTkButton(row, text=c2, height=34, command=lambda f=f2: run(f)).grid(
+                row=0, column=1, sticky="ew", padx=(4, 0)
+            )
+
+        ctk.CTkButton(
+            body, text="全部更新三个核心", height=34,
+            fg_color="#2563EB", command=lambda: run(self.update_all_cores)
+        ).pack(fill="x", pady=(12, 4))
         ctk.CTkButton(win, text="关闭", width=90, command=win.destroy).pack(pady=10)
+
+    def check_xray_version_only(self):
+        self.log("检查 Xray 版本 ...")
+        try:
+            local = get_xray_version(getattr(self, "xray_path", None) or find_xray())
+            self.log("本地 Xray：%s" % local)
+            remote = fetch_xray_latest_version()
+            if remote:
+                self.log("最新 Xray：%s" % remote)
+                if local and local not in ("未知", "无", "未安装") and not version_newer(remote, local):
+                    self.log("Xray 已是最新版本（%s）" % local)
+                elif local and local not in ("未知", "无", "未安装"):
+                    self.log("发现新版本：%s → %s（可点「更新 Xray 核心」）" % (local, remote))
+                else:
+                    self.log("本地未检测到有效版本，可点「更新 Xray 核心」安装")
+            else:
+                self.log("无法获取 Xray 最新版本（网络或 GitHub 限制）")
+        except Exception as e:
+            self.log("检查 Xray 失败：%s" % e)
+
+    def check_singbox_version_only(self):
+        self.log("检查 sing-box 版本 ...")
+        try:
+            path = self.core_dir / "sing-box.exe"
+            local = get_core_binary_version(path, "sing-box") if path.exists() else "未安装"
+            self.log("本地 sing-box：%s" % local)
+            remote = fetch_singbox_latest_version()
+            if remote:
+                self.log("最新 sing-box：%s" % remote)
+                if local and local not in ("未知", "无", "未安装") and not version_newer(remote, local):
+                    self.log("sing-box 已是最新版本（%s）" % local)
+                elif local and local not in ("未知", "无", "未安装"):
+                    self.log("发现新版本：%s → %s（可点「更新 sing-box 核心」）" % (local, remote))
+                else:
+                    self.log("本地未安装，可点「更新 sing-box 核心」安装")
+            else:
+                self.log("无法获取 sing-box 最新版本")
+        except Exception as e:
+            self.log("检查 sing-box 失败：%s" % e)
+
+    def check_mihomo_version_only(self):
+        self.log("检查 Mihomo 版本 ...")
+        try:
+            path = self.core_dir / "mihomo.exe"
+            local = get_core_binary_version(path, "mihomo") if path.exists() else "未安装"
+            self.log("本地 Mihomo：%s" % local)
+            remote = fetch_mihomo_latest_version()
+            if remote:
+                self.log("最新 Mihomo：%s" % remote)
+                if local and local not in ("未知", "无", "未安装", ".") and not version_newer(remote, local):
+                    self.log("Mihomo 已是最新版本（%s）" % local)
+                elif local and local not in ("未知", "无", "未安装", "."):
+                    self.log("发现新版本：%s → %s（可点「更新 Mihomo 核心」）" % (local, remote))
+                else:
+                    self.log("本地未检测到有效版本，可点「更新 Mihomo 核心」安装")
+            else:
+                self.log("无法获取 Mihomo 最新版本")
+        except Exception as e:
+            self.log("检查 Mihomo 失败：%s" % e)
 
     def _stop_core_process(self, attr: str, name: str):
         try:
