@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.8"
+APP_VERSION = "0.23.9"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2702,6 +2702,12 @@ class App(ctk.CTk):
         if not nodes:
             self.log("未能从文件解析出节点（请确认是 Clash/URI/JSON/Surge 等文本格式）")
             return
+        group_name = "本地:" + Path(path).stem[:24]
+        for n in nodes:
+            if isinstance(n, dict):
+                n["_group"] = group_name
+                n["group"] = group_name
+        # 保留已有节点分组，新节点单独一组
         seen = set()
         merged = []
         for n in list(self.nodes or []) + nodes:
@@ -2711,7 +2717,8 @@ class App(ctk.CTk):
             if key in seen:
                 continue
             seen.add(key)
-            n["_group"] = n.get("_group") or ("本地:" + Path(path).name[:20])
+            if not n.get("_group") and not n.get("group"):
+                n["_group"] = "默认"
             merged.append(n)
         self.nodes = merged
         self.refresh_node_list(keep_selection=False)
@@ -5395,8 +5402,35 @@ class App(ctk.CTk):
                             time.sleep(1)
                         else:
                             raise last_err
-                self.nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
-                self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
+                new_nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
+                sub_name = "订阅"
+                try:
+                    # 当前选中的订阅名
+                    if getattr(self, "sub_select", None) is not None:
+                        sub_name = (self.sub_select.get() or "订阅").strip() or "订阅"
+                except Exception:
+                    pass
+                for n in new_nodes or []:
+                    if isinstance(n, dict):
+                        n["_group"] = sub_name
+                        n["group"] = sub_name
+                # 与其他分组合并，不覆盖本地组
+                seen = set()
+                merged = []
+                for n in list(self.nodes or []) + list(new_nodes or []):
+                    if not isinstance(n, dict):
+                        continue
+                    key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(n)
+                # 若用户是「加载」当前订阅，同名组先移除再写入，避免重复堆积
+                merged = [n for n in merged if (n.get("_group") or n.get("group")) != sub_name] + [
+                    n for n in (new_nodes or []) if isinstance(n, dict)
+                ]
+                self.nodes = merged
+                self.log(f"订阅解析完成：本组 {len(new_nodes or [])} 个，合计 {len(self.nodes)} 个（按订阅分组保留）")
             else:
                 self.subscription_url = ""
                 if "://" in text and "\n" not in text:
@@ -6776,13 +6810,12 @@ class App(ctk.CTk):
         proxy["name"] = pname
         mode = self.proxy_mode or "规则模式"
         proto = (node.get("protocol") or "").lower()
-        if proto == "masque" and "直连" not in (mode or ""):
-            clash_mode = "global"
-        elif "全局" in mode:
-            clash_mode = "global"
-        elif "直连" in mode:
+        # 注意：Clash/Mihomo 的 global 模式走内置 GLOBAL 组，不会用我们的 PROXY 组
+        # 因此用 rule + MATCH,PROXY 实现“全局走指定节点”
+        if "直连" in mode:
             clash_mode = "direct"
         else:
+            # 规则 / 全局 / MASQUE：统一 rule，靠 rules 决定
             clash_mode = "rule"
 
         need_v6 = proto in ("masque",) or (":" in str(node.get("address") or ""))
@@ -6795,17 +6828,17 @@ class App(ctk.CTk):
             "IP-CIDR,169.254.0.0/16,DIRECT",
             "IP-CIDR,224.0.0.0/4,DIRECT",
         ]
-        if clash_mode == "rule":
+        if clash_mode == "direct":
+            rules.append("MATCH,DIRECT")
+        elif "全局" in mode or proto == "masque":
+            # 全部走当前节点（等价全局，但走 PROXY 组）
+            rules.append("MATCH,PROXY")
+        else:
             rules.extend([
                 "GEOIP,private,DIRECT",
                 "GEOIP,CN,DIRECT",
                 "MATCH,PROXY",
             ])
-        elif clash_mode == "direct":
-            rules.append("MATCH,DIRECT")
-        else:
-            # global：仍保留内网直连，其余走代理
-            rules.append("MATCH,PROXY")
 
         cfg = {
             "mixed-port": int(http_port),
@@ -7148,7 +7181,7 @@ class App(ctk.CTk):
         mapped = (getattr(self, "core_map", {}) or {}).get(_p, "")
         self.log(f"节点协议 [{node.get('protocol')}] 映射={mapped or '自动'} → 实际核心 {core_name}")
         if (node.get("protocol") or "").lower() == "masque":
-            self.log("提示：MASQUE 使用 Mihomo；为提高连通性将按全局代理生成配置")
+            self.log("提示：MASQUE 使用 Mihomo；规则等价全局（MATCH→PROXY，避免 global 模式走错组）")
             core_name = "Mihomo"
             self.proxy_core = core_name
 
