@@ -51,7 +51,7 @@ DEFAULT_TUN_SETTINGS = {
 }
 
 CORE_OPTIONS = ["自动", "Xray", "sing-box", "Mihomo"]
-CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http"]
+CORE_PROTOCOLS = ["vmess", "vless", "trojan", "shadowsocks", "socks", "http", "hysteria2", "tuic"]
 # 默认「自动」：仅在选自动时由软件推荐；用户指定 Xray/sing-box/Mihomo 则严格使用
 DEFAULT_CORE_MAP = {p: "自动" for p in CORE_PROTOCOLS}
 PROXY_MODE_DEFAULT = "规则模式"
@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.6"
+APP_VERSION = "0.23.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -657,6 +657,76 @@ def parse_ss(link: str) -> dict | None:
         return None
 
 
+
+def parse_hysteria2(link: str) -> dict | None:
+    """解析 hysteria2:// 或 hy2:// 链接。"""
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        raw = link.strip()
+        if raw.startswith("hy2://"):
+            raw = "hysteria2://" + raw[6:]
+        u = urlparse(raw)
+        host = u.hostname
+        port = u.port or 443
+        if not host:
+            return None
+        password = unquote(u.username or "")
+        q = {k: (v[0] if v else "") for k, v in parse_qs(u.query).items()}
+        name = unquote(u.fragment) if u.fragment else ("%s:%s" % (host, port))
+        sni = q.get("sni") or q.get("peer") or host
+        insecure = str(q.get("insecure") or q.get("allowInsecure") or "0") in ("1", "true", "True")
+        obfs = q.get("obfs") or ""
+        obfs_password = q.get("obfs-password") or q.get("obfs_password") or ""
+        return {
+            "protocol": "hysteria2",
+            "name": name or host,
+            "address": host,
+            "port": int(port),
+            "password": password,
+            "sni": sni,
+            "insecure": insecure,
+            "obfs": obfs,
+            "obfs_password": obfs_password,
+            "network": "hysteria2",
+            "raw": link.strip(),
+        }
+    except Exception:
+        return None
+
+
+def parse_tuic(link: str) -> dict | None:
+    """解析 tuic:// 链接。"""
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        u = urlparse(link.strip())
+        host = u.hostname
+        port = u.port or 443
+        if not host:
+            return None
+        uuid = unquote(u.username or "")
+        password = unquote(u.password or "")
+        q = {k: (v[0] if v else "") for k, v in parse_qs(u.query).items()}
+        name = unquote(u.fragment) if u.fragment else ("%s:%s" % (host, port))
+        sni = q.get("sni") or host
+        return {
+            "protocol": "tuic",
+            "name": name or host,
+            "address": host,
+            "port": int(port),
+            "uuid": uuid,
+            "password": password,
+            "sni": sni,
+            "congestion_control": q.get("congestion_control") or q.get("cc") or "bbr",
+            "udp_relay_mode": q.get("udp_relay_mode") or "native",
+            "alpn": q.get("alpn") or "h3",
+            "allow_insecure": str(q.get("allow_insecure") or q.get("insecure") or "0") in ("1", "true", "True"),
+            "network": "tuic",
+            "raw": link.strip(),
+        }
+    except Exception:
+        return None
+
+
 def parse_link(link: str) -> dict | None:
     link = link.strip()
     if not link:
@@ -669,6 +739,10 @@ def parse_link(link: str) -> dict | None:
         return parse_trojan(link)
     if link.startswith("ss://"):
         return parse_ss(link)
+    if link.startswith("hysteria2://") or link.startswith("hy2://"):
+        return parse_hysteria2(link)
+    if link.startswith("tuic://"):
+        return parse_tuic(link)
     return None
 
 
@@ -686,10 +760,10 @@ def parse_subscription_content(content: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        if not line.startswith(("vmess://", "vless://", "trojan://", "ss://")):
+        if not line.startswith(("vmess://", "vless://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://")):
             try:
                 inner = b64_decode(line).strip()
-                if inner.startswith(("vmess://", "vless://", "trojan://", "ss://")):
+                if inner.startswith(("vmess://", "vless://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://")):
                     line = inner
             except Exception:
                 continue
@@ -1295,6 +1369,7 @@ class App(ctk.CTk):
         except Exception:
             pass
         self.log("Mobility 已启动")
+        self.log("第十六阶段：Hysteria2/TUIC · 托盘增强 · PAC加固 · 订阅重试")
         try:
             # 强制刷新右侧栏，减轻首次绘制发虚
             self.update_idletasks()
@@ -1481,6 +1556,8 @@ class App(ctk.CTk):
             "shadowsocks": "Shadowsocks",
             "socks": "Socks",
             "http": "HTTP",
+            "hysteria2": "Hysteria2",
+            "tuic": "TUIC",
         }
         combos = {}
         if not getattr(self, "core_map", None):
@@ -1560,17 +1637,12 @@ class App(ctk.CTk):
             proto = "shadowsocks"
         cmap = getattr(self, "core_map", None) or DEFAULT_CORE_MAP
         chosen = str(cmap.get(proto) or "自动").strip()
+        # Hysteria2 / TUIC 仅 sing-box 可出站
+        if proto in ("hysteria", "hysteria2", "hy2", "tuic"):
+            return "sing-box"
         if chosen in ("Xray", "sing-box", "Mihomo"):
             return chosen
-        # 自动推荐
-        if chosen not in ("自动", "auto", "Auto", ""):
-            # 未知值回退自动
-            pass
-        # 简单推荐：绝大多数协议 Xray；可按扩展调整
-        # hysteria / tuic 等若以后支持可走 sing-box / mihomo
-        name = (node.get("name") or "").lower()
-        network = (node.get("network") or "").lower()
-        if proto in ("hysteria", "hysteria2", "tuic", "wireguard"):
+        if proto in ("wireguard",):
             return "sing-box"
         return "Xray"
 
@@ -3986,13 +4058,16 @@ class App(ctk.CTk):
 
         menu = pystray.Menu(
             pystray.MenuItem("显示主窗口", self.tray_show_window, default=True),
-            pystray.MenuItem("启动代理", self.tray_start),
+            pystray.MenuItem("启动 / 重连", self.tray_start),
             pystray.MenuItem("停止代理", self.tray_stop),
+            pystray.MenuItem("重新连接当前节点", lambda: self.after(0, self._tray_reconnect)),
+            pystray.MenuItem("切换最低延迟节点", lambda: self.after(0, self._tray_select_best)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("切换：规则模式", lambda: self.after(0, lambda: self._tray_set_mode("规则模式"))),
             pystray.MenuItem("切换：全局模式", lambda: self.after(0, lambda: self._tray_set_mode("全局模式"))),
             pystray.MenuItem("切换：PAC模式", lambda: self.after(0, lambda: self._tray_set_mode("PAC模式"))),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("显示当前状态", lambda: self.after(0, self._tray_show_status)),
             pystray.MenuItem("清除系统代理", lambda: self.after(0, self._hotkey_clear_proxy)),
             pystray.MenuItem("退出", self.tray_quit),
         )
@@ -4032,6 +4107,50 @@ class App(ctk.CTk):
                     self.after(400, self.start_proxy_thread)
         except Exception as e:
             self.log("托盘切换模式失败：%s" % e)
+
+
+    def _tray_reconnect(self):
+        """托盘：停止后重连当前节点。"""
+        try:
+            if self.is_running:
+                self.stop_proxy()
+            self.after(400, self.start_proxy_thread)
+            self.log("托盘：重新连接当前节点")
+        except Exception as e:
+            self.log("托盘重连失败：%s" % e)
+
+    def _tray_select_best(self):
+        try:
+            if not self.nodes:
+                self.log("托盘：无节点，请先加载订阅")
+                return
+            self.select_best()
+            if self.is_running:
+                self._tray_reconnect()
+            else:
+                self.log("托盘：已切换到最低延迟节点（未启动，可点启动）")
+        except Exception as e:
+            self.log("托盘切换最快节点失败：%s" % e)
+
+    def _tray_show_status(self):
+        try:
+            st = "运行中" if self.is_running else "未运行"
+            node = getattr(self, "current_node", None) or {}
+            name = node.get("name") or "无"
+            lat = node.get("latency")
+            lat_s = "%sms" % lat if isinstance(lat, int) and lat >= 0 else "未测速"
+            mode = getattr(self, "proxy_mode", "")
+            core = getattr(self, "proxy_core", "")
+            msg = "%s | %s | %s | %s (%s)" % (st, mode, core, name, lat_s)
+            self.log("托盘状态：" + msg)
+            try:
+                if self.tray_icon:
+                    self.tray_icon.title = "Mobility - " + msg[:80]
+            except Exception:
+                pass
+        except Exception as e:
+            self.log("托盘状态失败：%s" % e)
+
 
     def save_settings(self):
         try:
@@ -4768,12 +4887,24 @@ class App(ctk.CTk):
                         nm = f"订阅{len(self.subscriptions)+1}"
                     self.subscriptions.append({"name": nm, "url": text})
                 self.log("正在拉取订阅...")
-                resp = requests.get(
-                    text,
-                    timeout=20,
-                    headers={"User-Agent": "Mozilla/5.0 Mobility/0.4"}
-                )
-                resp.raise_for_status()
+                last_err = None
+                resp = None
+                for attempt in range(2):
+                    try:
+                        resp = requests.get(
+                            text,
+                            timeout=20,
+                            headers={"User-Agent": "Mozilla/5.0 Mobility/0.4"}
+                        )
+                        resp.raise_for_status()
+                        break
+                    except Exception as e:
+                        last_err = e
+                        if attempt == 0:
+                            self.log("订阅拉取失败，1 秒后重试…")
+                            time.sleep(1)
+                        else:
+                            raise last_err
                 self.nodes = parse_subscription_content(resp.text)
                 self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
             else:
@@ -5223,26 +5354,34 @@ class App(ctk.CTk):
         return config_path
 
     def write_pac_file(self, port: int) -> Path:
-        """生成简易 PAC。"""
+        """生成更稳妥的 PAC：直连内网/常用国内域名，其余走代理。"""
+        pac_path = Path(getattr(self, "base_dir", Path("."))) / "mobility.pac"
         port = int(port)
-        lines = [
-            "// Mobility PAC",
-            "function FindProxyForURL(url, host) {",
-            '  if (isPlainHostName(host) || shExpMatch(host, "localhost") ||',
-            '      shExpMatch(host, "127.*") || shExpMatch(host, "10.*") ||',
-            '      shExpMatch(host, "192.168.*") || shExpMatch(host, "*.local"))',
-            '    return "DIRECT";',
-            '  if (shExpMatch(host, "*.cn") || shExpMatch(host, "*baidu.com") ||',
-            '      shExpMatch(host, "*qq.com") || shExpMatch(host, "*taobao.com") ||',
-            '      shExpMatch(host, "*aliyun.com") || shExpMatch(host, "*163.com"))',
-            '    return "DIRECT";',
-            '  return "PROXY 127.0.0.1:%d; DIRECT";' % port,
-            "}",
-            "",
-        ]
-        path = get_base_dir() / "mobility.pac"
-        path.write_text("\n".join(lines), encoding="utf-8")
-        return path
+        body = (
+            "function FindProxyForURL(url, host) {\n"
+            "  host = host.toLowerCase();\n"
+            "  if (isPlainHostName(host) || shExpMatch(host, \"localhost\") ||\n"
+            "      shExpMatch(host, \"127.*\") || shExpMatch(host, \"10.*\") ||\n"
+            "      shExpMatch(host, \"192.168.*\") || shExpMatch(host, \"172.16.*\") ||\n"
+            "      shExpMatch(host, \"172.17.*\") || shExpMatch(host, \"172.18.*\") ||\n"
+            "      shExpMatch(host, \"172.19.*\") || shExpMatch(host, \"172.2*.*\") ||\n"
+            "      shExpMatch(host, \"172.30.*\") || shExpMatch(host, \"172.31.*\") ||\n"
+            "      shExpMatch(host, \"*.local\") || shExpMatch(host, \"*.lan\"))\n"
+            "    return \"DIRECT\";\n"
+            "  if (shExpMatch(host, \"*.cn\") || shExpMatch(host, \"*.baidu.com\") ||\n"
+            "      shExpMatch(host, \"*.qq.com\") || shExpMatch(host, \"*.aliyun.com\") ||\n"
+            "      shExpMatch(host, \"*.taobao.com\") || shExpMatch(host, \"*.jd.com\") ||\n"
+            "      shExpMatch(host, \"*.163.com\") || shExpMatch(host, \"*.126.com\"))\n"
+            "    return \"DIRECT\";\n"
+            "  return \"PROXY 127.0.0.1:%d; DIRECT\";\n"
+            "}\n"
+        ) % port
+        try:
+            pac_path.write_text(body, encoding="utf-8")
+        except Exception:
+            pass
+        return pac_path
+
 
     def apply_system_proxy_for_mode(self, port: int) -> bool:
         mode = getattr(self, "proxy_mode", "") or ""
@@ -5788,6 +5927,48 @@ class App(ctk.CTk):
             "server_port": port,
         }
 
+        if proto in ("hysteria2", "hy2"):
+            outbound = {
+                "type": "hysteria2",
+                "tag": "proxy",
+                "server": server,
+                "server_port": port,
+                "password": node.get("password") or "",
+                "tls": {
+                    "enabled": True,
+                    "server_name": node.get("sni") or server,
+                    "insecure": bool(node.get("insecure")),
+                },
+            }
+            if node.get("obfs"):
+                outbound["obfs"] = {
+                    "type": node.get("obfs") or "salamander",
+                    "password": node.get("obfs_password") or "",
+                }
+            return outbound
+        if proto == "tuic":
+            alpn = node.get("alpn") or "h3"
+            if isinstance(alpn, str):
+                alpn_list = [a.strip() for a in alpn.split(",") if a.strip()]
+            else:
+                alpn_list = list(alpn) if alpn else ["h3"]
+            outbound = {
+                "type": "tuic",
+                "tag": "proxy",
+                "server": server,
+                "server_port": port,
+                "uuid": node.get("uuid") or "",
+                "password": node.get("password") or "",
+                "congestion_control": node.get("congestion_control") or "bbr",
+                "udp_relay_mode": node.get("udp_relay_mode") or "native",
+                "tls": {
+                    "enabled": True,
+                    "server_name": node.get("sni") or server,
+                    "insecure": bool(node.get("allow_insecure")),
+                    "alpn": alpn_list,
+                },
+            }
+            return outbound
         if proto == "trojan":
             outbound["password"] = node.get("password") or ""
         elif proto == "vmess":
