@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.2"
+APP_VERSION = "0.23.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -770,6 +770,221 @@ def parse_subscription_content(content: str) -> list[dict]:
         node = parse_link(line)
         if node and node.get("address"):
             nodes.append(node)
+    return nodes
+
+
+
+def _safe_yaml_unquote(s: str) -> str:
+    s = (s or "").strip()
+    if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        return s[1:-1]
+    return s
+
+
+def parse_clash_proxies(text: str) -> list:
+    """轻量解析 Clash YAML 中的 proxies 列表（不依赖 PyYAML）。"""
+    nodes = []
+    if not text or ("proxies:" not in text and "type:" not in text):
+        return nodes
+    import re as _re
+    blocks = _re.split(r"\n\s*-\s+", "\n" + text)
+    for block in blocks:
+        if "type:" not in block and "type :" not in block:
+            continue
+        fields = {}
+        for line in block.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k = k.strip().lstrip("- ").strip().lower()
+            v = _safe_yaml_unquote(v.strip())
+            if k:
+                fields[k] = v
+        typ = (fields.get("type") or "").lower()
+        server = fields.get("server") or fields.get("address") or ""
+        port = fields.get("port") or ""
+        name = fields.get("name") or server or "clash"
+        if not server or not port:
+            continue
+        try:
+            port_i = int(float(port))
+        except Exception:
+            continue
+        node = None
+        if typ == "trojan":
+            node = {"protocol": "trojan", "name": name, "address": server, "port": port_i,
+                    "password": fields.get("password") or "",
+                    "sni": fields.get("sni") or fields.get("servername") or server,
+                    "network": (fields.get("network") or "tcp").lower()}
+        elif typ == "vmess":
+            node = {"protocol": "vmess", "name": name, "address": server, "port": port_i,
+                    "uuid": fields.get("uuid") or fields.get("id") or "",
+                    "alterId": int(fields.get("alterid") or fields.get("aid") or 0),
+                    "security": fields.get("cipher") or fields.get("security") or "auto",
+                    "network": (fields.get("network") or "tcp").lower(),
+                    "path": fields.get("path") or "", "host": fields.get("host") or "",
+                    "tls": "tls" if str(fields.get("tls")).lower() in ("true", "tls", "1") else ""}
+        elif typ == "vless":
+            node = {"protocol": "vless", "name": name, "address": server, "port": port_i,
+                    "uuid": fields.get("uuid") or fields.get("id") or "",
+                    "flow": fields.get("flow") or "",
+                    "security": fields.get("security") or "tls",
+                    "network": (fields.get("network") or "tcp").lower(),
+                    "path": fields.get("path") or "", "host": fields.get("host") or "",
+                    "sni": fields.get("servername") or fields.get("sni") or "",
+                    "pbk": fields.get("public-key") or fields.get("pbk") or "",
+                    "sid": fields.get("short-id") or fields.get("sid") or "",
+                    "fp": fields.get("client-fingerprint") or fields.get("fp") or "chrome"}
+        elif typ in ("ss", "shadowsocks"):
+            node = {"protocol": "shadowsocks", "name": name, "address": server, "port": port_i,
+                    "method": fields.get("cipher") or fields.get("method") or "aes-256-gcm",
+                    "password": fields.get("password") or ""}
+        elif typ in ("hysteria2", "hy2"):
+            node = {"protocol": "hysteria2", "name": name, "address": server, "port": port_i,
+                    "password": fields.get("password") or fields.get("auth") or "",
+                    "sni": fields.get("sni") or server,
+                    "insecure": str(fields.get("skip-cert-verify")).lower() in ("true", "1")}
+        elif typ == "tuic":
+            node = {"protocol": "tuic", "name": name, "address": server, "port": port_i,
+                    "uuid": fields.get("uuid") or "", "password": fields.get("password") or "",
+                    "sni": fields.get("sni") or server,
+                    "congestion_control": fields.get("congestion-controller") or "bbr"}
+        if node:
+            nodes.append(node)
+    return nodes
+
+
+def parse_json_nodes(text: str) -> list:
+    nodes = []
+    try:
+        data = json.loads(text)
+    except Exception:
+        return nodes
+    outs = []
+    if isinstance(data, dict):
+        if isinstance(data.get("outbounds"), list):
+            outs = data["outbounds"]
+        elif isinstance(data.get("proxies"), list):
+            outs = data["proxies"]
+        elif data.get("type") and data.get("server"):
+            outs = [data]
+    elif isinstance(data, list):
+        outs = data
+    for o in outs:
+        if not isinstance(o, dict):
+            continue
+        typ = (o.get("type") or o.get("protocol") or "").lower()
+        if typ in ("direct", "block", "dns", "freedom", "blackhole", "api", "selector", "urltest"):
+            continue
+        server = o.get("server") or o.get("address") or ""
+        port = o.get("server_port") or o.get("port") or 0
+        name = o.get("tag") or o.get("name") or server or typ
+        if not server or not port:
+            try:
+                vnext = (o.get("settings") or {}).get("vnext") or []
+                if vnext:
+                    server = vnext[0].get("address")
+                    port = vnext[0].get("port")
+                    users = vnext[0].get("users") or [{}]
+                    uuid = users[0].get("id") or ""
+                    proto = (o.get("protocol") or typ or "vmess").lower()
+                    nodes.append({"protocol": proto, "name": str(name), "address": server,
+                                  "port": int(port), "uuid": uuid, "network": "tcp"})
+            except Exception:
+                pass
+            continue
+        try:
+            port = int(port)
+        except Exception:
+            continue
+        proto = "shadowsocks" if typ in ("ss", "shadowsocks") else typ
+        if proto == "hy2":
+            proto = "hysteria2"
+        if proto not in ("hysteria2", "tuic", "trojan", "vmess", "vless", "shadowsocks"):
+            continue
+        tls = o.get("tls") if isinstance(o.get("tls"), dict) else {}
+        nodes.append({
+            "protocol": proto, "name": str(name), "address": server, "port": port,
+            "password": o.get("password") or "", "uuid": o.get("uuid") or "",
+            "method": o.get("method") or o.get("cipher") or "",
+            "sni": tls.get("server_name") or o.get("sni") or server,
+            "flow": o.get("flow") or "",
+        })
+    return nodes
+
+
+def parse_surge_like(text: str) -> list:
+    nodes = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("[") or "=" not in line:
+            continue
+        name, rest = line.split("=", 1)
+        name = name.strip()
+        parts = [p.strip() for p in rest.split(",")]
+        if len(parts) < 3:
+            continue
+        typ = parts[0].lower()
+        server = parts[1]
+        try:
+            port = int(parts[2])
+        except Exception:
+            continue
+        kv = {}
+        for p in parts[3:]:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                kv[k.strip().lower()] = v.strip()
+        if typ == "trojan":
+            nodes.append({"protocol": "trojan", "name": name, "address": server, "port": port,
+                          "password": kv.get("password") or "", "sni": kv.get("sni") or server})
+        elif typ in ("ss", "shadowsocks"):
+            nodes.append({"protocol": "shadowsocks", "name": name, "address": server, "port": port,
+                          "method": kv.get("encrypt-method") or kv.get("method") or "aes-256-gcm",
+                          "password": kv.get("password") or ""})
+        elif typ == "vmess":
+            nodes.append({"protocol": "vmess", "name": name, "address": server, "port": port,
+                          "uuid": kv.get("uuid") or kv.get("password") or "",
+                          "alterId": int(kv.get("alterid") or 0), "network": kv.get("obfs") or "tcp"})
+        elif typ == "vless":
+            nodes.append({"protocol": "vless", "name": name, "address": server, "port": port,
+                          "uuid": kv.get("uuid") or "", "sni": kv.get("sni") or server})
+        elif typ in ("hysteria2", "hy2"):
+            nodes.append({"protocol": "hysteria2", "name": name, "address": server, "port": port,
+                          "password": kv.get("password") or "", "sni": kv.get("sni") or server})
+    return nodes
+
+
+def parse_nodes_any(text: str) -> list:
+    """统一入口：URI 订阅 / Clash / JSON / Surge 等。"""
+    text = (text or "").strip()
+    if not text:
+        return []
+    nodes = []
+    try:
+        nodes = parse_subscription_content(text)
+    except Exception:
+        nodes = []
+    if nodes:
+        return nodes
+    if text.startswith("{") or text.startswith("["):
+        nodes = parse_json_nodes(text)
+        if nodes:
+            return nodes
+    if "proxies:" in text or ("type:" in text and "server:" in text):
+        nodes = parse_clash_proxies(text)
+        if nodes:
+            return nodes
+    nodes = parse_surge_like(text)
+    if nodes:
+        return nodes
+    try:
+        i = text.find("{")
+        if i >= 0:
+            nodes = parse_json_nodes(text[i:])
+    except Exception:
+        pass
     return nodes
 
 
@@ -1999,11 +2214,13 @@ class App(ctk.CTk):
             "导入 / 二维码",
             [
                 ("从剪贴板导入", self.import_clipboard_thread),
+                ("从本地文件导入", self.import_local_nodes_dialog),
                 ("扫描屏幕二维码", self.scan_screen_qr_thread),
                 ("生成节点二维码", self.show_node_qr),
                 ("导出节点与设置", self.export_config_dialog),
                 ("导入节点与设置", self.import_config_dialog),
             ],
+
             getattr(self, "import_menu_btn", None),
         )
 
@@ -2272,6 +2489,47 @@ class App(ctk.CTk):
             self.log(f"已导出：{path}")
         except Exception as e:
             self.log(f"导出失败：{e}")
+
+    def import_local_nodes_dialog(self):
+        """从本地文件导入节点：支持 URI 订阅、Clash、V2Ray/sing-box JSON、Surge/Loon。"""
+        try:
+            from tkinter import filedialog
+        except Exception:
+            self.log("无法打开文件对话框")
+            return
+        path = filedialog.askopenfilename(
+            title="导入本地节点文件",
+            filetypes=[
+                ("节点/订阅文件", "*.txt *.yaml *.yml *.json *.conf *.list *.ini"),
+                ("全部文件", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            raw = Path(path).read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            self.log("读取文件失败：%s" % e)
+            return
+        nodes = parse_nodes_any(raw)
+        if not nodes:
+            self.log("未能从文件解析出节点（请确认是 Clash/URI/JSON/Surge 等文本格式）")
+            return
+        seen = set()
+        merged = []
+        for n in list(self.nodes or []) + nodes:
+            if not isinstance(n, dict):
+                continue
+            key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            n["_group"] = n.get("_group") or ("本地:" + Path(path).name[:20])
+            merged.append(n)
+        self.nodes = merged
+        self.refresh_node_list(keep_selection=False)
+        self.save_settings()
+        self.log("本地导入成功：%s 个节点（来自 %s）" % (len(nodes), Path(path).name))
 
     def import_config_dialog(self):
         try:
@@ -4947,7 +5205,7 @@ class App(ctk.CTk):
                             time.sleep(1)
                         else:
                             raise last_err
-                self.nodes = parse_subscription_content(resp.text)
+                self.nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
                 self.log(f"订阅解析完成，共 {len(self.nodes)} 个节点")
             else:
                 self.subscription_url = ""
@@ -5364,7 +5622,14 @@ class App(ctk.CTk):
 
 
         # Stats API 常驻（占用很小）；界面是否轮询由「实时统计」开关控制
-        api_port = int(getattr(self, "api_port", 10085))
+        try:
+            _sp, _hp = self.get_ports()
+            api_port = int(_hp) + 976
+            if api_port > 60000:
+                api_port = 10085
+            self.api_port = api_port
+        except Exception:
+            api_port = int(getattr(self, "api_port", 10085))
         config["stats"] = {}
         config["api"] = {"tag": "api", "services": ["StatsService", "HandlerService"]}
         config["policy"] = {
@@ -5754,6 +6019,43 @@ class App(ctk.CTk):
         h, r = divmod(secs, 3600)
         m, s = divmod(r, 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _probe_stats_api(self):
+        """启动后探测 Stats API 是否可用（只提示一次）。"""
+        try:
+            if getattr(self, "_stats_api_probed", False):
+                return
+            self._stats_api_probed = True
+            xray_exe = self.core_dir / "xray.exe"
+            if not xray_exe.exists() or not self.xray_process:
+                return
+            api_port = int(getattr(self, "api_port", 10085))
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.4)
+                ok = s.connect_ex(("127.0.0.1", api_port)) == 0
+                s.close()
+            except Exception:
+                ok = False
+            if not ok:
+                self.log("流量统计：API 端口 %s 未监听，统计可能为 0" % api_port)
+                return
+            r = subprocess.run(
+                [str(xray_exe), "api", "statsquery", "--server=127.0.0.1:%d" % api_port, "-pattern", "outbound"],
+                capture_output=True, text=True, timeout=2.5,
+                creationflags=flags, cwd=str(self.core_dir),
+            )
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            if r.returncode == 0 or "value" in out.lower() or ">>>" in out:
+                self.log("流量统计：Stats API 已就绪")
+            else:
+                self.log("流量统计：API 响应异常，界面速率可能为 0")
+        except Exception as e:
+            try:
+                self.log("流量统计探测失败：%s" % e)
+            except Exception:
+                pass
 
     def _query_xray_traffic(self):
         """返回 (uplink_bytes, downlink_bytes) 或 None。"""
@@ -6767,6 +7069,11 @@ class App(ctk.CTk):
                     text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
                 ))
                 self.log("代理已启动" + ("（sing-box TUN）" if getattr(self, "tun_enabled", False) else ""))
+                try:
+                    if not getattr(self, "tun_enabled", False):
+                        self.after(800, self._probe_stats_api)
+                except Exception:
+                    pass
                 if self.allow_lan and not getattr(self, "tun_enabled", False):
                     self.log(f"已允许局域网：其他设备可连 本机IP:{http_port} (HTTP) / {self.get_ports()[0]} (SOCKS)")
                 self._run_started_at = time.time()
@@ -6818,6 +7125,7 @@ class App(ctk.CTk):
             self.set_tray_state("disconnected")
         except Exception:
             pass
+        self._stats_api_probed = False
         self.log("代理已停止，系统代理已还原")
         # 恢复启动按钮
         try:
