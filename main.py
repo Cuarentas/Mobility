@@ -70,7 +70,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.22.2"
+APP_VERSION = "0.22.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -415,6 +415,30 @@ def get_core_binary_version(exe_path, name_hint="") -> str:
         pass
     return "未知"
 
+
+
+def fetch_github_latest_tag(repo: str) -> str:
+    """从 GitHub releases/latest 取 tag_name。"""
+    try:
+        api = "https://api.github.com/repos/%s/releases/latest" % repo
+        r = requests.get(api, timeout=20, headers={"User-Agent": "Mobility"})
+        r.raise_for_status()
+        tag = (r.json() or {}).get("tag_name") or ""
+        return str(tag).lstrip("vV").strip()
+    except Exception:
+        return ""
+
+
+def fetch_xray_latest_version() -> str:
+    return fetch_github_latest_tag("XTLS/Xray-core")
+
+
+def fetch_singbox_latest_version() -> str:
+    return fetch_github_latest_tag("SagerNet/sing-box")
+
+
+def fetch_mihomo_latest_version() -> str:
+    return fetch_github_latest_tag("MetaCubeX/mihomo")
 
 def get_xray_version(xray_path) -> str:
     if not xray_path:
@@ -2681,25 +2705,38 @@ class App(ctk.CTk):
             self.log(f"打开关于失败：{e}")
 
     def open_core_update_dialog(self):
-        """二级窗口：分别更新 Xray / sing-box / Mihomo，或全部更新。"""
+        """二级窗口：显示本地版本，可选更新各核心。"""
         win = ctk.CTkToplevel(self)
         win.title("更新核心")
-        win.geometry("380x320")
+        win.geometry("420x400")
         win.transient(self)
         try:
             win.grab_set()
         except Exception:
             pass
-        ctk.CTkLabel(win, text="选择要更新的核心", font=("Microsoft YaHei UI", 16, "bold")).pack(
-            anchor="w", padx=20, pady=(16, 6)
+        ctk.CTkLabel(win, text="更新核心", font=("Microsoft YaHei UI", 16, "bold")).pack(
+            anchor="w", padx=20, pady=(16, 4)
         )
-        ctk.CTkLabel(
+        tip = ctk.CTkLabel(
             win,
-            text="建议先停止代理再更新，避免文件被占用。\n规则文件（geoip/geosite）请用「更新规则」。",
+            text="正在读取本地版本…",
             font=("Microsoft YaHei UI", 11),
             text_color=("gray40", "gray60"),
             justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 10))
+        )
+        tip.pack(anchor="w", padx=20, pady=(0, 8))
+
+        # 本地版本
+        xv = get_xray_version(getattr(self, "xray_path", None) or find_xray())
+        sv = get_core_binary_version(self.core_dir / "sing-box.exe", "sing-box")
+        mv = get_core_binary_version(self.core_dir / "mihomo.exe", "mihomo")
+        info = ctk.CTkLabel(
+            win,
+            text="本地版本\n  Xray：%s\n  sing-box：%s\n  Mihomo：%s\n\n规则文件请使用「更新规则」。" % (xv, sv, mv),
+            font=("Microsoft YaHei UI", 12),
+            justify="left",
+        )
+        info.pack(anchor="w", padx=20, pady=(0, 10))
 
         def run(fn):
             try:
@@ -2711,20 +2748,19 @@ class App(ctk.CTk):
         body = ctk.CTkFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=20)
         for text, fn in (
-            ("更新 Xray", self.update_xray_core),
-            ("更新 sing-box", self.update_singbox_core),
-            ("更新 Mihomo", self.update_mihomo_core),
-            ("全部更新（三个核心）", self.update_all_cores),
+            ("检查并更新 Xray", self.update_xray_core),
+            ("检查并更新 sing-box", self.update_singbox_core),
+            ("检查并更新 Mihomo", self.update_mihomo_core),
+            ("检查并全部更新", self.update_all_cores),
         ):
-            ctk.CTkButton(body, text=text, height=36, command=lambda f=fn: run(f)).pack(fill="x", pady=5)
-        ctk.CTkButton(win, text="关闭", width=90, command=win.destroy).pack(pady=12)
+            ctk.CTkButton(body, text=text, height=34, command=lambda f=fn: run(f)).pack(fill="x", pady=4)
+        ctk.CTkButton(win, text="关闭", width=90, command=win.destroy).pack(pady=10)
 
     def _stop_core_process(self, attr: str, name: str):
-        """停止指定核心进程，便于覆盖 exe。"""
         try:
             proc = getattr(self, attr, None)
             if proc is not None and proc.poll() is None:
-                self.log(f"检测到 {name} 正在运行，先停止...")
+                self.log("检测到 %s 正在运行，先停止..." % name)
                 try:
                     proc.terminate()
                 except Exception:
@@ -2737,12 +2773,6 @@ class App(ctk.CTk):
                     except Exception:
                         pass
                 setattr(self, attr, None)
-                if attr == "xray_process":
-                    self.is_running = False
-                    try:
-                        self.after(0, self.restore_proxy_backup)
-                    except Exception:
-                        pass
                 time.sleep(0.35)
         except Exception:
             pass
@@ -2756,14 +2786,14 @@ class App(ctk.CTk):
                 try:
                     dest.unlink()
                 except PermissionError:
-                    self.log(f"{label} 仍被占用，请先点「停止」再更新")
-                    self.log(f"已另存为 {tmp_exe.name}")
+                    self.log("%s 仍被占用，请先点「停止」再更新" % label)
+                    self.log("已另存为 %s" % tmp_exe.name)
                     return False
             tmp_exe.replace(dest)
-            self.log(f"{label} 已更新")
+            self.log("%s 已更新" % label)
             return True
         except Exception as e:
-            self.log(f"写入 {label} 失败：{e}")
+            self.log("写入 %s 失败：%s" % (label, e))
             return False
 
     def _with_proxy_env(self, fn):
@@ -2786,9 +2816,58 @@ class App(ctk.CTk):
             else:
                 os.environ["HTTPS_PROXY"] = _old_https
 
-    def update_xray_core(self):
-        self.log("开始更新 Xray 核心 ...")
+    def _capture_running_state(self) -> bool:
+        return bool(getattr(self, "is_running", False))
+
+    def _restore_running_state(self, was_running: bool):
+        """更新核心后恢复原先代理开关状态。"""
+        if getattr(self, "_skip_core_restore", False):
+            return
+        if not was_running:
+            try:
+                self.after(0, lambda: self.status_label.configure(
+                    text="未运行", font=("Microsoft YaHei UI", 14, "bold"),
+                    text_color=("#DC2626", "#F87171")))
+            except Exception:
+                pass
+            return
+        self.log("更新前代理为开启状态，正在自动重新启动...")
         try:
+            self.after(0, self.start_proxy_thread)
+        except Exception:
+            try:
+                self.start_proxy_thread()
+            except Exception as e:
+                self.log("自动重新启动失败：%s" % e)
+
+    def update_xray_core(self):
+        was = self._capture_running_state()
+        self.log("检查 Xray 版本 ...")
+        try:
+            local = get_xray_version(getattr(self, "xray_path", None) or find_xray())
+            self.log("本地 Xray：%s" % local)
+            # 检查远端可用代理
+            remote = ""
+            try:
+                px = self.get_download_proxies()
+                api = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+                if px:
+                    r = requests.get(api, timeout=20, headers={"User-Agent": "Mobility"}, proxies=px)
+                else:
+                    r = requests.get(api, timeout=20, headers={"User-Agent": "Mobility"})
+                r.raise_for_status()
+                remote = str((r.json() or {}).get("tag_name") or "").lstrip("vV")
+            except Exception:
+                remote = fetch_xray_latest_version()
+            if remote:
+                self.log("最新 Xray：%s" % remote)
+            if remote and local and local not in ("未知", "无") and not version_newer(remote, local):
+                self.log("Xray 已是最新版本（%s），无需更新" % local)
+                self._restore_running_state(was)
+                return
+            if not remote:
+                self.log("无法获取远端版本，继续尝试下载最新包 ...")
+
             import tempfile, zipfile
             url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
             tmp = Path(tempfile.gettempdir()) / "xray_update.zip"
@@ -2798,6 +2877,12 @@ class App(ctk.CTk):
             core_dir = Path(get_base_dir()) / "core"
             core_dir.mkdir(parents=True, exist_ok=True)
             self._stop_core_process("xray_process", "Xray")
+            if was:
+                self.is_running = False
+                try:
+                    self.after(0, self.restore_proxy_backup)
+                except Exception:
+                    pass
             try:
                 self.kill_stale_core_processes()
             except Exception:
@@ -2807,67 +2892,113 @@ class App(ctk.CTk):
                     if name.lower().endswith("xray.exe"):
                         self._replace_exe(core_dir / "xray.exe", zf.read(name), "xray.exe")
                         break
+            new_v = get_xray_version(core_dir / "xray.exe")
+            self._xray_ver = new_v
+            self.log("当前 Xray 版本：%s" % new_v)
             try:
-                self.refresh_version_label("Xray")
+                self.after(0, lambda: self.refresh_version_label("Xray"))
             except Exception:
                 pass
             self.log("Xray 核心更新流程结束")
         except Exception as e:
             self.log("更新 Xray 失败：%s" % e)
+        self._restore_running_state(was)
 
     def update_singbox_core(self):
-        self.log("开始更新 sing-box 核心 ...")
+        was = self._capture_running_state()
+        self.log("检查 sing-box 版本 ...")
         try:
+            path = self.core_dir / "sing-box.exe"
+            local = get_core_binary_version(path, "sing-box")
+            self.log("本地 sing-box：%s" % local)
+            remote = fetch_singbox_latest_version()
+            if remote:
+                self.log("最新 sing-box：%s" % remote)
+            if remote and local and local not in ("未知", "无") and not version_newer(remote, local):
+                self.log("sing-box 已是最新版本（%s），无需更新" % local)
+                self._restore_running_state(was)
+                return
             self._stop_core_process("singbox_process", "sing-box")
-            dest = self.core_dir / "sing-box.exe"
-            if dest.exists():
+            if was:
+                self.is_running = False
                 try:
-                    dest.unlink()
+                    self.after(0, self.restore_proxy_backup)
                 except Exception:
                     pass
-
-            def _do():
-                ensure_singbox(self.core_dir, log_fn=self.log)
-
-            self._with_proxy_env(_do)
+            if path.exists():
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+            self._with_proxy_env(lambda: ensure_singbox(self.core_dir, log_fn=self.log))
+            new_v = get_core_binary_version(self.core_dir / "sing-box.exe", "sing-box")
+            self.log("当前 sing-box 版本：%s" % new_v)
             try:
-                self.refresh_version_label("sing-box")
+                self.after(0, lambda: self.refresh_version_label("sing-box"))
             except Exception:
                 pass
             self.log("sing-box 核心更新流程结束")
         except Exception as e:
             self.log("更新 sing-box 失败：%s" % e)
+        self._restore_running_state(was)
 
     def update_mihomo_core(self):
-        self.log("开始更新 Mihomo 核心 ...")
+        was = self._capture_running_state()
+        self.log("检查 Mihomo 版本 ...")
         try:
+            path = self.core_dir / "mihomo.exe"
+            local = get_core_binary_version(path, "mihomo")
+            self.log("本地 Mihomo：%s" % local)
+            remote = fetch_mihomo_latest_version()
+            if remote:
+                self.log("最新 Mihomo：%s" % remote)
+            if remote and local and local not in ("未知", "无") and not version_newer(remote, local):
+                self.log("Mihomo 已是最新版本（%s），无需更新" % local)
+                self._restore_running_state(was)
+                return
             self._stop_core_process("mihomo_process", "Mihomo")
-            dest = self.core_dir / "mihomo.exe"
-            if dest.exists():
+            if was:
+                self.is_running = False
                 try:
-                    dest.unlink()
+                    self.after(0, self.restore_proxy_backup)
                 except Exception:
                     pass
-
-            def _do():
-                ensure_mihomo(self.core_dir, log_fn=self.log)
-
-            self._with_proxy_env(_do)
+            if path.exists():
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+            self._with_proxy_env(lambda: ensure_mihomo(self.core_dir, log_fn=self.log))
+            new_v = get_core_binary_version(self.core_dir / "mihomo.exe", "mihomo")
+            self.log("当前 Mihomo 版本：%s" % new_v)
             try:
-                self.refresh_version_label("Mihomo")
+                self.after(0, lambda: self.refresh_version_label("Mihomo"))
             except Exception:
                 pass
             self.log("Mihomo 核心更新流程结束")
         except Exception as e:
             self.log("更新 Mihomo 失败：%s" % e)
+        self._restore_running_state(was)
 
     def update_all_cores(self):
-        """仅更新三个核心，不更新 Geo 规则。"""
-        self.log("开始全部更新核心（Xray / sing-box / Mihomo）...")
-        self.update_xray_core()
-        self.update_singbox_core()
-        self.update_mihomo_core()
-        self.log("全部核心更新流程结束（规则文件请使用「更新规则」）")
+        was = self._capture_running_state()
+        self.log("开始检查并全部更新核心 ...")
+        # 内部各自会 restore，这里统一只恢复一次
+        # 临时禁用子函数的 restore：用 was=False 传入逻辑 — 改为顺序调用后统一恢复
+        def _run_one(fn):
+            # monkey: capture and force no restore inside by setting flag
+            pass
+        # 直接调用但先关掉各自 restore：简化为调用并忽略它们的 was
+        # 重写：各 update_* 已带 restore，全部更新时避免三次重启
+        self._skip_core_restore = True
+        try:
+            self.update_xray_core()
+            self.update_singbox_core()
+            self.update_mihomo_core()
+        finally:
+            self._skip_core_restore = False
+        self.log("全部核心检查/更新结束（规则请用「更新规则」）")
+        self._restore_running_state(was)
 
     def update_core_thread(self):
         # 兼容旧入口：打开选择对话框
