@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.23.1"
+APP_VERSION = "0.23.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -3262,7 +3262,7 @@ class App(ctk.CTk):
                     if getattr(self, "_log_autoscroll", True):
                         now = time.time()
                         last = getattr(self, "_log_scroll_ts", 0) or 0
-                        if now - last >= 0.12:
+                        if now - last >= 0.25:
                             self._log_scroll_ts = now
                             self.log_box.see("end")
                     try:
@@ -3319,37 +3319,79 @@ class App(ctk.CTk):
 
     def check_update(self):
         self.log("正在检查更新...")
-        self.log(f"当前软件版本：v{APP_VERSION}")
+        self.log("当前软件版本：v%s" % APP_VERSION)
+        tag = ""
+        url = "https://github.com/%s/releases" % GITHUB_REPO
         try:
-            api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            r = requests.get(api, timeout=15, headers={"User-Agent": "Mobility-Client"})
-            if r.status_code == 404:
+            headers = {
+                "User-Agent": "Mobility-Client",
+                "Accept": "application/vnd.github+json",
+            }
+            proxies = None
+            try:
+                proxies = self.get_download_proxies()
+            except Exception:
+                proxies = None
+            api = "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPO
+            r = None
+            try:
+                r = requests.get(api, timeout=15, headers=headers, proxies=proxies)
+            except Exception:
+                r = None
+            if r is not None and r.status_code == 200:
+                data = r.json()
+                tag = data.get("tag_name") or data.get("name") or ""
+                url = data.get("html_url") or url
+            elif r is not None and r.status_code == 403:
+                self.log("GitHub API 访问受限（限流），改用发布页检测...")
+            elif r is not None and r.status_code == 404:
                 self.log("未找到 Release，请确认仓库已发布版本")
                 return
-            r.raise_for_status()
-            data = r.json()
-            tag = data.get("tag_name") or data.get("name") or ""
-            url = data.get("html_url") or ""
-            self.log(f"仓库最新版本：{tag}")
+
+            if not tag:
+                try:
+                    page = "https://github.com/%s/releases/latest" % GITHUB_REPO
+                    rr = requests.get(
+                        page, timeout=15, headers={"User-Agent": "Mobility-Client"},
+                        proxies=proxies, allow_redirects=True,
+                    )
+                    final = str(rr.url or "")
+                    m = re.search(r"/releases/tag/([^/\s?#]+)", final)
+                    if m:
+                        tag = m.group(1)
+                        url = final
+                    elif rr.status_code == 200:
+                        m2 = re.search(r"/releases/tag/([vV0-9][^\"'/\s]*)", rr.text or "")
+                        if m2:
+                            tag = m2.group(1)
+                except Exception as e2:
+                    self.log("发布页检测失败：%s" % e2)
+
+            if not tag:
+                self.log("检查更新失败：无法获取版本（可开启代理后重试，或稍后再试）")
+                return
+
+            self.log("仓库最新版本：%s" % tag)
             if version_newer(tag, APP_VERSION):
                 self.log("发现新版本，请到 GitHub Releases 下载更新")
                 if url:
-                    self.log(f"发布页面：{url}")
+                    self.log("发布页面：%s" % url)
                     try:
                         import webbrowser
                         webbrowser.open(url)
                     except Exception:
                         pass
-                for a in data.get("assets") or []:
-                    if a.get("name"):
-                        self.log(f"  资源：{a['name']}")
             else:
                 if version_newer(APP_VERSION, tag):
-                    self.log(f"本地版本 v{APP_VERSION} 新于仓库 v{str(tag).lstrip('v')}")
+                    self.log("本地版本 v%s 新于仓库 %s" % (APP_VERSION, str(tag).lstrip("v")))
                 else:
                     self.log("当前已是最新版本")
         except Exception as e:
-            self.log(f"检查更新失败：{e}")
+            msg = str(e)
+            if "403" in msg or "rate limit" in msg.lower():
+                self.log("检查更新失败：GitHub 限流，请稍后再试或先启动代理后重试")
+            else:
+                self.log("检查更新失败：%s" % e)
 
     def startup(self):
         """分阶段启动，减轻首屏卡顿。"""
@@ -5326,6 +5368,12 @@ class App(ctk.CTk):
         config["stats"] = {}
         config["api"] = {"tag": "api", "services": ["StatsService", "HandlerService"]}
         config["policy"] = {
+            "levels": {
+                "0": {
+                    "statsUserUplink": True,
+                    "statsUserDownlink": True,
+                }
+            },
             "system": {
                 "statsOutboundUplink": True,
                 "statsOutboundDownlink": True,
@@ -5719,85 +5767,79 @@ class App(ctk.CTk):
             api_port = int(getattr(self, "api_port", 10085))
             import re as _re
 
-            def _parse_value(out: str) -> int:
-                out = out or ""
+            def _run(args):
+                try:
+                    r = subprocess.run(
+                        args, capture_output=True, text=True, timeout=1.8,
+                        creationflags=flags, cwd=str(self.core_dir),
+                    )
+                    return ((r.stdout or "") + (r.stderr or "")).strip()
+                except Exception:
+                    return ""
+
+            def _val_from_text(out):
+                if not out:
+                    return 0
                 for line in out.splitlines():
                     if "value" in line.lower():
                         ms = _re.findall(r"(-?\d+)", line)
                         if ms:
                             return max(0, int(ms[-1]))
-                ms = _re.findall(r"\b(\d{2,})\b", out)
-                if ms:
-                    return max(0, int(ms[-1]))
-                return 0
+                ms = _re.findall(r"\b(\d+)\b", out)
+                return max(0, int(ms[-1])) if ms else 0
 
-            def _one(name: str) -> int:
-                cmds = [
-                    [str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name=%s" % name],
-                    [str(xray_exe), "api", "stats", "--server=127.0.0.1:%d" % api_port, "-name", name],
-                ]
-                for cmd in cmds:
-                    try:
-                        r = subprocess.run(
-                            cmd, capture_output=True, text=True, timeout=2.0,
-                            creationflags=flags, cwd=str(self.core_dir),
-                        )
-                        out = (r.stdout or "") + (r.stderr or "")
-                        val = _parse_value(out)
-                        if val > 0 or "value" in out.lower():
-                            return val
-                    except Exception:
-                        continue
-                return 0
+            def _one(name):
+                out = _run([
+                    str(xray_exe), "api", "stats",
+                    "--server=127.0.0.1:%d" % api_port, "-name", name,
+                ])
+                if not out:
+                    out = _run([
+                        str(xray_exe), "api", "stats",
+                        "--server=127.0.0.1:%d" % api_port, "-name=%s" % name,
+                    ])
+                return _val_from_text(out)
 
-            def _query_all():
-                up = down = 0
-                try:
-                    r = subprocess.run(
-                        [str(xray_exe), "api", "statsquery",
-                         "--server=127.0.0.1:%d" % api_port, "-pattern", ""],
-                        capture_output=True, text=True, timeout=2.5,
-                        creationflags=flags, cwd=str(self.core_dir),
-                    )
-                    out = (r.stdout or "") + (r.stderr or "")
-                    for m in _re.finditer(
-                        r"(outbound>>>proxy>>>uplink|outbound>>>proxy>>>downlink)[^\d]*(\d+)",
-                        out, _re.I,
-                    ):
-                        if "uplink" in m.group(1).lower():
-                            up = max(up, int(m.group(2)))
-                        else:
-                            down = max(down, int(m.group(2)))
-                    # 名称/值分行
-                    cur = ""
-                    for line in out.splitlines():
-                        if ">>>" in line and "name" in line.lower():
-                            cur = line
-                        elif "value" in line.lower() and cur:
-                            ms = _re.findall(r"(\d+)", line)
-                            if not ms:
-                                continue
-                            v = int(ms[-1])
-                            if "proxy>>>uplink" in cur.lower():
-                                up = max(up, v)
-                            elif "proxy>>>downlink" in cur.lower():
-                                down = max(down, v)
+            up = down = 0
+            out = _run([
+                str(xray_exe), "api", "statsquery",
+                "--server=127.0.0.1:%d" % api_port, "-pattern", "",
+            ])
+            if out:
+                up_p = down_p = up_i = down_i = 0
+                cur = ""
+                for line in out.splitlines():
+                    low = line.lower()
+                    if ">>>" in line:
+                        cur = low
+                    if "value" in low and cur:
+                        ms = _re.findall(r"(\d+)", line)
+                        if not ms:
                             cur = ""
-                except Exception:
-                    pass
-                return up, down
+                            continue
+                        v = int(ms[-1])
+                        if "outbound>>>proxy>>>uplink" in cur:
+                            up_p = max(up_p, v)
+                        elif "outbound>>>proxy>>>downlink" in cur:
+                            down_p = max(down_p, v)
+                        elif "inbound>>>socks>>>uplink" in cur or "inbound>>>http>>>uplink" in cur:
+                            up_i += v
+                        elif "inbound>>>socks>>>downlink" in cur or "inbound>>>http>>>downlink" in cur:
+                            down_i += v
+                        cur = ""
+                if up_p or down_p:
+                    up, down = up_p, down_p
+                elif up_i or down_i:
+                    up, down = up_i, down_i
 
-            up, down = _query_all()
             if up == 0 and down == 0:
-                up = _one("outbound>>>proxy>>>uplink")
-                down = _one("outbound>>>proxy>>>downlink")
-            if getattr(self, "tun_enabled", False):
-                up = max(up, _one("inbound>>>tun-in>>>uplink"))
-                down = max(down, _one("inbound>>>tun-in>>>downlink"))
+                for n in ("outbound>>>proxy>>>uplink", "inbound>>>socks>>>uplink", "inbound>>>http>>>uplink"):
+                    up = max(up, _one(n))
+                for n in ("outbound>>>proxy>>>downlink", "inbound>>>socks>>>downlink", "inbound>>>http>>>downlink"):
+                    down = max(down, _one(n))
             return up, down
         except Exception:
             return None
-
 
 
     def _xray_memory_mb(self) -> str:
@@ -5947,7 +5989,7 @@ class App(ctk.CTk):
                     self.stat_mem_label.configure(text="内存 --")
         except Exception:
             pass
-        self.after(2000 if getattr(self, "live_stats_enabled", True) else 8000, self.update_home_stats)
+        self.after(3500 if getattr(self, "live_stats_enabled", True) else 10000, self.update_home_stats)
 
 
 
