@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.6"
+APP_VERSION = "0.24.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -7172,13 +7172,12 @@ class App(ctk.CTk):
                 "ipv6": False,
                 "enhanced-mode": "redir-host",
                 "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-                "nameserver": ["223.5.5.5", "119.29.29.29"],
-                "fallback": ["1.1.1.1", "8.8.8.8"],
-                "fallback-filter": {"geoip": True, "geoip-code": "CN", "geosite": ["gfw"]},
+                "nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
                 "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29"],
                 "nameserver-policy": {
                     "geosite:cn": ["223.5.5.5", "119.29.29.29"],
                     "geosite:private": ["223.5.5.5"],
+                    "+.cn": ["223.5.5.5", "119.29.29.29"],
                 },
             },
             "proxies": [proxy],
