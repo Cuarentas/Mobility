@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.3"
+APP_VERSION = "0.24.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1667,6 +1667,34 @@ class App(ctk.CTk):
                 child.destroy()
         except Exception:
             pass
+
+    def _update_node_latency_labels(self):
+        """测速后只更新按钮文字，不销毁重建列表。"""
+        try:
+            meta = getattr(self, "_node_row_meta", None) or []
+            for item in meta:
+                n = item.get("node")
+                btn = item.get("btn")
+                if not n or not btn:
+                    continue
+                try:
+                    lb = node_label(n)
+                except Exception:
+                    lb = n.get("name") or "节点"
+                n["_label"] = lb
+                try:
+                    btn.configure(text=lb)
+                except Exception:
+                    pass
+            try:
+                self._paint_node_buttons()
+            except Exception:
+                pass
+        except Exception:
+            try:
+                self.refresh_node_list(keep_selection=True, resort=False)
+            except Exception:
+                pass
 
     def _paint_node_buttons(self):
         """只高亮：一个预选（蓝）+ 一个已确认（橙）；按节点唯一键匹配，不按显示文本。"""
@@ -4648,9 +4676,31 @@ class App(ctk.CTk):
 
     def tray_show_window(self, icon=None, item=None):
         def _do():
-            self.deiconify()
-            self.lift()
-            self.focus_force()
+            try:
+                self.deiconify()
+            except Exception:
+                pass
+            try:
+                w = int(self.winfo_width() or 0)
+                h = int(self.winfo_height() or 0)
+                if w < 500 or h < 400:
+                    self.geometry("1100x720")
+            except Exception:
+                try:
+                    self.geometry("1100x720")
+                except Exception:
+                    pass
+            try:
+                self.lift()
+                self.focus_force()
+                self.attributes("-topmost", True)
+                self.after(180, lambda: self.attributes("-topmost", False))
+            except Exception:
+                pass
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
         self.after(0, _do)
 
     def tray_start(self, icon=None, item=None):
@@ -5072,8 +5122,44 @@ class App(ctk.CTk):
             self._collapsed_groups.add(name)
         self.refresh_node_list(keep_selection=True, resort=False)
 
+    def _on_group_header_click(self, name: str):
+        """单击分组栏：展开该组并测速该组。"""
+        if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+            self._collapsed_groups = set()
+        self._collapsed_groups.discard(name)
+        self._active_test_group = name
+        self._last_tested_group = name
+        try:
+            self.refresh_node_list(keep_selection=True, resort=False)
+        except Exception:
+            pass
+        if getattr(self, "is_testing", False):
+            self.log("正在测速中，请稍候...")
+            return
+        self.log("点击分组「%s」— 开始测速该组" % name)
+        Thread(target=lambda n=name: self.test_all(only_filtered=False, only_group=n), daemon=True).start()
+
     def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
         """刷新节点列表：按订阅分组 + 拖拽排序。"""
+        try:
+            import time as _t
+            now = _t.time()
+            last = float(getattr(self, "_last_refresh_ts", 0) or 0)
+            if (now - last) < 0.4 and not resort:
+                self._refresh_pending = (keep_selection, resort)
+                if not getattr(self, "_refresh_scheduled", False):
+                    self._refresh_scheduled = True
+                    def _later():
+                        self._refresh_scheduled = False
+                        pend = getattr(self, "_refresh_pending", None)
+                        if pend is not None:
+                            self._refresh_pending = None
+                            self.refresh_node_list(pend[0], pend[1])
+                    self.after(450, _later)
+                return
+            self._last_refresh_ts = now
+        except Exception:
+            pass
         try:
             nodes = list(self.nodes or [])
             self.clear_node_list_ui()
@@ -5176,7 +5262,7 @@ class App(ctk.CTk):
                         font=("Microsoft YaHei UI", 12, "bold"),
                     )
                     hdr.pack(fill="x", padx=4, pady=(6, 1))
-                    hdr.configure(command=lambda name=g: self._toggle_group_collapse(name))
+                    hdr.configure(command=lambda name=g: self._on_group_header_click(name))
                     continue
                 n = payload
                 try:
@@ -5700,7 +5786,10 @@ class App(ctk.CTk):
                 (i, n) for i, n in targets
                 if ((n.get("_group") or n.get("group") or "").strip() or "未分组") == g0
             ]
+            self._last_tested_group = g0
             self.log("仅测速当前分组：%s（%s 个）" % (g0, len(targets)))
+        else:
+            self._last_tested_group = None
 
         total = len(targets)
         if total == 0:
@@ -5752,9 +5841,21 @@ class App(ctk.CTk):
         for n in ranked[:5]:
             self.log(f"  优: {n['name']} → {n['latency']}ms")
 
-        self.refresh_node_list(keep_selection=False, resort=True)
-        self.select_best()
-        self.save_settings()
+        try:
+            self.after(0, self._update_node_latency_labels)
+        except Exception:
+            try:
+                self.after(0, lambda: self.refresh_node_list(keep_selection=True, resort=False))
+            except Exception:
+                pass
+        try:
+            self.after(0, self.select_best)
+        except Exception:
+            pass
+        try:
+            self.save_settings()
+        except Exception:
+            pass
 
         self.is_testing = False
         self.after(0, lambda: self.test_btn.configure(state="normal"))
@@ -5766,9 +5867,11 @@ class App(ctk.CTk):
         if not self.nodes:
             self.log("没有节点可选")
             return
-        # 优先：当前选中节点所在分组内的最低延迟
-        cur = getattr(self, "current_node", None) or getattr(self, "_pending_node", None) or {}
-        prefer_g = (cur.get("_group") or cur.get("group") or "").strip()
+        # 优先：刚测过的分组；否则当前选中节点所在分组
+        prefer_g = (getattr(self, "_last_tested_group", None) or "").strip()
+        if not prefer_g:
+            cur = getattr(self, "current_node", None) or getattr(self, "_pending_node", None) or {}
+            prefer_g = (cur.get("_group") or cur.get("group") or "").strip()
         pool = []
         for n in self.nodes:
             lat = n.get("latency")
