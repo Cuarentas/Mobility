@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.5"
+APP_VERSION = "0.24.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -5227,6 +5227,20 @@ class App(ctk.CTk):
                     groups[g] = []
                     order.append(g)
                 groups[g].append(n)
+            # 组内按延迟从小到大（超时/未测排后）
+            def _lat_key(n):
+                lat = n.get("latency")
+                if lat is None:
+                    return (2, 999999)
+                try:
+                    v = int(lat)
+                except Exception:
+                    return (2, 999999)
+                if v < 0:
+                    return (1, 999999)
+                return (0, v)
+            for g in list(groups.keys()):
+                groups[g] = sorted(groups[g], key=_lat_key)
 
             # 超过一组就显示分组标题；设置里可关
             show_headers = len(order) > 1
@@ -5255,12 +5269,12 @@ class App(ctk.CTk):
                     is_active = (getattr(self, "_active_test_group", None) or "") == g
                     hdr = ctk.CTkButton(
                         self.node_list,
-                        text=f"{mark} {g}  ({cnt})" + ("  ·测速组" if is_active else ""),
+                        text=f"{mark} {g}  ({cnt})",
                         anchor="w",
-                        height=26,
-                        fg_color=("#DBEAFE", "#1E3A8A") if is_active else "transparent",
-                        text_color=("#1D4ED8", "#93C5FD"),
-                        hover_color=("gray90", "gray25"),
+                        height=28,
+                        fg_color=("#F59E0B", "#D97706") if is_active else "transparent",
+                        text_color=("white", "white") if is_active else ("#2563EB", "#93C5FD"),
+                        hover_color=("#FBBF24", "#B45309") if is_active else ("gray90", "gray25"),
                         font=("Microsoft YaHei UI", 12, "bold"),
                     )
                     hdr.pack(fill="x", padx=4, pady=(6, 1))
@@ -5848,10 +5862,11 @@ class App(ctk.CTk):
             self.log(f"  优: {n['name']} → {n['latency']}ms")
 
         try:
-            self.after(0, self._update_node_latency_labels)
+            # 重建列表以按组内延迟排序
+            self.after(0, lambda: self.refresh_node_list(keep_selection=True, resort=False))
         except Exception:
             try:
-                self.after(0, lambda: self.refresh_node_list(keep_selection=True, resort=False))
+                self.after(0, self._update_node_latency_labels)
             except Exception:
                 pass
         try:
@@ -7108,7 +7123,9 @@ class App(ctk.CTk):
         else:
             # 规则模式（含 MASQUE）：国内直连，减轻网页卡顿
             rules.extend([
-                "GEOIP,private,DIRECT",
+                "GEOSITE,private,DIRECT",
+                "GEOIP,private,DIRECT,no-resolve",
+                "GEOSITE,cn,DIRECT",
                 "DOMAIN-SUFFIX,cn,DIRECT",
                 "DOMAIN-SUFFIX,中国,DIRECT",
                 "DOMAIN-SUFFIX,公司,DIRECT",
@@ -7134,7 +7151,7 @@ class App(ctk.CTk):
                 "DOMAIN-KEYWORD,huawei,DIRECT",
                 "DOMAIN-SUFFIX,msftconnecttest.com,DIRECT",
                 "DOMAIN-SUFFIX,msftncsi.com,DIRECT",
-                "GEOIP,CN,DIRECT",
+                "GEOIP,CN,DIRECT,no-resolve",
                 "MATCH,PROXY",
             ])
 
@@ -7143,17 +7160,26 @@ class App(ctk.CTk):
             "allow-lan": bool(getattr(self, "allow_lan", False)),
             "mode": clash_mode,
             "log-level": "info",
-            "ipv6": True,
+            "ipv6": False,
             "unified-delay": True,
             "tcp-concurrent": True,
             "find-process-mode": "off",
+            # 使用 core 目录下 geoip.dat / geosite.dat（与 Xray 共用）
+            "geodata-mode": True,
+            "geo-auto-update": False,
             "dns": {
                 "enable": True,
                 "ipv6": False,
                 "enhanced-mode": "redir-host",
                 "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-                "nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
+                "nameserver": ["223.5.5.5", "119.29.29.29"],
+                "fallback": ["1.1.1.1", "8.8.8.8"],
+                "fallback-filter": {"geoip": True, "geoip-code": "CN", "geosite": ["gfw"]},
                 "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29"],
+                "nameserver-policy": {
+                    "geosite:cn": ["223.5.5.5", "119.29.29.29"],
+                    "geosite:private": ["223.5.5.5"],
+                },
             },
             "proxies": [proxy],
             "proxy-groups": [
@@ -7576,7 +7602,7 @@ class App(ctk.CTk):
                 except Exception:
                     mh_log_handle = subprocess.DEVNULL
                 self.mihomo_process = subprocess.Popen(
-                    [str(mh), "-f", str(mh_cfg)],
+                    [str(mh), "-d", str(self.core_dir), "-f", str(mh_cfg)],
                     cwd=str(self.core_dir),
                     creationflags=flags,
                     stdout=mh_log_handle,
