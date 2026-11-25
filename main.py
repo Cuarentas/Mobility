@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.0"
+APP_VERSION = "0.24.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2160,10 +2160,57 @@ class App(ctk.CTk):
             getattr(self, "sub_menu_btn", None),
         )
 
+    def rename_node_group_dialog(self):
+        """重命名当前选中节点所在分组（支持本地/在线）。"""
+        node = getattr(self, "current_node", None) or getattr(self, "_pending_node", None)
+        if not node:
+            for n in (self.nodes or []):
+                if isinstance(n, dict):
+                    node = n
+                    break
+        if not node:
+            self.log("请先选中一个节点再重命名分组")
+            return
+        old_g = (node.get("_group") or node.get("group") or "").strip() or "未分组"
+        try:
+            import tkinter.simpledialog as simpledialog
+            base = old_g
+            for pref in ("在线：", "在线:", "本地：", "本地:"):
+                if base.startswith(pref):
+                    base = base[len(pref):]
+                    break
+            new_base = simpledialog.askstring(
+                "重命名分组",
+                "当前分组：%s\n请输入新名称（自动保留 在线/本地 前缀）：" % old_g,
+                initialvalue=base,
+                parent=self,
+            )
+        except Exception as e:
+            self.log("无法打开改名对话框：%s" % e)
+            return
+        if not new_base or not str(new_base).strip():
+            return
+        is_local = old_g.startswith("本地") or bool(node.get("from_local"))
+        new_g = normalize_group_name(str(new_base).strip(), local=is_local)
+        cnt = 0
+        for n in self.nodes or []:
+            if not isinstance(n, dict):
+                continue
+            g = (n.get("_group") or n.get("group") or "").strip()
+            if g == old_g:
+                n["_group"] = new_g
+                n["group"] = new_g
+                cnt += 1
+        self.group_nodes_by_sub = True
+        self.refresh_node_list(keep_selection=True)
+        self.save_settings()
+        self.log("分组已改名：%s → %s（%s 个节点）" % (old_g, new_g, cnt))
+
     def open_node_menu(self):
         self._popup_action_menu(
             "节点工具",
             [
+                ("重命名分组", self.rename_node_group_dialog),
                 ("测速全部", self.test_all_thread),
                 ("测速筛选结果", self.test_filtered_thread),
                 ("选择最快节点", self.select_best),
@@ -6846,13 +6893,20 @@ class App(ctk.CTk):
         ]
         if clash_mode == "direct":
             rules.append("MATCH,DIRECT")
-        elif "全局" in mode or proto == "masque":
-            # 全部走当前节点（等价全局，但走 PROXY 组）
+        elif "全局" in mode:
             rules.append("MATCH,PROXY")
         else:
+            # 规则模式（含 MASQUE）：国内直连，减轻网页卡顿
             rules.extend([
                 "GEOIP,private,DIRECT",
                 "GEOIP,CN,DIRECT",
+                "DOMAIN-SUFFIX,cn,DIRECT",
+                "DOMAIN-KEYWORD,baidu,DIRECT",
+                "DOMAIN-KEYWORD,qq,DIRECT",
+                "DOMAIN-KEYWORD,tencent,DIRECT",
+                "DOMAIN-KEYWORD,alipay,DIRECT",
+                "DOMAIN-KEYWORD,taobao,DIRECT",
+                "DOMAIN-KEYWORD,bilibili,DIRECT",
                 "MATCH,PROXY",
             ])
 
@@ -7197,7 +7251,7 @@ class App(ctk.CTk):
         mapped = (getattr(self, "core_map", {}) or {}).get(_p, "")
         self.log(f"节点协议 [{node.get('protocol')}] 映射={mapped or '自动'} → 实际核心 {core_name}")
         if (node.get("protocol") or "").lower() == "masque":
-            self.log("提示：MASQUE 使用 Mihomo；规则等价全局（MATCH→PROXY，避免 global 模式走错组）")
+            self.log("提示：MASQUE 使用 Mihomo；规则模式=国内直连+境外代理")
             core_name = "Mihomo"
             self.proxy_core = core_name
 
