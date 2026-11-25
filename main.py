@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.4"
+APP_VERSION = "0.24.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2274,7 +2274,7 @@ class App(ctk.CTk):
                 ("复制当前节点", self.copy_selected_node),
                 ("删除当前节点", self.delete_selected_node),
                 ("连通性测试", self.connectivity_test_thread),
-                ("当前分组测速", self.test_current_group_thread),
+                ("测速所选分组", self.test_current_group_thread),
                 ("测速筛选结果", self.test_filtered_thread),
                 ("测速/连通性设置", self.open_speed_settings_dialog),
             ],
@@ -5123,21 +5123,22 @@ class App(ctk.CTk):
         self.refresh_node_list(keep_selection=True, resort=False)
 
     def _on_group_header_click(self, name: str):
-        """单击分组栏：展开该组并测速该组。"""
+        """单击分组栏：选中该组（不自动测速）。再点「当前分组测速」只测此组。"""
         if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
             self._collapsed_groups = set()
-        self._collapsed_groups.discard(name)
-        self._active_test_group = name
-        self._last_tested_group = name
+        if getattr(self, "_active_test_group", None) == name:
+            if name in self._collapsed_groups:
+                self._collapsed_groups.discard(name)
+            else:
+                self._collapsed_groups.add(name)
+        else:
+            self._collapsed_groups.discard(name)
+            self._active_test_group = name
+            self.log("已选择测速分组：%s（请点「当前分组测速」开始）" % name)
         try:
             self.refresh_node_list(keep_selection=True, resort=False)
         except Exception:
             pass
-        if getattr(self, "is_testing", False):
-            self.log("正在测速中，请稍候...")
-            return
-        self.log("点击分组「%s」— 开始测速该组" % name)
-        Thread(target=lambda n=name: self.test_all(only_filtered=False, only_group=n), daemon=True).start()
 
     def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
         """刷新节点列表：按订阅分组 + 拖拽排序。"""
@@ -5251,13 +5252,14 @@ class App(ctk.CTk):
                     is_collapsed = g in collapsed
                     mark = "▸" if is_collapsed else "▾"
                     cnt = len(groups.get(g, []))
+                    is_active = (getattr(self, "_active_test_group", None) or "") == g
                     hdr = ctk.CTkButton(
                         self.node_list,
-                        text=f"{mark} {g}  ({cnt})",
+                        text=f"{mark} {g}  ({cnt})" + ("  ·测速组" if is_active else ""),
                         anchor="w",
                         height=26,
-                        fg_color="transparent",
-                        text_color=("#2563EB", "#93C5FD"),
+                        fg_color=("#DBEAFE", "#1E3A8A") if is_active else "transparent",
+                        text_color=("#1D4ED8", "#93C5FD"),
                         hover_color=("gray90", "gray25"),
                         font=("Microsoft YaHei UI", 12, "bold"),
                     )
@@ -5740,17 +5742,21 @@ class App(ctk.CTk):
         if not self.nodes:
             self.log("请先加载节点")
             return
-        node = getattr(self, "current_node", None) or getattr(self, "_pending_node", None)
-        if not node:
-            for n in self.nodes:
-                if isinstance(n, dict):
-                    node = n
-                    break
-        if not node:
-            self.log("请先选中一个节点以确定分组")
+        g = (getattr(self, "_active_test_group", None) or "").strip()
+        if not g:
+            node = getattr(self, "current_node", None) or getattr(self, "_pending_node", None)
+            if not node:
+                for n in self.nodes:
+                    if isinstance(n, dict):
+                        node = n
+                        break
+            if node:
+                g = (node.get("_group") or node.get("group") or "未分组").strip() or "未分组"
+        if not g:
+            self.log("请先点击要测速的分组栏，再点「当前分组测速」")
             return
-        g = (node.get("_group") or node.get("group") or "未分组").strip() or "未分组"
-        Thread(target=lambda: self.test_all(only_filtered=False, only_group=g), daemon=True).start()
+        self._active_test_group = g
+        Thread(target=lambda gg=g: self.test_all(only_filtered=False, only_group=gg), daemon=True).start()
 
     def test_all(self, only_filtered: bool = False, only_group: str | None = None):
 
