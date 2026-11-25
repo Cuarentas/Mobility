@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.2"
+APP_VERSION = "0.24.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2237,20 +2237,22 @@ class App(ctk.CTk):
         self._popup_action_menu(
             "节点工具",
             [
-                ("重命名分组", self.rename_node_group_dialog),
+                ("节点上移", lambda: self.move_selected_node(-1)),
+                ("节点下移", lambda: self.move_selected_node(1)),
                 ("测速全部", self.test_all_thread),
-                ("测速筛选结果", self.test_filtered_thread),
+                ("连接诊断", self.open_diagnostics_dialog),
+                ("重命名分组", self.rename_node_group_dialog),
                 ("选择最快节点", self.select_best),
                 ("复制当前节点", self.copy_selected_node),
                 ("删除当前节点", self.delete_selected_node),
                 ("连通性测试", self.connectivity_test_thread),
-                ("节点上移", lambda: self.move_selected_node(-1)),
-                ("节点下移", lambda: self.move_selected_node(1)),
+                ("当前分组测速", self.test_current_group_thread),
+                ("测速筛选结果", self.test_filtered_thread),
                 ("测速/连通性设置", self.open_speed_settings_dialog),
-                ("连接诊断", self.open_diagnostics_dialog),
             ],
             getattr(self, "node_menu_btn", None),
         )
+
 
     def refresh_current_sub_thread(self):
         Thread(target=self.refresh_current_sub, daemon=True).start()
@@ -5645,7 +5647,27 @@ class App(ctk.CTk):
             return
         Thread(target=lambda: self.test_all(only_filtered=True), daemon=True).start()
 
-    def test_all(self, only_filtered: bool = False):
+    def test_current_group_thread(self):
+        if self.is_testing:
+            self.log("正在测速中，请稍候...")
+            return
+        if not self.nodes:
+            self.log("请先加载节点")
+            return
+        node = getattr(self, "current_node", None) or getattr(self, "_pending_node", None)
+        if not node:
+            for n in self.nodes:
+                if isinstance(n, dict):
+                    node = n
+                    break
+        if not node:
+            self.log("请先选中一个节点以确定分组")
+            return
+        g = (node.get("_group") or node.get("group") or "未分组").strip() or "未分组"
+        Thread(target=lambda: self.test_all(only_filtered=False, only_group=g), daemon=True).start()
+
+    def test_all(self, only_filtered: bool = False, only_group: str | None = None):
+
         self.is_testing = True
         self.after(0, lambda: self.test_btn.configure(state="disabled"))
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
@@ -5671,6 +5693,14 @@ class App(ctk.CTk):
             self.log(f"仅测速筛选结果：{len(targets)} 个节点")
         else:
             targets = [(i, n) for i, n in enumerate(self.nodes)]
+
+        if only_group:
+            g0 = str(only_group).strip()
+            targets = [
+                (i, n) for i, n in targets
+                if ((n.get("_group") or n.get("group") or "").strip() or "未分组") == g0
+            ]
+            self.log("仅测速当前分组：%s（%s 个）" % (g0, len(targets)))
 
         total = len(targets)
         if total == 0:
@@ -5736,18 +5766,31 @@ class App(ctk.CTk):
         if not self.nodes:
             self.log("没有节点可选")
             return
-        best = None
+        # 优先：当前选中节点所在分组内的最低延迟
+        cur = getattr(self, "current_node", None) or getattr(self, "_pending_node", None) or {}
+        prefer_g = (cur.get("_group") or cur.get("group") or "").strip()
+        pool = []
         for n in self.nodes:
             lat = n.get("latency")
-            if lat is not None and lat >= 0:
-                if best is None or lat < best["latency"]:
+            if lat is None or (isinstance(lat, (int, float)) and lat < 0):
+                continue
+            if prefer_g:
+                g = (n.get("_group") or n.get("group") or "").strip()
+                if g != prefer_g:
+                    continue
+            pool.append(n)
+        if not pool:
+            pool = [n for n in self.nodes if isinstance(n.get("latency"), int) and n.get("latency") >= 0]
+        best = None
+        for n in pool:
+            lat = n.get("latency")
+            if best is None or lat < best["latency"]:
+                best = n
+            elif best is not None and lat == best["latency"]:
+                if node_key(n) < node_key(best):
                     best = n
-                elif best is not None and lat == best["latency"]:
-                    # 相同延迟只保留一个：按唯一键稳定选取
-                    if node_key(n) < node_key(best):
-                        best = n
         if best is None:
-            self.log("没有测速成功的节点，请先点「测速全部」")
+            self.log("没有测速成功的节点，请先点「当前分组测速」或「测速全部」")
             return
         self.current_node = best
         self._selected_label = best.get("_label") or best.get("name")
@@ -6163,6 +6206,25 @@ class App(ctk.CTk):
                         winreg.DeleteValue(k, "AutoConfigURL")
                     except Exception:
                         pass
+                try:
+                    if int(b.get("ProxyEnable") or 0) == 0:
+                        val, _ = winreg.QueryValueEx(k, "ProxyServer")
+                        v = (val or "").lower().replace(" ", "")
+                        hp = str(int(getattr(self, "http_port", 10809) or 10809))
+                        sp = str(int(getattr(self, "socks_port", 10808) or 10808))
+                        if ("127.0.0.1:%s" % hp) in v or ("127.0.0.1:%s" % sp) in v:
+                            if b.get("had_server") and b.get("ProxyServer") and "127.0.0.1:%s" % hp not in str(b.get("ProxyServer")).lower():
+                                winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, str(b.get("ProxyServer")))
+                            else:
+                                try:
+                                    winreg.DeleteValue(k, "ProxyServer")
+                                except Exception:
+                                    try:
+                                        winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, "")
+                                    except Exception:
+                                        pass
+                except Exception:
+                    pass
             winreg.CloseKey(k)
         except Exception:
             pass
@@ -6938,14 +7000,32 @@ class App(ctk.CTk):
             # 规则模式（含 MASQUE）：国内直连，减轻网页卡顿
             rules.extend([
                 "GEOIP,private,DIRECT",
-                "GEOIP,CN,DIRECT",
                 "DOMAIN-SUFFIX,cn,DIRECT",
+                "DOMAIN-SUFFIX,中国,DIRECT",
+                "DOMAIN-SUFFIX,公司,DIRECT",
+                "DOMAIN-SUFFIX,网络,DIRECT",
                 "DOMAIN-KEYWORD,baidu,DIRECT",
-                "DOMAIN-KEYWORD,qq,DIRECT",
+                "DOMAIN-KEYWORD,qq.com,DIRECT",
                 "DOMAIN-KEYWORD,tencent,DIRECT",
+                "DOMAIN-KEYWORD,weixin,DIRECT",
+                "DOMAIN-KEYWORD,wechat,DIRECT",
                 "DOMAIN-KEYWORD,alipay,DIRECT",
                 "DOMAIN-KEYWORD,taobao,DIRECT",
+                "DOMAIN-KEYWORD,tmall,DIRECT",
                 "DOMAIN-KEYWORD,bilibili,DIRECT",
+                "DOMAIN-KEYWORD,zhihu,DIRECT",
+                "DOMAIN-KEYWORD,douyin,DIRECT",
+                "DOMAIN-KEYWORD,bytedance,DIRECT",
+                "DOMAIN-KEYWORD,jd.com,DIRECT",
+                "DOMAIN-KEYWORD,163.com,DIRECT",
+                "DOMAIN-KEYWORD,aliyun,DIRECT",
+                "DOMAIN-KEYWORD,alicdn,DIRECT",
+                "DOMAIN-KEYWORD,mi.com,DIRECT",
+                "DOMAIN-KEYWORD,xiaomi,DIRECT",
+                "DOMAIN-KEYWORD,huawei,DIRECT",
+                "DOMAIN-SUFFIX,msftconnecttest.com,DIRECT",
+                "DOMAIN-SUFFIX,msftncsi.com,DIRECT",
+                "GEOIP,CN,DIRECT",
                 "MATCH,PROXY",
             ])
 
@@ -6960,10 +7040,10 @@ class App(ctk.CTk):
             "find-process-mode": "off",
             "dns": {
                 "enable": True,
-                "ipv6": True,
+                "ipv6": False,
                 "enhanced-mode": "redir-host",
-                "default-nameserver": ["223.5.5.5", "8.8.8.8"],
-                "nameserver": ["1.1.1.1", "8.8.8.8", "223.5.5.5"],
+                "default-nameserver": ["223.5.5.5", "119.29.29.29"],
+                "nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
                 "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29"],
             },
             "proxies": [proxy],
@@ -7635,6 +7715,7 @@ class App(ctk.CTk):
         self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
 
     def stop_proxy(self):
+        # 停止时务必还原系统代理，避免影响 v2rayN 等
         # 清核心 + 系统代理/PAC/WinHTTP（内部会处理 xray/sing-box/mihomo）
         try:
             self.restore_network_environment(kill_cores=True)
