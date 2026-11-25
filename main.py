@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.7"
+APP_VERSION = "0.24.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -5123,22 +5123,52 @@ class App(ctk.CTk):
         self.refresh_node_list(keep_selection=True, resort=False)
 
     def _on_group_header_click(self, name: str):
-        """单击分组栏：选中该组（不自动测速）。再点「当前分组测速」只测此组。"""
+        """单击分组栏：一次选中该组并展开（不自动测速、不二次折叠）。"""
         if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
             self._collapsed_groups = set()
-        if getattr(self, "_active_test_group", None) == name:
-            if name in self._collapsed_groups:
-                self._collapsed_groups.discard(name)
-            else:
-                self._collapsed_groups.add(name)
+        was_active = (getattr(self, "_active_test_group", None) == name)
+        was_collapsed = name in self._collapsed_groups
+        # 始终展开；选中新组时切换高亮
+        self._collapsed_groups.discard(name)
+        self._active_test_group = name
+        if not was_active:
+            try:
+                self.log("已选择测速分组：%s（点「测速所选分组」开始）" % name)
+            except Exception:
+                pass
+        # 仅折叠状态变化才整表刷新；只换高亮则原地改颜色，避免二次刷新卡顿
+        if was_collapsed:
+            try:
+                self.refresh_node_list(keep_selection=True, resort=False)
+            except Exception:
+                pass
         else:
-            self._collapsed_groups.discard(name)
-            self._active_test_group = name
-            self.log("已选择测速分组：%s（请点「当前分组测速」开始）" % name)
-        try:
-            self.refresh_node_list(keep_selection=True, resort=False)
-        except Exception:
-            pass
+            try:
+                self._paint_group_headers()
+            except Exception:
+                try:
+                    self.refresh_node_list(keep_selection=True, resort=False)
+                except Exception:
+                    pass
+
+    def _paint_group_headers(self):
+        """只更新分组标题高亮，不重建节点列表。"""
+        active = getattr(self, "_active_test_group", None)
+        for item in getattr(self, "_group_header_meta", None) or []:
+            g = item.get("name")
+            btn = item.get("btn")
+            if not btn:
+                continue
+            is_active = (g == active)
+            try:
+                btn.configure(
+                    fg_color=("#F59E0B", "#D97706") if is_active else "transparent",
+                    text_color=("white", "white") if is_active else ("#2563EB", "#93C5FD"),
+                    hover_color=("#FBBF24", "#B45309") if is_active else ("gray90", "gray25"),
+                )
+            except Exception:
+                pass
+
 
     def refresh_node_list(self, keep_selection: bool = True, resort: bool = False):
         """刷新节点列表：按订阅分组 + 拖拽排序。"""
@@ -5165,6 +5195,7 @@ class App(ctk.CTk):
             nodes = list(self.nodes or [])
             self.clear_node_list_ui()
             self._node_row_meta = []
+            self._group_header_meta = []
 
             if not nodes:
                 try:
@@ -5279,6 +5310,9 @@ class App(ctk.CTk):
                     )
                     hdr.pack(fill="x", padx=4, pady=(6, 1))
                     hdr.configure(command=lambda name=g: self._on_group_header_click(name))
+                    if not hasattr(self, "_group_header_meta") or self._group_header_meta is None:
+                        self._group_header_meta = []
+                    self._group_header_meta.append({"name": g, "btn": hdr})
                     continue
                 n = payload
                 try:
