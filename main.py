@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.1"
+APP_VERSION = "0.24.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -995,6 +995,20 @@ def parse_surge_like(text: str) -> list:
             nodes.append({"protocol": "hysteria2", "name": name, "address": server, "port": port,
                           "password": kv.get("password") or "", "sni": kv.get("sni") or server})
     return nodes
+
+
+
+def normalize_group_name(name: str, *, local: bool = False) -> str:
+    """统一分组显示名：在线：/本地：前缀。"""
+    g = (name or "").strip() or ("本地导入" if local else "订阅")
+    if g.startswith("本地:") or g.startswith("本地："):
+        return "本地：" + g.split(":", 1)[-1].split("：", 1)[-1].strip()
+    if g.startswith("在线:") or g.startswith("在线："):
+        return "在线：" + g.split(":", 1)[-1].split("：", 1)[-1].strip()
+    if local or g.startswith("本地"):
+        base = g[2:].lstrip(":：").strip() if g.startswith("本地") else g
+        return "本地：" + (base or "导入")
+    return "在线：" + g
 
 
 def parse_nodes_any(text: str) -> list:
@@ -2063,8 +2077,13 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        h = 56 + 38 * max(1, len(actions))
-        w = 240
+        try:
+            actions = sorted(list(actions or []), key=lambda a: (len(str(a[0] or "")), str(a[0] or "")))
+        except Exception:
+            actions = list(actions or [])
+        max_len = max((len(str(a[0] or "")) for a in actions), default=8)
+        w = max(220, min(360, 48 + max_len * 16))
+        h = 52 + 40 * max(1, len(actions))
         try:
             if anchor_widget is not None:
                 anchor_widget.update_idletasks()
@@ -2076,11 +2095,13 @@ class App(ctk.CTk):
         except Exception:
             win.geometry("%dx%d" % (w, h))
 
-        ctk.CTkLabel(win, text=title, font=("Microsoft YaHei UI", 13, "bold")).pack(
-            anchor="w", padx=12, pady=(10, 6)
-        )
+        head = ctk.CTkFrame(win, fg_color=("#E2E8F0", "#0F172A"), corner_radius=0, height=36)
+        head.pack(fill="x")
+        head.pack_propagate(False)
+        ctk.CTkLabel(head, text=title, font=("Microsoft YaHei UI", 13, "bold"),
+                     text_color=("#0F172A", "#F8FAFC")).pack(side="left", padx=12, pady=6)
         box = ctk.CTkFrame(win, fg_color="transparent")
-        box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        box.pack(fill="both", expand=True, padx=12, pady=(8, 12))
 
         def dismiss():
             try:
@@ -2106,13 +2127,19 @@ class App(ctk.CTk):
                     self.log("%s 失败：%s" % (title, e))
             return _run
 
+        try:
+            actions = sorted(list(actions or []), key=lambda a: (len(str(a[0] or "")), str(a[0] or "")))
+        except Exception:
+            actions = list(actions or [])
         for label, fn in actions:
             ctk.CTkButton(
-                box, text=label, height=32, anchor="w",
-                fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"),
-                hover_color=("#DBEAFE", "#1E3A5F"),
+                box, text="  " + str(label), height=34, anchor="w",
+                fg_color=("#F1F5F9", "#1E293B"), text_color=("#0F172A", "#E2E8F0"),
+                hover_color=("#BFDBFE", "#1D4ED8"),
+                font=("Microsoft YaHei UI", 12),
+                corner_radius=8,
                 command=make_cmd(fn),
-            ).pack(fill="x", pady=2)
+            ).pack(fill="x", pady=3)
 
         def on_outside(event):
             try:
@@ -5095,7 +5122,18 @@ class App(ctk.CTk):
             display = []
             groups, order = {}, []
             for n in self.nodes:
-                g = (n.get("_group") or n.get("group") or n.get("sub") or "").strip() or "未分组"
+                raw_g = (n.get("_group") or n.get("group") or n.get("sub") or "").strip() or "未分组"
+                is_local = raw_g.startswith("本地") or bool(n.get("from_local"))
+                if raw_g in ("未分组", "默认"):
+                    g = raw_g
+                else:
+                    try:
+                        g = normalize_group_name(raw_g, local=is_local)
+                    except Exception:
+                        g = raw_g
+                    if g != raw_g:
+                        n["_group"] = g
+                        n["group"] = g
                 if g not in groups:
                     groups[g] = []
                     order.append(g)
@@ -5472,6 +5510,7 @@ class App(ctk.CTk):
                         sub_name = (self.sub_select.get() or "订阅").strip() or "订阅"
                 except Exception:
                     pass
+                sub_name = normalize_group_name(sub_name, local=False)
                 for n in new_nodes or []:
                     if isinstance(n, dict):
                         n["_group"] = sub_name
@@ -6912,12 +6951,10 @@ class App(ctk.CTk):
 
         cfg = {
             "mixed-port": int(http_port),
-            "socks-port": int(socks_port),
             "allow-lan": bool(getattr(self, "allow_lan", False)),
-            "bind-address": "*" if getattr(self, "allow_lan", False) else "127.0.0.1",
             "mode": clash_mode,
             "log-level": "info",
-            "ipv6": True if need_v6 else True,
+            "ipv6": True,
             "unified-delay": True,
             "tcp-concurrent": True,
             "find-process-mode": "off",
@@ -7356,7 +7393,7 @@ class App(ctk.CTk):
                     stdout=mh_log_handle,
                     stderr=subprocess.STDOUT,
                 )
-                time.sleep(1.2)
+                time.sleep(0.8)
                 if self.mihomo_process.poll() is not None:
                     self.log("Mihomo 启动失败，请查看 core/mihomo.log")
                     try:
@@ -7369,16 +7406,27 @@ class App(ctk.CTk):
                     self.mihomo_process = None
                     self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                     return
+                port_ok = False
+                try:
+                    port_ok = wait_local_port(int(http_port), timeout=12)
+                except Exception:
+                    port_ok = False
+                if port_ok:
+                    self.log("本地端口 %s 已监听" % http_port)
+                else:
+                    self.log("警告：本地端口 %s 未监听" % http_port)
+                    try:
+                        if self.mihomo_process.poll() is not None:
+                            self.log("Mihomo 进程已退出")
+                        if mh_log.exists():
+                            txt = mh_log.read_text(encoding="utf-8", errors="ignore")
+                            for ln in txt.strip().splitlines()[-20:]:
+                                self.log("  " + ln[:220])
+                    except Exception:
+                        pass
                 if not getattr(self, "tun_enabled", False):
                     if self.apply_system_proxy_for_mode(http_port):
                         self.log("系统代理已设置 127.0.0.1:%s" % http_port)
-                try:
-                    if wait_local_port(int(http_port), timeout=5):
-                        self.log("本地端口 %s 已监听" % http_port)
-                    else:
-                        self.log("警告：本地端口 %s 未监听，浏览器可能无法走代理" % http_port)
-                except Exception:
-                    pass
                 self.is_running = True
                 self.after(0, lambda: self.status_label.configure(
                     text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
@@ -7703,11 +7751,24 @@ class App(ctk.CTk):
             self.stop_proxy()
         except Exception:
             pass
-        # 再保险还原一次系统代理（兼容 v2rayN）
+        # 再保险还原系统代理（兼容 v2rayN：还原备份 + 多次通知）
         try:
-            self.restore_proxy_backup()
+            self.stop_mihomo()
         except Exception:
             pass
+        for _ in range(2):
+            try:
+                self.restore_proxy_backup()
+            except Exception:
+                pass
+            try:
+                self._notify_proxy_change()
+            except Exception:
+                pass
+            try:
+                time.sleep(0.12)
+            except Exception:
+                pass
         try:
             self.save_settings()
         except Exception:
