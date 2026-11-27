@@ -365,48 +365,28 @@ jobs:
         shell: pwsh
         run: |
           $verTag = "${{ env.VERSION }}"
+          if ([string]::IsNullOrWhiteSpace($verTag)) { $verTag = "${{ github.ref_name }}" }
           $verNum = $verTag.TrimStart('v')
+          Write-Host "Sync README badge to v$verNum"
           $path = "README.md"
-          if (-not (Test-Path $path)) { New-Item -ItemType File -Path $path | Out-Null }
+          if (-not (Test-Path $path)) {
+            $line = '# Mobility' + [Environment]::NewLine + [Environment]::NewLine + ('![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)' -f $verNum) + [Environment]::NewLine
+            [System.IO.File]::WriteAllText($path, $line, [System.Text.UTF8Encoding]::new($false))
+          }
           $txt = [System.IO.File]::ReadAllText((Resolve-Path $path).Path)
-          # 去掉错误插入的 image 残留
-          $txt = [regex]::Replace($txt, '(?m)^!\[release\]\([^)]*\)\s*', '')
-          $txt = [regex]::Replace($txt, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+[^\)"\s]*', ("badge/release-v{0}-orange?style=flat-square" -f $verNum))
-          $txt = [regex]::Replace($txt, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
-          # 若仍无静态徽章，在标题下插入
+          $txt = [regex]::Replace($txt, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+', ('badge/release-v{0}' -f $verNum))
+          $txt = [regex]::Replace($txt, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ('release-v{0}-orange' -f $verNum))
+          $txt = [regex]::Replace($txt, 'https://img\.shields\.io/badge/release-v[0-9.]+[^)\s]*', ('https://img.shields.io/badge/release-v{0}-orange?style=flat-square' -f $verNum))
           if ($txt -notmatch ('release-v{0}' -f [regex]::Escape($verNum))) {
-            $badge = @"
-<div align="center">
-
-# Mobility
-
-**Windows 便携版 · 多核心代理客户端**
-
-![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)
-[![Downloads](https://img.shields.io/github/downloads/Cuarentas/Mobility/latest/total?style=flat-square)](../../releases/latest)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-
-解压即用 · 多核心内置 · 订阅测速 · 系统代理 / TUN
-
-[下载最新版](../../releases/latest) · [提交问题](../../issues/new/choose) · [贡献指南](CONTRIBUTING.md)
-
-</div>
-
----
-
-"@ -f $verNum
-            # 若已有标题，只替换徽章行
-            if ($txt -match 'img\.shields\.io/badge/release') {
-              $txt = [regex]::Replace($txt, 'https://img\.shields\.io/badge/release-v[0-9.]+[^)]*', ("https://img.shields.io/badge/release-v{0}-orange?style=flat-square" -f $verNum))
-            } elseif ($txt -match '# Mobility') {
-              $txt = [regex]::Replace($txt, '# Mobility', ("# Mobility`n`n![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)" -f $verNum), 1)
+            $badge = ('![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)' -f $verNum)
+            if ($txt -match '# Mobility') {
+              $txt = [regex]::Replace($txt, '# Mobility', ('# Mobility' + [Environment]::NewLine + [Environment]::NewLine + $badge), 1)
             } else {
-              $txt = $badge + $txt
+              $txt = $badge + [Environment]::NewLine + [Environment]::NewLine + $txt
             }
           }
           [System.IO.File]::WriteAllText((Resolve-Path $path).Path, $txt, [System.Text.UTF8Encoding]::new($false))
-          Write-Host "Force README badge -> v$verNum"
-          Select-String -Path $path -Pattern 'release-v' | Select-Object -First 3
+          Select-String -Path $path -Pattern 'release-v' | Select-Object -First 5 | ForEach-Object { $_.Line }
 
       - name: Commit README version badge
         shell: pwsh
@@ -414,8 +394,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
-          git diff --staged --quiet
-          if ($LASTEXITCODE -ne 0) {
+          $pending = git status --porcelain README.md
+          if ($pending) {
             git commit -m "docs: sync README badge to ${{ env.VERSION }}"
             git push
           } else {
