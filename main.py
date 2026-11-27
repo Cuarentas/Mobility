@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.1"
+APP_VERSION = "0.25.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1735,12 +1735,19 @@ class App(ctk.CTk):
                 pass
 
     def on_node_button_click(self, node, btn):
-        """左键仅预选一个节点，需按回车确认后才真正选用（同时只能有一个代理节点）。"""
+        """左键预选节点；同步测速分组到该节点所在组（回车确认后用于代理）。"""
         if not isinstance(node, dict):
             return
         self._pending_node = node
         self._pending_label = node.get("_label") or node.get("name")
         self._pending_key = node_key(node)
+        g = (node.get("_group") or node.get("group") or "").strip()
+        if g:
+            self._active_test_group = g
+            try:
+                self._paint_group_headers()
+            except Exception:
+                pass
         self._paint_node_buttons()
 
     def confirm_pending_node(self, event=None):
@@ -1756,19 +1763,29 @@ class App(ctk.CTk):
                     return None
         except Exception:
             pass
-        # 确认后仅此一个为当前代理节点
+        # 确认后仅此一个为当前代理节点；同步测速分组到该节点所在组
+        live = self.resolve_live_node(node) if hasattr(self, "resolve_live_node") else node
+        if live:
+            node = live
         self.current_node = node
         self._selected_label = node.get("_label") or node.get("name")
         self._pending_node = node
         self._pending_label = self._selected_label
         self._pending_key = node_key(node)
+        g = (node.get("_group") or node.get("group") or "").strip()
+        if g:
+            self._active_test_group = g
         self._paint_node_buttons()
+        try:
+            self._paint_group_headers()
+        except Exception:
+            pass
         try:
             self.current_label.configure(text=self._short_node_text(node))
         except Exception:
             pass
         try:
-            self.log(f"已确认使用节点：{node.get('name')}")
+            self.log(f"已确认使用节点：{node.get('name')}" + (f"（分组：{g}）" if g else ""))
         except Exception:
             pass
         try:
@@ -5114,12 +5131,19 @@ class App(ctk.CTk):
             self.log("局域网设备可使用本机 IP + 本地端口作为代理")
 
     def _toggle_group_collapse(self, name: str):
-        """点击分组标题折叠/展开。"""
+        """点击三角形：折叠/展开；展开时同时选中该组为测速组。"""
         if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
             self._collapsed_groups = set()
         if name in self._collapsed_groups:
+            # 展开 + 选中
             self._collapsed_groups.discard(name)
+            self._active_test_group = name
+            try:
+                self.log("已展开并选中分组：%s" % name)
+            except Exception:
+                pass
         else:
+            # 折叠（保持选中状态，便于折叠后仍测该组）
             self._collapsed_groups.add(name)
         self.refresh_node_list(keep_selection=True, resort=False)
 
@@ -7595,12 +7619,14 @@ class App(ctk.CTk):
             pass
 
         node = self.get_selected_node()
+        if node and hasattr(self, "resolve_live_node"):
+            node = self.resolve_live_node(node) or node
         if not node:
             text = self.entry.get().strip()
             if text and not text.startswith(("http://", "https://")):
                 node = parse_link(text)
             if not node:
-                self.log("错误：请先加载订阅并选择节点")
+                self.log("错误：请先加载订阅并选择节点（点节点后按回车确认）")
                 self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
 
@@ -7609,7 +7635,13 @@ class App(ctk.CTk):
             self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
             return
 
+        # 代理只用当前确认节点，与橙色测速分组无关
         self.current_node = node
+        g = (node.get("_group") or node.get("group") or "").strip()
+        if g:
+            self._active_test_group = g
+        if g:
+            self.log("节点所属分组：%s" % g)
         lat = node.get("latency")
         lat_s = f"{lat}ms" if isinstance(lat, int) and lat >= 0 else "未测速"
         self.log(f"使用节点：[{node['protocol']}] {node['name']} ({lat_s})")
