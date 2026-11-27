@@ -295,22 +295,22 @@ jobs:
           if (Test-Path "README.md") {
             $current = Get-Content "README.md" -Raw
           }
-          if ($current -ne $readme) {
-            [System.IO.File]::WriteAllText((Resolve-Path .).Path + "\README.md", $readme, [System.Text.UTF8Encoding]::new($false))
-            # 强制同步静态版本号徽章（避免首页仍显示旧版）
-            $readme2 = [System.IO.File]::ReadAllText((Resolve-Path "README.md").Path)
-            $verTag = "${{ env.VERSION }}"
-            $verNum = $verTag.TrimStart('v')
-            $readme2 = [regex]::Replace($readme2, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+', ("badge/release-v{0}" -f $verNum))
-            $readme2 = [regex]::Replace($readme2, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
-            $readme2 = [regex]::Replace($readme2, 'APP_VERSION = "[^"]+"', ('APP_VERSION = "{0}"' -f $verNum))
-            [System.IO.File]::WriteAllText((Resolve-Path "README.md").Path, $readme2, [System.Text.UTF8Encoding]::new($false))
-            Write-Host "README.md 已更新并同步版本 $verTag"
-            echo "readme_changed=true" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Host "README.md 无需修改"
-            echo "readme_changed=false" >> $env:GITHUB_OUTPUT
+          $verTag = "${{ env.VERSION }}"
+          $verNum = $verTag.TrimStart('v')
+          # 写入模板后始终替换版本徽章，保证首页与 Release 一致
+          [System.IO.File]::WriteAllText((Resolve-Path .).Path + "\README.md", $readme, [System.Text.UTF8Encoding]::new($false))
+          $readme2 = [System.IO.File]::ReadAllText((Resolve-Path "README.md").Path)
+          $readme2 = [regex]::Replace($readme2, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+', ("badge/release-v{0}" -f $verNum))
+          $readme2 = [regex]::Replace($readme2, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
+          $readme2 = [regex]::Replace($readme2, 'v[0-9]+\.[0-9]+\.[0-9]+', $verTag, 1)  # 首处版本文案
+          # shields 动态徽章无需改；再加一行明确版本
+          if ($readme2 -notmatch [regex]::Escape("release-$verTag") -and $readme2 -notmatch [regex]::Escape("release-v$verNum")) {
+            $readme2 = $readme2 -replace '\*\*Windows', ("![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square) `n`n**Windows" -f $verNum)
           }
+          [System.IO.File]::WriteAllText((Resolve-Path "README.md").Path, $readme2, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "README.md 已同步版本 $verTag"
+          echo "readme_changed=true" >> $env:GITHUB_OUTPUT
+
 
       - name: Commit updated README
         if: steps.readme.outputs.readme_changed == 'true'
