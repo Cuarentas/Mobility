@@ -212,6 +212,10 @@ jobs:
           Write-Host "mihomo.exe 已内置到 core/ ($($mh.Length) bytes)"
 
           Write-Host "sing-box.exe 已内置到 core/ ($($sb.Length) bytes)"
+          Write-Host "======== 核心版本汇总（GitHub latest）========"
+          try { & ".\core\xray.exe" version 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "Xray: $_" } } catch { Write-Host "Xray version check failed" }
+          try { & ".\core\sing-box.exe" version 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "sing-box: $_" } } catch { Write-Host "sing-box version check failed" }
+          try { & ".\core\mihomo.exe" -v 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "Mihomo: $_" } } catch { Write-Host "Mihomo version check failed" }
           Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
 
       - name: Sync APP_VERSION with release tag
