@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.1"
+APP_VERSION = "0.26.2"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -4306,27 +4306,90 @@ class App(ctk.CTk):
             self.log("剪贴板为空")
             return
         self.log("正在从剪贴板解析...")
-        # 订阅 URL
+        # 订阅 URL：走多订阅合并加载，不清空已有组
         if text.startswith(("http://", "https://")):
-            self.after(0, lambda: (self.entry.delete(0, "end"), self.entry.insert(0, text)))
+            try:
+                self.entry.delete(0, "end")
+                self.entry.insert(0, text)
+            except Exception:
+                pass
             self.subscription_url = text
             self.load_nodes()
             return
-        nodes = parse_subscription_content(text)
+        nodes = parse_nodes_any(text) or parse_subscription_content(text) or []
         if not nodes and "://" in text:
-            node = parse_link(text)
-            if node:
-                nodes = [node]
+            # 多行 URI
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    node = parse_link(line)
+                except Exception:
+                    node = None
+                if node:
+                    nodes.append(node)
+            if not nodes:
+                try:
+                    node = parse_link(text.strip())
+                except Exception:
+                    node = None
+                if node:
+                    nodes = [node]
         if not nodes:
             self.log("剪贴板中未识别到有效节点或订阅链接")
             return
+        try:
+            group_name = normalize_group_name("手动导入", local=False)
+        except Exception:
+            group_name = "在线：手动导入"
         for n in nodes:
-            if isinstance(n, dict) and not n.get("_group"):
-                n["_group"] = n.get("group") or "手动导入"
-        self.nodes = nodes
-        self.refresh_node_list(keep_selection=False)
-        self.save_settings()
-        self.log(f"剪贴板导入成功：{len(nodes)} 个节点")
+            if isinstance(n, dict):
+                n["_group"] = group_name
+                n["group"] = group_name
+        # 与已有节点合并，绝不整体覆盖
+        seen = set()
+        merged = []
+        for n in list(self.nodes or []):
+            if not isinstance(n, dict):
+                continue
+            key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(n)
+        added = 0
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(n)
+            added += 1
+        self.nodes = merged
+        self.group_nodes_by_sub = True
+        try:
+            if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                self._collapsed_groups = set()
+            self._collapsed_groups.add(group_name)
+        except Exception:
+            pass
+        def _ui():
+            try:
+                self.refresh_node_list(keep_selection=True)
+            except Exception:
+                pass
+            try:
+                self.save_settings()
+            except Exception:
+                pass
+            self.log("剪贴板导入成功：新增 %s 个，合计 %s（其它订阅/本地已保留）" % (added, len(self.nodes)))
+        try:
+            self.after(0, _ui)
+        except Exception:
+            _ui()
 
     def scan_screen_qr_thread(self):
         # 改为主线程弹窗，用户确认后再截屏（类似身份验证器扫码）
