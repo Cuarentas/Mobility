@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.7"
+APP_VERSION = "0.25.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1269,7 +1269,7 @@ class App(ctk.CTk):
         self.routing_extra_block = ""
         self.proxy_core = "Xray"
         self.core_map = dict(DEFAULT_CORE_MAP)
-        self.live_stats_enabled = True  # 实时网速/内存，默认开启
+        self.live_stats_enabled = False  # 实时网速/内存，默认关闭
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
         self.hotkey_proxy = "ctrl+shift+p"
@@ -1447,8 +1447,8 @@ class App(ctk.CTk):
         stats.pack(fill="x", pady=(2, 6))
         stats.pack_propagate(False)
 
-        self.live_stats_var = ctk.BooleanVar(value=True)
-        self.live_stats_enabled = True
+        self.live_stats_var = ctk.BooleanVar(value=False)
+        self.live_stats_enabled = False
         self.live_stats_sw = ctk.CTkSwitch(
             stats, text="实时统计", variable=self.live_stats_var, width=90,
             command=self.on_live_stats_toggle
@@ -2243,7 +2243,6 @@ class App(ctk.CTk):
             "订阅管理",
             [
                 ("更新当前订阅", self.refresh_current_sub_thread),
-                ("添加当前链接到订阅", self.add_subscription),
                 ("删除所选分组", self.remove_subscription),
                 ("删除所有订阅", self.remove_all_subscriptions),
                 ("重命名当前订阅", self.rename_subscription),
@@ -4721,9 +4720,17 @@ class App(ctk.CTk):
         img = self.load_tray_image("disconnected")
         self.tray_icon = pystray.Icon("Mobility", img, "Mobility - 未连接", menu)
         Thread(target=self.tray_icon.run, daemon=True).start()
+        try:
+            self.bind("<Map>", self._on_window_map)
+        except Exception:
+            pass
 
     def tray_show_window(self, icon=None, item=None):
         def _do():
+            try:
+                self.state("normal")
+            except Exception:
+                pass
             try:
                 self.deiconify()
             except Exception:
@@ -4742,14 +4749,48 @@ class App(ctk.CTk):
                 self.lift()
                 self.focus_force()
                 self.attributes("-topmost", True)
-                self.after(180, lambda: self.attributes("-topmost", False))
+                self.after(200, lambda: self.attributes("-topmost", False))
             except Exception:
                 pass
+            # 轻量重绘，避免最小化恢复后大面积黑屏（不重建节点列表）
             try:
-                self.update_idletasks()
+                self.after(30, self._soft_window_redraw)
+                self.after(200, self._soft_window_redraw)
             except Exception:
                 pass
         self.after(0, _do)
+
+    def _on_window_map(self, event=None):
+        try:
+            if str(self.state()) == "normal":
+                self.after(40, self._soft_window_redraw)
+        except Exception:
+            pass
+
+    def _soft_window_redraw(self):
+        """从托盘/任务栏恢复时的轻量刷新，避免整表重建卡顿。"""
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        try:
+            # 触发一层外观刷新
+            fc = self.cget("fg_color")
+            self.configure(fg_color=fc)
+        except Exception:
+            pass
+        try:
+            self._paint_group_headers()
+        except Exception:
+            pass
+        try:
+            self._paint_node_buttons()
+        except Exception:
+            pass
 
     def tray_start(self, icon=None, item=None):
         self.after(0, self.start_proxy_thread)
@@ -4872,7 +4913,7 @@ class App(ctk.CTk):
                 "subscription_url": getattr(self, "subscription_url", "") or entry_txt,
                 "subscriptions": list(getattr(self, "subscriptions", []) or []),
                 "tun_enabled": bool(getattr(self, "tun_enabled", False)),
-                "live_stats_enabled": True,
+                "live_stats_enabled": False,
                 "tun_settings": dict(getattr(self, "tun_settings", {}) or {}),
                 "routing_extra_direct": getattr(self, "routing_extra_direct", "") or "",
                 "routing_extra_proxy": getattr(self, "routing_extra_proxy", "") or "",
@@ -4970,7 +5011,7 @@ class App(ctk.CTk):
                     cb.set(self.core_map.get(proto, "Xray"))
             except Exception:
                 pass
-            self.live_stats_enabled = bool(data.get("live_stats_enabled", True))
+            self.live_stats_enabled = bool(data.get("live_stats_enabled", False))
             try:
                 if hasattr(self, "live_stats_var"):
                     self.live_stats_var.set(self.live_stats_enabled)
@@ -5253,7 +5294,7 @@ class App(ctk.CTk):
             import time as _t
             now = _t.time()
             last = float(getattr(self, "_last_refresh_ts", 0) or 0)
-            if (now - last) < 0.4 and not resort:
+            if (now - last) < 0.75 and not resort:
                 self._refresh_pending = (keep_selection, resort)
                 if not getattr(self, "_refresh_scheduled", False):
                     self._refresh_scheduled = True
@@ -5263,7 +5304,7 @@ class App(ctk.CTk):
                         if pend is not None:
                             self._refresh_pending = None
                             self.refresh_node_list(pend[0], pend[1])
-                    self.after(450, _later)
+                    self.after(800, _later)
                 return
             self._last_refresh_ts = now
         except Exception:
