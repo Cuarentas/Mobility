@@ -1,0 +1,486 @@
+name: Build Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '新版本号（可留空，留空则自动在上一版补丁号 +1）'
+        required: false
+        default: ''
+        type: string
+      prerelease:
+        description: '是否标记为预发布（Pre-release）'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 解析版本号（可自动递增）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          is_semver() {
+            local x="${1#v}"
+            [[ "$x" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$x" =~ ^[0-9]+\.[0-9]+$ ]]
+          }
+
+          auto_bump() {
+            local base="$1"
+            base="$(echo "$base" | tr -d '[:space:]')"
+            [[ "$base" =~ ^v ]] || base="v${base}"
+            local num="${base#v}"
+            if [[ "$num" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            elif [[ "$num" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1"
+            else
+              echo ""
+            fi
+          }
+
+          # 收集候选：最新 Release + 若干 tag，取有效且最新的 semver
+          LATEST_REL="$(gh release list --limit 5 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          LATEST_TAGS="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=20" --jq '.[].name' 2>/dev/null || true)"
+
+          BASE=""
+          BEST_N=0
+          while IFS= read -r cand; do
+            cand="$(echo "$cand" | tr -d '[:space:]')"
+            [ -z "$cand" ] && continue
+            is_semver "$cand" || continue
+            num="${cand#v}"
+            # 简单数值比较 major*1e6+minor*1e3+patch
+            if [[ "$num" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              n=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+            elif [[ "$num" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              n=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 ))
+            else
+              continue
+            fi
+            if [ "$n" -gt "$BEST_N" ]; then
+              BEST_N=$n
+              BASE="$cand"
+            fi
+          done < <(printf '%s\n%s\n' "$LATEST_REL" "$LATEST_TAGS")
+
+          echo "选中的上一有效版本: ${BASE:-（无）}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="$(echo "${INPUT_VERSION:-}" | tr -d '[:space:]')"
+            if [ -z "${VERSION}" ]; then
+              if [ -n "${BASE}" ]; then
+                VERSION="$(auto_bump "${BASE}")"
+              else
+                VERSION="v0.1.0"
+              fi
+              echo "未填写版本号，已自动生成: ${VERSION}（基于 ${BASE:-无}）"
+            fi
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+
+          VERSION="$(echo "${VERSION}" | tr -d '[:space:]')"
+          if [[ ! "${VERSION}" =~ ^v ]]; then
+            VERSION="v${VERSION}"
+          fi
+          if [ -z "${VERSION}" ] || [ "${VERSION}" = "v" ] || ! is_semver "${VERSION}"; then
+            echo "::error::版本号无效: '${VERSION}'，请填写如 v0.20.5"
+            exit 1
+          fi
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "========================================"
+          echo "  上一有效版本: ${BASE:-（无）}"
+          echo "  本次版本    : ${VERSION}"
+          echo "========================================"
+
+          {
+            echo "## 版本"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|-----|"
+            echo "| 上一有效版本 | \`${BASE:-无}\` |"
+            echo "| 本次版本 | \`${VERSION}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Release ${VERSION} 已存在"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q "refs/tags/${VERSION}$"; then
+            echo "::error::Git tag ${VERSION} 已存在"
+            exit 1
+          fi
+          echo "版本可用，继续构建。"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          python -m PyInstaller --version
+
+      - name: Download Xray-core and geo data
+        shell: pwsh
+        run: |
+          Write-Host "开始下载 Xray-core（curl 直链）..."
+          # windows-latest 自带 curl.exe，能正确跟随 GitHub 跳转
+          $xrayUrl = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+          & curl.exe -L --fail --retry 3 --retry-delay 2 -A "Mozilla/5.0" -o "xray.zip" $xrayUrl
+          if (-not (Test-Path "xray.zip")) { throw "xray.zip download failed" }
+
+          if (Test-Path "core") { Remove-Item -Recurse -Force "core" }
+          New-Item -ItemType Directory -Path "core" -Force | Out-Null
+          Expand-Archive -Path "xray.zip" -DestinationPath "core" -Force
+          if (-not (Test-Path "core\xray.exe")) { throw "xray.exe not found after extract" }
+          Write-Host "Xray-core 准备就绪"
+
+          Write-Host "下载 geoip.dat / geosite.dat..."
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "core\geoip.dat" "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "core\geosite.dat" "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+          if (-not (Test-Path "core\geoip.dat")) { throw "geoip.dat download failed" }
+          if (-not (Test-Path "core\geosite.dat")) { throw "geosite.dat download failed" }
+          Write-Host "geo 数据文件准备就绪"
+
+          Write-Host "下载并内置 wintun.dll（TUN 模式）..."
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "wintun.zip" "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          if (-not (Test-Path "wintun.zip")) { throw "wintun.zip download failed" }
+          if (Test-Path "wintun_extract") { Remove-Item -Recurse -Force "wintun_extract" }
+          Expand-Archive -Path "wintun.zip" -DestinationPath "wintun_extract" -Force
+          $dll = Get-ChildItem -Path "wintun_extract" -Recurse -Filter "wintun.dll" | Where-Object { $_.FullName -match "amd64" } | Select-Object -First 1
+          if (-not $dll) { $dll = Get-ChildItem -Path "wintun_extract" -Recurse -Filter "wintun.dll" | Select-Object -First 1 }
+          if (-not $dll) { throw "wintun.dll not found in zip" }
+          Copy-Item $dll.FullName "core\wintun.dll" -Force
+          Write-Host "wintun.dll 已内置到 core/"
+
+          Write-Host "下载并内置 sing-box（TUN）..."
+          # 官方资源名含版本号，如 sing-box-1.14.4-windows-amd64.zip，需用 API 解析
+          $api = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+          $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "Mobility-Build" }
+          $asset = $rel.assets | Where-Object { $_.name -match "windows-amd64\.zip$" -and $_.name -notmatch "cgo" } | Select-Object -First 1
+          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "windows-amd64" } | Select-Object -First 1 }
+          if (-not $asset) { throw "sing-box windows-amd64 asset not found in latest release" }
+          Write-Host "sing-box asset: $($asset.name)"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "singbox.zip" $asset.browser_download_url
+          if (-not (Test-Path "singbox.zip")) { throw "singbox.zip download failed" }
+          if (Test-Path "singbox_extract") { Remove-Item -Recurse -Force "singbox_extract" }
+          Expand-Archive -Path "singbox.zip" -DestinationPath "singbox_extract" -Force
+          $sb = Get-ChildItem -Path "singbox_extract" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
+          if (-not $sb) { throw "sing-box.exe not found after extract" }
+          Copy-Item $sb.FullName "core\sing-box.exe" -Force
+          
+          Write-Host "下载并内置 Mihomo ..."
+          $mapi = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+          $mrel = Invoke-RestMethod -Uri $mapi -Headers @{ "User-Agent" = "Mobility-Build" }
+          $masset = $mrel.assets | Where-Object { $_.name -match '^mihomo-windows-amd64-v[\d.]+\.zip$' } | Select-Object -First 1
+          if (-not $masset) { $masset = $mrel.assets | Where-Object { $_.name -match 'windows-amd64' -and $_.name -like '*.zip' -and $_.name -notmatch 'compatible' } | Select-Object -First 1 }
+          if (-not $masset) { throw "mihomo windows-amd64 asset not found" }
+          Write-Host "mihomo asset: $($masset.name)"
+          & curl.exe -L --fail --retry 3 -A "Mozilla/5.0" -o "mihomo.zip" $masset.browser_download_url
+          if (-not (Test-Path "mihomo.zip")) { throw "mihomo.zip download failed" }
+          if (Test-Path "mihomo_extract") { Remove-Item -Recurse -Force "mihomo_extract" }
+          Expand-Archive -Path "mihomo.zip" -DestinationPath "mihomo_extract" -Force
+          $mh = Get-ChildItem -Path "mihomo_extract" -Recurse -Filter "*.exe" | Where-Object { $_.Name -match 'mihomo' } | Select-Object -First 1
+          if (-not $mh) { $mh = Get-ChildItem -Path "mihomo_extract" -Recurse -Filter "*.exe" | Select-Object -First 1 }
+          if (-not $mh) { throw "mihomo.exe not found after extract" }
+          Copy-Item $mh.FullName "core\mihomo.exe" -Force
+          Write-Host "mihomo.exe 已内置到 core/ ($($mh.Length) bytes)"
+
+          Write-Host "sing-box.exe 已内置到 core/ ($($sb.Length) bytes)"
+          Write-Host "======== 核心版本汇总（GitHub latest）========"
+          try { & ".\core\xray.exe" version 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "Xray: $_" } } catch { Write-Host "Xray version check failed" }
+          try { & ".\core\sing-box.exe" version 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "sing-box: $_" } } catch { Write-Host "sing-box version check failed" }
+          try { & ".\core\mihomo.exe" -v 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "Mihomo: $_" } } catch { Write-Host "Mihomo version check failed" }
+          Get-ChildItem core | ForEach-Object { Write-Host $_.Name $_.Length }
+
+      - name: Sync APP_VERSION with release tag
+        shell: pwsh
+        run: |
+          $ver = "${{ env.VERSION }}"
+          if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "${{ steps.version.outputs.tag }}" }
+          $ver = $ver.Trim()
+          if ($ver.StartsWith("v") -or $ver.StartsWith("V")) { $ver = $ver.Substring(1) }
+          Write-Host "写入 APP_VERSION = $ver"
+          $py = Get-Content -Path "main.py" -Raw -Encoding UTF8
+          $py2 = [regex]::Replace($py, 'APP_VERSION\s*=\s*"[^"]*"', ('APP_VERSION = "{0}"' -f $ver))
+          [System.IO.File]::WriteAllText((Resolve-Path "main.py").Path, $py2, [System.Text.UTF8Encoding]::new($false))
+          Select-String -Path main.py -Pattern 'APP_VERSION' | Select-Object -First 1
+
+      - name: Build with PyInstaller (onedir)
+        shell: cmd
+        run: |
+          python -m PyInstaller --noconfirm --onedir --windowed --name Mobility --icon icons\mobility.ico --hidden-import=pystray --collect-all pystray --hidden-import=keyboard --collect-all keyboard --hidden-import=pyzbar --collect-all pyzbar --hidden-import=cv2 --hidden-import=qrcode --collect-all qrcode --add-data "icons;icons" main.py
+
+      - name: Package final zip (含 Xray-core 与 geo 数据)
+        shell: pwsh
+        run: |
+          $distDir = "dist\Mobility"
+          $coreDir = Join-Path $distDir "core"
+          if (-not (Test-Path $coreDir)) {
+            New-Item -ItemType Directory -Path $coreDir -Force | Out-Null
+          }
+
+          # 复制核心与 geo 数据
+          Copy-Item -Path "core\xray.exe" -Destination "$coreDir\xray.exe" -Force
+          # 图标资源
+          if (Test-Path "icons") {
+            Copy-Item -Path "icons" -Destination "$distDir\icons" -Recurse -Force
+            Write-Host "已复制 icons"
+          }
+          Copy-Item -Path "core\geoip.dat" -Destination "$coreDir\geoip.dat" -Force
+          Copy-Item -Path "core\geosite.dat" -Destination "$coreDir\geosite.dat" -Force
+          if (Test-Path "core\wintun.dll") {
+            Copy-Item -Path "core\wintun.dll" -Destination "$coreDir\wintun.dll" -Force
+          } else {
+            throw "缺少文件: wintun.dll"
+          }
+          if (Test-Path "core\sing-box.exe") {
+            Copy-Item -Path "core\sing-box.exe" -Destination "$coreDir\sing-box.exe" -Force
+          } else {
+            throw "缺少文件: sing-box.exe"
+          }
+          if (Test-Path "core\mihomo.exe") {
+            Copy-Item -Path "core\mihomo.exe" -Destination "$coreDir\mihomo.exe" -Force
+          } else {
+            throw "缺少文件: mihomo.exe"
+          }
+
+          foreach ($f in @("xray.exe", "geoip.dat", "geosite.dat", "wintun.dll", "sing-box.exe", "mihomo.exe")) {
+            if (-not (Test-Path "$coreDir\$f")) { throw "缺少文件: $f" }
+          }
+          Write-Host "已复制 xray.exe / geoip.dat / geosite.dat / wintun.dll / sing-box.exe / mihomo.exe"
+
+          $zipPath = "dist\Mobility.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path "$distDir\*" -DestinationPath $zipPath -Force
+          $zipInfo = Get-Item $zipPath
+          Write-Host "打包完成: $($zipInfo.Name)  大小: $([math]::Round($zipInfo.Length / 1MB, 2)) MB"
+
+
+      - name: Update README to match current package
+        id: readme
+        shell: pwsh
+        run: |
+          $b64 = "PGRpdiBhbGlnbj0iY2VudGVyIj4KCiMgTW9iaWxpdHkKCioqV2luZG93cyDkvr/mkLrniYggwrcg5aSa5qC45b+D5Luj55CG5a6i5oi356uvKioKClshW1JlbGVhc2VdKGh0dHBzOi8vaW1nLnNoaWVsZHMuaW8vZ2l0aHViL3YvcmVsZWFzZS9DdWFyZW50YXMvTW9iaWxpdHk/c3R5bGU9ZmxhdC1zcXVhcmUpXSguLi8uLi9yZWxlYXNlcykKWyFbRG93bmxvYWRzXShodHRwczovL2ltZy5zaGllbGRzLmlvL2dpdGh1Yi9kb3dubG9hZHMvQ3VhcmVudGFzL01vYmlsaXR5L2xhdGVzdC90b3RhbD9zdHlsZT1mbGF0LXNxdWFyZSldKC4uLy4uL3JlbGVhc2VzL2xhdGVzdCkKWyFbTGljZW5zZV0oaHR0cHM6Ly9pbWcuc2hpZWxkcy5pby9iYWRnZS9saWNlbnNlLU1JVC1ibHVlP3N0eWxlPWZsYXQtc3F1YXJlKV0oTElDRU5TRSkKCuino+WOi+WNs+eUqCDCtyDlpJrmoLjlv4PlhoXnva4gwrcg6K6i6ZiF5rWL6YCfIMK3IOezu+e7n+S7o+eQhiAvIFRVTgoKW+S4i+i9veacgOaWsOeJiF0oLi4vLi4vcmVsZWFzZXMvbGF0ZXN0KSDCtyBb5o+Q5Lqk6Zeu6aKYXSguLi8uLi9pc3N1ZXMvbmV3L2Nob29zZSkgwrcgW+i0oeeMruaMh+WNl10oQ09OVFJJQlVUSU5HLm1kKQoKPC9kaXY+CgotLS0KCiMjIOebruW9lQoKLSBb566A5LuLXSgj566A5LuLKQotIFvlip/og73nibnmgKddKCPlip/og73nibnmgKcpCi0gW+WGhee9rue7hOS7tl0oI+WGhee9rue7hOS7tikKLSBb5b+r6YCf5byA5aeLXSgj5b+r6YCf5byA5aeLKQotIFvnlYzpnaLkuI7kvb/nlKjor7TmmI5dKCPnlYzpnaLkuI7kvb/nlKjor7TmmI4pCi0gW+aguOW/g+S4juWNj+iuruaYoOWwhF0oI+aguOW/g+S4juWNj+iuruaYoOWwhCkKLSBb5Luj55CG5qih5byP5LiO6Lev55SxXSgj5Luj55CG5qih5byP5LiO6Lev55SxKQotIFtUVU4g5qih5byPXSgjdHVuLeaooeW8jykKLSBb6K6i6ZiF5LiO6IqC54K5XSgj6K6i6ZiF5LiO6IqC54K5KQotIFvnm67lvZXnu5PmnoRdKCPnm67lvZXnu5PmnoQpCi0gW+ezu+e7n+imgeaxgl0oI+ezu+e7n+imgeaxgikKLSBb5bi46KeB6Zeu6aKYXSgj5bi46KeB6Zeu6aKYKQotIFvmnoTlu7rkuI7lj5HluINdKCPmnoTlu7rkuI7lj5HluIMpCi0gW+WPjemmiOS4jui0oeeMrl0oI+WPjemmiOS4jui0oeeMrikKLSBb5YWN6LSj5aOw5piOXSgj5YWN6LSj5aOw5piOKQoKLS0tCgojIyDnroDku4sKCioqTW9iaWxpdHkqKiDmmK/pnaLlkJEgV2luZG93cyDnmoTnu7/oibLkvr/mkLrku6PnkIblrqLmiLfnq6/vvIznm67moIfmmK/lnKjlsL3ph4/lsJHnmoTphY3nva7mraXpqqTkuIvlrozmiJDvvJoKCjEuIOWvvOWFpeiuoumYhSAvIOiKgueCuSAgCjIuIOa1i+mAn+W5tumAieaLqeWPr+eUqOiKgueCuSAgCjMuIOS4gOmUruWQr+WKqOacrOWcsOS7o+eQhu+8iOezu+e7n+S7o+eQhuaIliBUVU7vvIkgIAoK5p6E5bu65rWB5rC057q/5Lya5Zyo5omT5YyF6Zi25q616Ieq5Yqo5LiL6L295bm25YaZ5YWlICoqWHJheS1jb3JlKirjgIEqKnNpbmctYm94KirjgIEqKk1paG9tbyoqIOS7peWPiiAqKmdlb2lwIC8gZ2Vvc2l0ZSAvIHdpbnR1bioq77yM55So5oi35peg6ZyA5YaN5Y2V54us5a+75om+5qC45b+D5paH5Lu244CCCgotLS0KCiMjIOWKn+iDveeJueaApwoKIyMjIOS7o+eQhuS4juaguOW/gwoKfCDog73lipsgfCDor7TmmI4gfAp8IC0tLSB8IC0tLSB8Cnwg5aSa5qC45b+DIHwgWHJheSAvIHNpbmctYm94IC8gTWlob21v77yM5Y+v5oyJ5Y2P6K6u5YiG5Yir5oyH5a6aIHwKfCDljY/orq4gfCBWTWVzc+OAgVZMRVNT44CBVHJvamFu44CBU2hhZG93c29ja3Mg562JIHwKfCDlhaXnq5kgfCDmnKzlnLAgU09DS1MgLyBIVFRQ77yI56uv5Y+j5Y+v6YWN572u77yJIHwKfCDns7vnu5/ku6PnkIYgfCDlkK/liqjml7blhpnlhaXjgIHlgZzmraLml7bov5jljp8gV2luZG93cyDku6PnkIborr7nva4gfAp8IFRVTiB8IOezu+e7n+e6p+a1gemHj+aOpeeuoe+8iOmcgOeuoeeQhuWRmOadg+mZkO+8iSB8Cnwg6Lev55Sx5qih5byPIHwg6KeE5YiZ5qih5byPIC8g5YWo5bGA5qih5byPIC8g55u06L+e5qih5byPIHwKfCDoh6rlrprkuYnln5/lkI0gfCDnm7Tov57ln5/lkI3jgIHku6PnkIbln5/lkI3liJfooajvvIjmlK/mjIHnroDljZXpgJrphY3vvIkgfAoKIyMjIOiuoumYheS4juiKgueCuQoKfCDog73lipsgfCDor7TmmI4gfAp8IC0tLSB8IC0tLSB8Cnwg5aSa6K6i6ZiFIHwg5re75Yqg44CB5Yig6Zmk44CB6YeN5ZG95ZCN44CB5YWo6YOo5pu05pawIHwKfCDlr7zlhaUgfCDorqLpmIUgVVJM44CB5Ymq6LS05p2/6IqC54K544CB5bGP5bmV5omr56CB44CB55Sf5oiQ6IqC54K55LqM57u056CBIHwKfCDmtYvpgJ8gfCDlhajpg6jmtYvpgJ8gLyDnrZvpgInmtYvpgJ/vvIzlubblj5Hot6/mlbDlj6/osIMgfAp8IOmAieacgOW/qyB8IOaMieW7tui/n+iHquWKqOmAieS4reacgOS8mOiKgueCuSB8Cnwg6L+e6YCa5oCnIHwg6IqC54K5IFRDUCArIOWPr+mAiee7j+S7o+eQhuiuv+mXruW4uOingeermeeCuSB8Cnwg5pCc57SiIHwg5oyJ5ZCN56ewIC8g5Zyw5Z2AIC8g5Y2P6K6u6L+H5ruk6IqC54K55YiX6KGoIHwKfCDmjIHkuYXljJYgfCDorqLpmIXkuI7oioLngrnmnKzlnLDkv53lrZjvvIzph43lkK/lkI7mgaLlpI0gfAoKIyMjIOS9k+mqjOS4juezu+e7n+mbhuaIkAoKfCDog73lipsgfCDor7TmmI4gfAp8IC0tLSB8IC0tLSB8Cnwg5omY55uYIHwg5YWz6Zet5Yiw5omY55uY44CB5omY55uY5Zu+5qCH54q25oCBIHwKfCDng63plK4gfCDmmL7npLov6ZqQ6JeP56qX5Y+j44CB5ZCv5YGc5Luj55CG77yI5Y+v6Ieq5a6a5LmJ77yJIHwKfCDlvIDmnLroh6rlkK8gLyDlkK/liqjlkI7ov57mjqUgLyDlkK/liqjlkI7mnIDlsI/ljJYgfCDorr7nva7pnaLmnb/lvIDlhbMgfAp8IOS4u+mimOS4juWtl+S9kyB8IOWkluinguS4u+mimOOAgeeVjOmdouWtl+S9k+Wkp+WwjyB8Cnwg5pel5b+XIHwg6aaW6aG16L+Q6KGM5pel5b+X44CB6L+H5ruk44CB5aSN5Yi244CB5riF56m644CB6Ieq5Yqo5rua5YqoIHwKfCDmm7TmlrAgfCDmo4Dmn6Xova/ku7bmm7TmlrDvvJvlj6/miYvliqjmm7TmlrDmoLjlv4Pmlofku7YgfAoKLS0tCgojIyDlhoXnva7nu4Tku7YKCuavj+asoSBHaXRIdWIgQWN0aW9ucyDmnoTlu7rkvJrku47lrpjmlrkgUmVsZWFzZSDmi4nlj5blubbmiZPlhaXlronoo4XljIXvvJoKCnwg5paH5Lu2IHwg5p2l5rqQ5LiO55So6YCUIHwKfCAtLS0gfCAtLS0gfAp8IGBjb3JlL3hyYXkuZXhlYCB8IFtYVExTL1hyYXktY29yZV0oaHR0cHM6Ly9naXRodWIuY29tL1hUTFMvWHJheS1jb3JlKSDigJQg6buY6K6k5Y2P6K6u5Ye656uZIHwKfCBgY29yZS9zaW5nLWJveC5leGVgIHwgW1NhZ2VyTmV0L3NpbmctYm94XShodHRwczovL2dpdGh1Yi5jb20vU2FnZXJOZXQvc2luZy1ib3gpIOKAlCBUVU4gLyDlrozmlbTlh7rnq5kgfAp8IGBjb3JlL21paG9tby5leGVgIHwgW01ldGFDdWJlWC9taWhvbW9dKGh0dHBzOi8vZ2l0aHViLmNvbS9NZXRhQ3ViZVgvbWlob21vKSDigJQgQ2xhc2ggTWV0YSDlhbzlrrkgfAp8IGBjb3JlL2dlb2lwLmRhdGAgfCBbdjJmbHkvZ2VvaXBdKGh0dHBzOi8vZ2l0aHViLmNvbS92MmZseS9nZW9pcCkg4oCUIElQIOWIhua1geaVsOaNriB8CnwgYGNvcmUvZ2Vvc2l0ZS5kYXRgIHwgW3YyZmx5L2RvbWFpbi1saXN0LWNvbW11bml0eV0oaHR0cHM6Ly9naXRodWIuY29tL3YyZmx5L2RvbWFpbi1saXN0LWNvbW11bml0eSkg4oCUIOWfn+WQjeWIhua1geaVsOaNriB8CnwgYGNvcmUvd2ludHVuLmRsbGAgfCBXaXJlR3VhcmQg55So5oi35oCB6amx5YqoIOKAlCBXaW5kb3dzIFRVTiB8Cgo+IOivt+WLv+WNleeLrOenu+WKqCBgTW9iaWxpdHkuZXhlYCDogIzkuKLmjokgYGNvcmVgIOebruW9le+8jOWQpuWImeaXoOazleWQr+WKqOaguOW/g+OAggoKLS0tCgojIyDlv6vpgJ/lvIDlp4sKCjEuIOaJk+W8gCBbUmVsZWFzZXNdKC4uLy4uL3JlbGVhc2VzKSDvvIzkuIvovb0gKipNb2JpbGl0eS56aXAqKiAgCjIuIOino+WOi+WIsOS7u+aEj+ebruW9le+8iOW7uuiurui3r+W+hOS4remBv+WFjei/h+S6jueJueauiueahOadg+mZkOmZkOWItu+8iSAgCjMuIOWPjOWHu+i/kOihjCBgTW9iaWxpdHkuZXhlYCAgCjQuIOWcqOiuoumYheagj+eymOi0tOiuoumYheWcsOWdgCDihpIgKirliqDovb0qKu+8jOaIluS9v+eUqOWJqui0tOadvyAvIOaJq+eggeWvvOWFpeiKgueCuSAgCjUuIO+8iOWPr+mAie+8iSoq5rWL6YCf5YWo6YOoKiog4oaSICoq6YCJ5pyA5b+rKiogIAo2LiDngrnlh7sgKirlkK/liqgqKu+8m+mcgOimgeWFqOWxgOaOpeeuoeaXtuWLvumAiSAqKlRVTiDmqKHlvI8qKu+8iOeuoeeQhuWRmOi/kOihjO+8iSAgCgotLS0KCiMjIOeVjOmdouS4juS9v+eUqOivtOaYjgoKLSAqKumhtumDqCoq77ya6L+Q6KGM54q25oCB44CB5b2T5YmN6IqC54K55pGY6KaB44CB6L2v5Lu254mI5pys5LiOKirlvZPliY3moLjlv4PniYjmnKwqKuOAgeWQr+WKqCAvIOWBnOatoiAgCi0gKirorqLpmIXmoI8qKu+8muWkmuiuoumYheWIh+aNouOAgVVSTOOAgeWKoOi9vSAvIOa3u+WKoCAvIOWIoOmZpCAvIOmHjeWRveWQjSAvIOabtOaWsOWFqOmDqCAgCi0gKirlt6XlhbfmoI8qKu+8mua1i+mAn+OAgemAieacgOW/q+OAgeWkjeWItuiKgueCueOAgei/numAmuaAp++8m+WPs+S+p+S4uuW5tuWPkeS4juS7o+eQhuaooeW8jyAgCi0gKiroioLngrnliJfooagqKu+8muaQnOe0ouOAgemAieS4remrmOS6ru+8m+WPs+S+p+S4uuiuvue9ru+8iOaJmOebmOOAgeiHquWQr+OAgeerr+WPo+OAgeWNj+iuruaguOW/g+aYoOWwhOetie+8iSAgCi0gKirov5DooYzml6Xlv5cqKu+8muWunuaXtui+k+WHuu+8m+aUr+aMgei/h+a7pOOAgeWkjeWItuOAgea4heepuuOAgeiHquWKqOa7muWKqCAgCgrmoIfpopjmoI/niYjmnKznpLrkvovvvJoKCi0gYHYwLjE4LnggfCBYcmF5IDI2LnhgICAKLSBgdjAuMTgueCB8IHNpbmctYm94IDEueGAgIAotIGB2MC4xOC54IHwgTWlob21vIDEueGAgIAoK5Lya6ZqPKirlvZPliY3oioLngrnljY/orq7miYDmmKDlsITnmoTmoLjlv4MqKuWPmOWMluOAggoKLS0tCgojIyDmoLjlv4PkuI7ljY/orq7mmKDlsIQKCuWcqOWPs+S+pyAqKuiuvue9riDihpIg5qC45b+D57G75Z6L77yI5oyJ5Y2P6K6u77yJKiog5Lit77yM5Y+v5Li65LiL5YiX5Y2P6K6u5YiG5Yir6YCJ5oup5qC45b+D77yaCgotIFZNZXNzICAKLSBWTEVTUyAgCi0gVHJvamFuICAKLSBTaGFkb3dzb2NrcyAgCi0gU29ja3MgIAotIEhUVFAgIAoK5Y+v6YCJ5qC45b+D77yaKipYcmF5KiogLyAqKnNpbmctYm94KiogLyAqKk1paG9tbyoq44CCCgrlkK/liqjml7bpgLvovpHvvJoKCjEuIOivu+WPluW9k+WJjemAieS4reiKgueCueeahOWNj+iuriAgCjIuIOafpeivouivpeWNj+iuruaYoOWwhOeahOaguOW/gyAgCjMuIOeUn+aIkOWvueW6lOmFjee9ruW5tuaLiei1t+i/m+eoiyAgCjQuIOagh+mimOagj+WIt+aWsOS4uuivpeaguOW/g+eahOeJiOacrOWPtyAgCgotLS0KCiMjIOS7o+eQhuaooeW8j+S4jui3r+eUsQoKfCDmqKHlvI8gfCDooYzkuLrmpoLopoEgfAp8IC0tLSB8IC0tLSB8Cnwg6KeE5YiZ5qih5byPIHwg5oyJ6Lev55Sx6KeE5YiZ5YiG5rWB77yI5ZCr6Ieq5a6a5LmJ55u06L+eL+S7o+eQhuWfn+WQje+8jOe7k+WQiCBnZW8g5pWw5o2u77yJIHwKfCDlhajlsYDmqKHlvI8gfCDlsL3lj6/og73lsIbmtYHph4/pgIHlhaXku6PnkIblh7rnq5kgfAp8IOebtOi/nuaooeW8jyB8IOS4jei1sOS7o+eQhuWHuuerme+8iOS+v+S6juaOkuafpe+8iSB8Cgrlj6/lnKjorr7nva7kuK3nu7TmiqQgKirnm7Tov57ln5/lkI0qKiDkuI4gKirku6PnkIbln5/lkI0qKiDliJfooajvvIzkv67mlLnlkI7pnIDph43mlrDlkK/liqjku6PnkIbnlJ/mlYjjgIIKCi0tLQoKIyMgVFVOIOaooeW8jwoKLSDli77pgIkgKipUVU4g5qih5byPKiog5bm25ZCv5Yqo5ZCO77yM5bCd6K+V6YCa6L+H6Jma5ouf572R5Y2h5o6l566h57O757uf5rWB6YePICAKLSAqKumcgOimgeeuoeeQhuWRmOadg+mZkCoq77yb5YyF5YaF5bey5bimIGB3aW50dW4uZGxsYCAgCi0g5Li65YW85a655rWP6KeI5Zmo77yM5LuN5Y+v6IO95ZCM5pe26K6+572u57O757uf5Luj55CGICAKLSDoi6Xku4UgVFVOIOW8guW4uO+8jOWPr+WFiOWFs+mXrSBUVU7vvIzku4Xkvb/nlKjns7vnu5/ku6PnkIbmjpLmn6XoioLngrnkuI7moLjlv4MgIAoKLS0tCgojIyDorqLpmIXkuI7oioLngrkKCi0gKirlpJrorqLpmIUqKu+8muW9vOatpOeLrOeri+euoeeQhu+8jOaUr+aMgeWQiOW5tuWOu+mHjeetlueVpSAgCi0gKirmm7TmlrAqKu+8muaJi+WKqOOAjOabtOaWsOWFqOmDqOOAje+8jOaIluiuvue9ruWumuaXti/oh6rlrprkuYnpl7TpmpQgIAotICoq5rWL6YCf5bm25Y+RKirvvJrnlYzpnaLlj6/pgIkgOO+9njI1NiDot6/vvIjov4flpKflj6/og73lj5fnvZHnu5zkuI7mnLrlmajmgKfog73pmZDliLbvvIkgIAotICoq5LqM57u056CBKirvvJrmlK/mjIHmiavnoIHlr7zlhaXkuI7kuLrlvZPliY3oioLngrnnlJ/miJDkuoznu7TnoIHkvr/kuo7miYvmnLrmiavmj48gIAoKLS0tCgojIyDnm67lvZXnu5PmnoQKCmBgYHRleHQKTW9iaWxpdHkvCuKUnOKUgOKUgCBNb2JpbGl0eS5leGUgICAgICAgICAgIyDkuLvnqIvluo8K4pSc4pSA4pSAIGNvcmUvCuKUgiAgIOKUnOKUgOKUgCB4cmF5LmV4ZQrilIIgICDilJzilIDilIAgc2luZy1ib3guZXhlCuKUgiAgIOKUnOKUgOKUgCBtaWhvbW8uZXhlCuKUgiAgIOKUnOKUgOKUgCBnZW9pcC5kYXQK4pSCICAg4pSc4pSA4pSAIGdlb3NpdGUuZGF0CuKUgiAgIOKUlOKUgOKUgCB3aW50dW4uZGxsCuKUlOKUgOKUgCDvvIjov5DooYzlkI7vvInphY3nva7jgIHorqLpmIXnvJPlrZjjgIHml6Xlv5fnrYkKYGBgCgotLS0KCiMjIOezu+e7n+imgeaxggoKLSBXaW5kb3dzIDEwIC8gMTHvvIgqKjY0IOS9jSoq77yJICAKLSDkvb/nlKggVFVOIOaXtu+8mueuoeeQhuWRmOadg+mZkCAgCi0g5bu66K6u5bCG5a6J6KOF55uu5b2V5Yqg5YWl5p2A5q+S6L2v5Lu255m95ZCN5Y2V77yM6YG/5YWN5qC45b+D6KKr6ZqU56a7ICAKCi0tLQoKIyMg5bi46KeB6Zeu6aKYCgoqKlE6IOWQr+WKqOWQjua1j+iniOWZqOaXoOazleS4iue9ke+8nyoqICAKQTog56Gu6K6k6IqC54K55bu26L+f5LiO6L+e6YCa5oCn77yb5bCd6K+V5pu05o2i6IqC54K55oiW5Luj55CG5qih5byP77yb5p+l55yL6L+Q6KGM5pel5b+X5Lit55qE5qC45b+D5oql6ZSZ44CCCgoqKlE6IFRVTiDml6DmlYjmiJbmj5DnpLogd2ludHVu77yfKiogIApBOiDku6XnrqHnkIblkZjov5DooYzvvJvnoa7orqQgYGNvcmUvd2ludHVuLmRsbGAg5a2Y5Zyo5LiU5pyq6KKr5Yig6Zmk44CCCgoqKlE6IOagh+mimOagj+S4gOebtOaYvuekuuafkOS4quaguOW/g++8nyoqICAKQTog5pi+56S655qE5pivKirlvZPliY3oioLngrnljY/orq7miYDmmKDlsITnmoTmoLjlv4MqKu+8m+ivt+WIsOiuvue9ruS4reS/ruaUueWvueW6lOWNj+iurueahOaYoOWwhOOAggoKKipROiDog73lkKblj6rmm7TmlrDmn5DkuIDkuKrmoLjlv4PvvJ8qKiAgCkE6IOWPr+S9v+eUqOiuvue9ruS4reeahOOAjOabtOaWsOaguOW/g+OAje+8m+S6puWPr+eUqOWumOaWueWPkeW4g+WMheS4reeahOWNleaWh+S7tuabv+aNoiBgY29yZWAg55uu5b2V5LiL5a+55bqUIGV4ZeOAggoKLS0tCgojIyDmnoTlu7rkuI7lj5HluIMKCuacrOS7k+W6k+mAmui/hyAqKkdpdEh1YiBBY3Rpb25zICsgUHlJbnN0YWxsZXIqKiDlnKggYHdpbmRvd3MtbGF0ZXN0YCDkuIrmnoTlu7rvvJoKCjEuIOWuieijheS+nei1luW5tuaJk+WMhSBgTW9iaWxpdHkuZXhlYCAgCjIuIOS4i+i9vSBYcmF5IC8gc2luZy1ib3ggLyBNaWhvbW8gLyBnZW8g5pWw5o2uIC8gd2ludHVuICAKMy4g57uE6KOF5Li6IGBNb2JpbGl0eS56aXBgICAKNC4g5pu05pawIFJFQURNRSDlubbliJvlu7ogR2l0SHViIFJlbGVhc2UgIAoK5omL5Yqo6Kem5Y+R77yaQWN0aW9ucyDihpIgKipCdWlsZCBQb3J0YWJsZSoqIOKGkiAqKlJ1biB3b3JrZmxvdyoq77yM5aGr5YaZ54mI5pys5Y+377yI5aaCIGAwLjE4LjFg77yJ44CCCgotLS0KCiMjIOWPjemmiOS4jui0oeeMrgoKLSDnvLrpmbfkuI7pnIDmsYLvvJror7fkvb/nlKggW0lzc3VlIOaooeadv10oLi4vLi4vaXNzdWVzL25ldy9jaG9vc2UpICAKLSDku6PnoIHotKHnjK7vvJror7fpmIXor7sgW0NPTlRSSUJVVElORy5tZF0oQ09OVFJJQlVUSU5HLm1kKSDlkI7mj5DkuqQgUFIgIAoKLS0tCgojIyDlhY3otKPlo7DmmI4KCuacrOi9r+S7tuS7heS+m+WtpuS5oOOAgeeglOeptue9kee7nOS4juS7o+eQhuaKgOacr+S9v+eUqOOAguivt+ehruS/neS9oOeahOS9v+eUqOihjOS4uuespuWQiOaJgOWcqOWcsOazleW+i+azleinhOS7peWPiuebuOWFs+acjeWKoeadoeasvuOAguS9nOiAheS4jeWvueS7u+S9lea7peeUqOaIlueUseatpOS6p+eUn+eahOWQjuaenOaJv+aLhei0o+S7u+OAggo="
+          $bytes = [Convert]::FromBase64String($b64)
+          $readme = [System.Text.Encoding]::UTF8.GetString($bytes)
+          if (-not $readme.EndsWith("`n")) { $readme += "`n" }
+
+          $current = ""
+          if (Test-Path "README.md") {
+            $current = Get-Content "README.md" -Raw
+          }
+          $verTag = "${{ env.VERSION }}"
+          $verNum = $verTag.TrimStart('v')
+          # 写入模板后始终替换版本徽章，保证首页与 Release 一致
+          [System.IO.File]::WriteAllText((Resolve-Path .).Path + "\README.md", $readme, [System.Text.UTF8Encoding]::new($false))
+          $readme2 = [System.IO.File]::ReadAllText((Resolve-Path "README.md").Path)
+          $readme2 = [regex]::Replace($readme2, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+', ("badge/release-v{0}" -f $verNum))
+          $readme2 = [regex]::Replace($readme2, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
+          $readme2 = [regex]::Replace($readme2, 'v[0-9]+\.[0-9]+\.[0-9]+', $verTag, 1)  # 首处版本文案
+          # shields 动态徽章无需改；再加一行明确版本
+          if ($readme2 -notmatch [regex]::Escape("release-$verTag") -and $readme2 -notmatch [regex]::Escape("release-v$verNum")) {
+            $readme2 = $readme2 -replace '\*\*Windows', ("![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square) `n`n**Windows" -f $verNum)
+          }
+          [System.IO.File]::WriteAllText((Resolve-Path "README.md").Path, $readme2, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "README.md 已同步版本 $verTag"
+          echo "readme_changed=true" >> $env:GITHUB_OUTPUT
+
+
+      - name: Commit updated README
+        if: steps.readme.outputs.readme_changed == 'true'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: 同步 README 与当前发布包"
+          git push
+        continue-on-error: true
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mobility
+          path: dist/Mobility.zip
+          if-no-files-found: error
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 优先用前面「解析版本号」写入的 VERSION（支持留空自动递增）
+          VER="${VERSION:-}"
+          if [ -z "${VER}" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              VER="${{ github.event.inputs.version }}"
+            else
+              VER="${GITHUB_REF_NAME}"
+            fi
+          fi
+          VER="$(echo "${VER}" | tr -d '[:space:]')"
+          if [ -z "${VER}" ]; then
+            echo "::error::版本号为空，请填写或检查自动递增步骤"
+            exit 1
+          fi
+          if [[ ! "${VER}" =~ ^v ]]; then
+            VER="v${VER}"
+          fi
+          if [ "${VER}" = "v" ]; then
+            echo "::error::版本号无效（只有 v），请填写完整版本如 v0.20.5"
+            exit 1
+          fi
+          echo "tag=${VER}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "使用版本号: ${VER}"
+
+
+      - name: Force README version badge
+        shell: pwsh
+        run: |
+          $verTag = "${{ env.VERSION }}"
+          $verNum = $verTag.TrimStart('v')
+          $path = "README.md"
+          if (-not (Test-Path $path)) { New-Item -ItemType File -Path $path | Out-Null }
+          $txt = [System.IO.File]::ReadAllText((Resolve-Path $path).Path)
+          # 去掉错误插入的 image 残留
+          $txt = [regex]::Replace($txt, '(?m)^!\[release\]\([^)]*\)\s*', '')
+          $txt = [regex]::Replace($txt, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+[^\)"\s]*', ("badge/release-v{0}-orange?style=flat-square" -f $verNum))
+          $txt = [regex]::Replace($txt, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
+          # 若仍无静态徽章，在标题下插入
+          if ($txt -notmatch ('release-v{0}' -f [regex]::Escape($verNum))) {
+            $badge = @"
+<div align="center">
+
+# Mobility
+
+**Windows 便携版 · 多核心代理客户端**
+
+![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)
+[![Downloads](https://img.shields.io/github/downloads/Cuarentas/Mobility/latest/total?style=flat-square)](../../releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+
+解压即用 · 多核心内置 · 订阅测速 · 系统代理 / TUN
+
+[下载最新版](../../releases/latest) · [提交问题](../../issues/new/choose) · [贡献指南](CONTRIBUTING.md)
+
+</div>
+
+---
+
+"@ -f $verNum
+            # 若已有标题，只替换徽章行
+            if ($txt -match 'img\.shields\.io/badge/release') {
+              $txt = [regex]::Replace($txt, 'https://img\.shields\.io/badge/release-v[0-9.]+[^)]*', ("https://img.shields.io/badge/release-v{0}-orange?style=flat-square" -f $verNum))
+            } elseif ($txt -match '# Mobility') {
+              $txt = [regex]::Replace($txt, '# Mobility', ("# Mobility`n`n![release](https://img.shields.io/badge/release-v{0}-orange?style=flat-square)" -f $verNum), 1)
+            } else {
+              $txt = $badge + $txt
+            }
+          }
+          [System.IO.File]::WriteAllText((Resolve-Path $path).Path, $txt, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Force README badge -> v$verNum"
+          Select-String -Path $path -Pattern 'release-v' | Select-Object -First 3
+
+      - name: Commit README version badge
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --staged --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "docs: sync README badge to ${{ env.VERSION }}"
+            git push
+          } else {
+            Write-Host "README badge unchanged"
+          }
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Mobility ${{ steps.version.outputs.tag }}
+          files: dist/Mobility.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          body: |
+            ## Mobility ${{ steps.version.outputs.tag }}
+
+            **Windows 便携版 · 多核心代理客户端**
+
+            解压即用 · Xray / sing-box / Mihomo · 订阅测速 · 系统代理 / TUN
+
+            ### 本版本亮点
+
+            - 零依赖运行：PyInstaller 绿色包，无需安装 Python
+            - 三核心内置：Xray-core、sing-box、Mihomo（构建时写入 core/）
+            - 路由数据齐全：geoip.dat、geosite.dat、wintun.dll（TUN）
+            - 按协议映射核心：VMess / VLESS / Trojan / SS 等可分别指定
+            - 订阅与节点：多订阅、测速筛选、连通性、扫码与二维码
+            - 系统集成：系统代理、托盘、热键、开机自启、主题与字体
+
+            ### 下载与安装
+
+            1. 下载下方 **Mobility.zip**
+            2. 解压到任意目录（必须保留 `core` 文件夹）
+            3. 运行 `Mobility.exe`
+            4. 加载订阅或导入节点 → 测速 → 启动
+
+            > TUN 请以管理员身份运行。若杀软误报，请将整个目录加入白名单。
+
+            ### 包内核心与数据
+
+            | 文件 | 说明 |
+            | --- | --- |
+            | `core/xray.exe` | Xray-core 协议出站 |
+            | `core/sing-box.exe` | sing-box（TUN / 完整出站） |
+            | `core/mihomo.exe` | Mihomo（Clash Meta 兼容） |
+            | `core/geoip.dat` | IP 分流数据 |
+            | `core/geosite.dat` | 域名分流数据 |
+            | `core/wintun.dll` | Windows TUN 驱动 |
+
+            标题栏会显示软件版本与当前选用核心的版本（随节点协议映射变化）。
+
+            ### 系统要求
+
+            - Windows 10 / 11（64 位）
+            - TUN：管理员权限
+
+            ### 文档与反馈
+
+            - 完整说明见仓库 README
+            - 问题反馈：Issues
+            - 参与开发：CONTRIBUTING.md
+
+            ---
+
+            *Enjoy the freedom of the network.*
