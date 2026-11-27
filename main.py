@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.7"
+APP_VERSION = "0.26.8"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -556,8 +556,8 @@ def parse_vless(link: str) -> dict | None:
             "pbk": get_param("pbk", ""),
             "sid": get_param("sid", ""),
             "spx": get_param("spx", ""),
-            "path": get_param("path", ""),
-            "host": get_param("host", ""),
+            "path": urllib.parse.unquote(get_param("path", "") or "/") or "/",
+            "host": get_param("host", "") or get_param("sni", ""),
             "serviceName": get_param("serviceName", "") or get_param("serviceName", ""),
             "mode": get_param("mode", ""),
             "alpn": get_param("alpn", ""),
@@ -1193,10 +1193,16 @@ def build_outbound(node: dict) -> dict:
             }
 
         if network == "ws":
-            stream["wsSettings"] = {
-                "path": node.get("path") or "/",
-                "headers": {"Host": node.get("host") or sni or node.get("address") or ""},
-            }
+            host_header = (node.get("host") or sni or "").strip()
+            path = (node.get("path") or "/").strip() or "/"
+            if not path.startswith("/"):
+                path = "/" + path
+            ws = {"path": path}
+            # 新版 Xray：host 独立字段；同时保留 headers.Host 兼容旧配置
+            if host_header:
+                ws["host"] = host_header
+                ws["headers"] = {"Host": host_header}
+            stream["wsSettings"] = ws
         elif network == "grpc":
             stream["grpcSettings"] = {
                 "serviceName": node.get("serviceName") or node.get("path") or "",
@@ -8402,11 +8408,13 @@ class App(ctk.CTk):
             node = self.get_selected_node() or {}
             if (node.get("protocol") or "").lower() == "vless":
                 self.log(
-                    "VLESS 参数：net=%s sec=%s sni=%s fp=%s flow=%s pbk=%s"
+                    "VLESS 参数：net=%s sec=%s sni=%s host=%s path=%s fp=%s flow=%s pbk=%s"
                     % (
                         node.get("network"),
                         node.get("security"),
-                        node.get("sni") or node.get("host"),
+                        node.get("sni"),
+                        node.get("host"),
+                        node.get("path"),
                         node.get("fp"),
                         node.get("flow"),
                         "有" if node.get("pbk") else "无",
