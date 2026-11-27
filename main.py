@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.8"
+APP_VERSION = "0.24.9"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -5298,21 +5298,37 @@ class App(ctk.CTk):
                     mark = "▸" if is_collapsed else "▾"
                     cnt = len(groups.get(g, []))
                     is_active = (getattr(self, "_active_test_group", None) or "") == g
+                    row_g = ctk.CTkFrame(self.node_list, fg_color="transparent")
+                    row_g.pack(fill="x", padx=4, pady=(6, 1))
+                    # 左侧三角形：仅负责折叠/展开
+                    tri = ctk.CTkButton(
+                        row_g,
+                        text=mark,
+                        width=32,
+                        height=28,
+                        fg_color="transparent",
+                        text_color=("#2563EB", "#93C5FD"),
+                        hover_color=("gray90", "gray25"),
+                        font=("Microsoft YaHei UI", 14, "bold"),
+                        command=lambda name=g: self._toggle_group_collapse(name),
+                    )
+                    tri.pack(side="left", padx=(0, 2))
+                    # 右侧标题：选中测速分组
                     hdr = ctk.CTkButton(
-                        self.node_list,
-                        text=f"{mark} {g}  ({cnt})",
+                        row_g,
+                        text=f"{g}  ({cnt})",
                         anchor="w",
                         height=28,
                         fg_color=("#F59E0B", "#D97706") if is_active else "transparent",
                         text_color=("white", "white") if is_active else ("#2563EB", "#93C5FD"),
                         hover_color=("#FBBF24", "#B45309") if is_active else ("gray90", "gray25"),
                         font=("Microsoft YaHei UI", 12, "bold"),
+                        command=lambda name=g: self._on_group_header_click(name),
                     )
-                    hdr.pack(fill="x", padx=4, pady=(6, 1))
-                    hdr.configure(command=lambda name=g: self._on_group_header_click(name))
+                    hdr.pack(side="left", fill="x", expand=True)
                     if not hasattr(self, "_group_header_meta") or self._group_header_meta is None:
                         self._group_header_meta = []
-                    self._group_header_meta.append({"name": g, "btn": hdr})
+                    self._group_header_meta.append({"name": g, "btn": hdr, "tri": tri})
                     continue
                 n = payload
                 try:
