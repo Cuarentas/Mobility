@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.2"
+APP_VERSION = "0.25.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1735,7 +1735,7 @@ class App(ctk.CTk):
                 pass
 
     def on_node_button_click(self, node, btn):
-        """左键预选节点；同步测速分组到该节点所在组（回车确认后用于代理）。"""
+        """左键预选节点；同步分组并收起其它组。"""
         if not isinstance(node, dict):
             return
         self._pending_node = node
@@ -1743,11 +1743,15 @@ class App(ctk.CTk):
         self._pending_key = node_key(node)
         g = (node.get("_group") or node.get("group") or "").strip()
         if g:
-            self._active_test_group = g
             try:
-                self._paint_group_headers()
+                self._focus_group_only(g)
+                self.refresh_node_list(keep_selection=True, resort=False)
             except Exception:
-                pass
+                self._active_test_group = g
+                try:
+                    self._paint_group_headers()
+                except Exception:
+                    pass
         self._paint_node_buttons()
 
     def confirm_pending_node(self, event=None):
@@ -1785,13 +1789,26 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            self.log(f"已确认使用节点：{node.get('name')}" + (f"（分组：{g}）" if g else ""))
+            self.log("已确认使用节点：%s%s" % (node.get("name"), ("（分组：%s）" % g) if g else ""))
         except Exception:
             pass
+        if g:
+            try:
+                self._focus_group_only(g)
+                self.refresh_node_list(keep_selection=True, resort=False)
+            except Exception:
+                pass
         try:
             self.save_settings()
         except Exception:
             pass
+        # 运行中换节点：按新节点协议自动匹配核心并热重启
+        if getattr(self, "is_running", False):
+            try:
+                self.log("检测到代理运行中，正在按新节点自动切换核心并重启…")
+            except Exception:
+                pass
+            Thread(target=self._restart_proxy_quick, daemon=True).start()
         return "break"
 
     def is_admin(self) -> bool:
@@ -5176,6 +5193,28 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
+    def _focus_group_only(self, keep_name: str):
+        """只展开 keep_name，其余分组全部收起。"""
+        keep_name = (keep_name or "").strip()
+        if not keep_name:
+            return
+        if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+            self._collapsed_groups = set()
+        # 收集全部分组名
+        names = set()
+        for n in self.nodes or []:
+            if not isinstance(n, dict):
+                continue
+            g = (n.get("_group") or n.get("group") or "").strip()
+            if g:
+                names.add(g)
+        for g in names:
+            if g == keep_name:
+                self._collapsed_groups.discard(g)
+            else:
+                self._collapsed_groups.add(g)
+        self._active_test_group = keep_name
+
     def _paint_group_headers(self):
         """只更新分组标题高亮，不重建节点列表。"""
         active = getattr(self, "_active_test_group", None)
@@ -7597,9 +7636,53 @@ class App(ctk.CTk):
                 pass
             self.singbox_process = None
 
+    def _restart_proxy_quick(self):
+        """运行中换节点：快速停旧核心并按新节点启动（避免整机假死）。"""
+        try:
+            # 标记重启中，防止重复点启动
+            self._restarting = True
+            old_core = getattr(self, "proxy_core", "") or ""
+            try:
+                self.stop_proxy()
+            except Exception as e:
+                try:
+                    self.log("停止旧代理：%s" % e)
+                except Exception:
+                    pass
+            # 短等待释放端口，避免 bind 失败
+            try:
+                time.sleep(0.35)
+            except Exception:
+                pass
+            node = self.get_selected_node()
+            if node and hasattr(self, "resolve_live_node"):
+                node = self.resolve_live_node(node) or node
+            if not node:
+                self.log("重启失败：无有效节点")
+                return
+            new_core = self.resolve_core_for_node(node)
+            if (node.get("protocol") or "").lower() == "masque":
+                new_core = "Mihomo"
+            try:
+                self.log("核心切换：%s → %s（协议 %s）" % (old_core or "无", new_core, node.get("protocol")))
+            except Exception:
+                pass
+            # 直接走 start（内部会清残留进程）
+            self.start_proxy()
+        except Exception as e:
+            try:
+                self.log("自动重启失败：%s" % e)
+            except Exception:
+                pass
+        finally:
+            self._restarting = False
+
     def start_proxy_thread(self):
         if self.is_running:
-            self.log("代理已在运行中，请先停止")
+            self.log("代理已在运行中，请先停止；或回车确认新节点以自动切换")
+            return
+        if getattr(self, "_restarting", False):
+            self.log("正在切换节点，请稍候…")
             return
         Thread(target=self.start_proxy, daemon=True).start()
 
