@@ -2,6 +2,8 @@
 
 # Mobility
 
+![release](https://img.shields.io/badge/release-v0.26.7-orange?style=flat-square) 
+
 **Windows 便携版 · 多核心代理客户端**
 
 [![Release](https://img.shields.io/github/v/release/Cuarentas/Mobility?style=flat-square)](../../releases)
