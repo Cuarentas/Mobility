@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.0"
+APP_VERSION = "0.26.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -4757,6 +4757,11 @@ class App(ctk.CTk):
             self.bind("<Map>", self._on_window_map)
         except Exception:
             pass
+        # 启动时清理上次异常退出残留的系统代理
+        try:
+            self.after(300, self.force_clear_stale_proxy)
+        except Exception:
+            pass
 
     def tray_show_window(self, icon=None, item=None):
         def _do():
@@ -4793,32 +4798,31 @@ class App(ctk.CTk):
         self.after(0, _do)
 
     def _on_window_map(self, event=None):
+        # Map 会频繁触发；禁止在此 configure 控件，否则 CustomTkinter 易递归崩溃
         try:
-            if str(self.state()) == "normal":
-                self.after(40, self._soft_window_redraw)
+            if str(self.state()) != "normal":
+                return
+            import time as _t
+            now = _t.time()
+            if now - float(getattr(self, "_last_map_redraw", 0) or 0) < 2.0:
+                return
+            self._last_map_redraw = now
+            self.after(80, self._soft_window_redraw)
         except Exception:
             pass
 
     def _soft_window_redraw(self):
-        """从托盘/任务栏恢复时的轻量刷新，避免整表重建卡顿。"""
+        """从托盘/任务栏恢复时的轻量刷新：只 update，绝不 configure（防递归）。"""
+        if getattr(self, "_soft_redrawing", False):
+            return
+        self._soft_redrawing = True
         try:
-            self.update_idletasks()
-        except Exception:
-            pass
-        try:
-            self.update()
-        except Exception:
-            pass
-        try:
-            # 触发一层外观刷新
-            fc = self.cget("fg_color")
-            self.configure(fg_color=fc)
-        except Exception:
-            pass
-        try:
-            self._paint_group_headers()
-        except Exception:
-            pass
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+        finally:
+            self._soft_redrawing = False
 
     def tray_start(self, icon=None, item=None):
         self.after(0, self.start_proxy_thread)
@@ -5006,9 +5010,7 @@ class App(ctk.CTk):
             nodes = data.get("nodes") or []
             if url:
                 self.subscription_url = url
-                if getattr(self, "entry", None) is not None:
-                    self.entry.delete(0, "end")
-                    self.entry.insert(0, url)
+                # 启动不把 URL 填回输入框，避免误触发/界面干扰
             self.subscriptions = data.get("subscriptions") or []
             if not self.subscriptions and url.startswith("http"):
                 self.subscriptions = [{"name": "订阅1", "url": url}]
@@ -5193,8 +5195,18 @@ class App(ctk.CTk):
                     if "latency" not in n:
                         n["latency"] = None
                 self._selected_label = data.get("selected_label") or ""
+                # 恢复时全部分组折叠，避免上百节点展开导致卡死/递归绘制
+                try:
+                    self._collapsed_groups = set()
+                    for n in self.nodes:
+                        if isinstance(n, dict):
+                            gg = (n.get("_group") or n.get("group") or "").strip()
+                            if gg:
+                                self._collapsed_groups.add(gg)
+                except Exception:
+                    self._collapsed_groups = set()
                 self.refresh_node_list(keep_selection=True)
-                self.log(f"已恢复上次数据：{len(self.nodes)} 个节点")
+                self.log(f"已恢复上次数据：{len(self.nodes)} 个节点（分组已折叠）")
             elif url:
                 self.log("已恢复订阅地址，请点击「加载订阅」")
         except Exception as e:
@@ -6860,6 +6872,73 @@ class App(ctk.CTk):
         finally:
             self._restoring_network = False
 
+    def force_clear_stale_proxy(self):
+        """若系统代理仍指向本软件本地端口，强制关闭，避免拖垮 v2rayN 等其它客户端。"""
+        if sys.platform != "win32":
+            return False
+        try:
+            hp = str(int(getattr(self, "http_port", 10809) or 10809))
+            sp = str(int(getattr(self, "socks_port", 10808) or 10808))
+            markers = (
+                "127.0.0.1:%s" % hp,
+                "127.0.0.1:%s" % sp,
+                "localhost:%s" % hp,
+                "localhost:%s" % sp,
+            )
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            changed = False
+            try:
+                enable, _ = winreg.QueryValueEx(k, "ProxyEnable")
+            except Exception:
+                enable = 0
+            try:
+                server, _ = winreg.QueryValueEx(k, "ProxyServer")
+            except Exception:
+                server = ""
+            server_l = str(server or "").lower().replace(" ", "")
+            points_here = any(m in server_l for m in markers)
+            try:
+                auto, _ = winreg.QueryValueEx(k, "AutoConfigURL")
+            except Exception:
+                auto = ""
+            auto_l = str(auto or "").lower()
+            pac_here = "mobility.pac" in auto_l
+            if int(enable or 0) == 1 and points_here:
+                winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                changed = True
+            if points_here:
+                try:
+                    winreg.DeleteValue(k, "ProxyServer")
+                except Exception:
+                    try:
+                        winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, "")
+                    except Exception:
+                        pass
+                changed = True
+            if pac_here:
+                try:
+                    winreg.DeleteValue(k, "AutoConfigURL")
+                except Exception:
+                    try:
+                        winreg.SetValueEx(k, "AutoConfigURL", 0, winreg.REG_SZ, "")
+                    except Exception:
+                        pass
+                changed = True
+            winreg.CloseKey(k)
+            if changed:
+                try:
+                    self._notify_proxy_change()
+                except Exception:
+                    pass
+                try:
+                    self.log("已清除残留的本软件系统代理（避免影响其它客户端）")
+                except Exception:
+                    pass
+            return changed
+        except Exception:
+            return False
+
     def set_system_proxy(self, enable: bool, port: int = 10809, pac: bool = False):
         try:
             # 关闭：只还原备份，绝不先清空（否则会把 v2rayN 的系统代理弄丢）
@@ -8457,16 +8536,20 @@ class App(ctk.CTk):
             self.withdraw()
             self.log("已最小化到系统托盘")
             return
-        # 真正退出：只清理一次，避免重复 taskkill/netsh 导致退出很慢
+        # 真正退出
         try:
             self.stop_proxy()
         except Exception:
             pass
-        # 再保险还原系统代理（兼容 v2rayN：还原备份 + 多次通知）
         try:
             self.stop_mihomo()
         except Exception:
             pass
+        try:
+            self.stop_singbox()
+        except Exception:
+            pass
+        # 1) 先还原进入本软件前的代理备份
         for _ in range(2):
             try:
                 self.restore_proxy_backup()
@@ -8477,9 +8560,18 @@ class App(ctk.CTk):
             except Exception:
                 pass
             try:
-                time.sleep(0.12)
+                time.sleep(0.08)
             except Exception:
                 pass
+        # 2) 若仍指向本软件端口，强制清除（防止 v2rayN 测速全 -1）
+        try:
+            self.force_clear_stale_proxy()
+        except Exception:
+            pass
+        try:
+            self._notify_proxy_change()
+        except Exception:
+            pass
         try:
             self.save_settings()
         except Exception:
