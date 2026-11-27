@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.3"
+APP_VERSION = "0.26.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1441,12 +1441,30 @@ class App(ctk.CTk):
         self.sub_menu_btn.pack(side="right", padx=2)
         self.load_btn = ctk.CTkButton(row1, text="加载", width=60, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="right", padx=2)
+        self.clear_url_btn = ctk.CTkButton(
+            row1, text="×", width=32, height=32,
+            fg_color=("#94A3B8", "#475569"), hover_color=("#64748B", "#334155"),
+            command=self.clear_url_entry,
+        )
+        self.clear_url_btn.pack(side="right", padx=(0, 2))
         self.entry = ctk.CTkEntry(row1, height=32, placeholder_text="订阅 URL 或节点链接")
-        self.entry.pack(side="left", fill="x", expand=True, padx=(4, 8))
+        self.entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
 
-        # 第二行：并发/模式/启动/停止 右对齐，停止与导入右边缘对齐
+        # 第二行：左侧测速 + 右侧并发/模式/启动/停止
         row2 = ctk.CTkFrame(bar_inner, fg_color="transparent")
         row2.pack(fill="x")
+        left2 = ctk.CTkFrame(row2, fg_color="transparent")
+        left2.pack(side="left")
+        self.test_all_btn = ctk.CTkButton(
+            left2, text="测速全部", width=88, height=30,
+            fg_color="#2563EB", command=self.test_all_thread,
+        )
+        self.test_all_btn.pack(side="left", padx=(4, 2))
+        self.test_group_btn = ctk.CTkButton(
+            left2, text="测速所选分组", width=110, height=30,
+            fg_color="#0D9488", command=self.test_current_group_thread,
+        )
+        self.test_group_btn.pack(side="left", padx=2)
         right2 = ctk.CTkFrame(row2, fg_color="transparent")
         right2.pack(side="right")
         ctk.CTkLabel(right2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
@@ -2201,8 +2219,21 @@ class App(ctk.CTk):
         try:
             if anchor_widget is not None:
                 anchor_widget.update_idletasks()
-                ax = anchor_widget.winfo_rootx()
-                ay = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 2
+                ax = int(anchor_widget.winfo_rootx())
+                ay_below = int(anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 4)
+                ay_above = int(anchor_widget.winfo_rooty() - h - 4)
+                try:
+                    sw = int(win.winfo_screenwidth())
+                    sh = int(win.winfo_screenheight())
+                except Exception:
+                    sw, sh = 1920, 1080
+                if ay_below + h <= sh - 8:
+                    ay = ay_below
+                elif ay_above >= 8:
+                    ay = ay_above
+                else:
+                    ay = max(8, min(ay_below, sh - h - 8))
+                ax = max(8, min(ax, sw - w - 8))
                 win.geometry("%dx%d+%d+%d" % (w, h, ax, ay))
             else:
                 win.geometry("%dx%d" % (w, h))
@@ -2353,14 +2384,12 @@ class App(ctk.CTk):
             [
                 ("节点上移", lambda: self.move_selected_node(-1)),
                 ("节点下移", lambda: self.move_selected_node(1)),
-                ("测速全部", self.test_all_thread),
                 ("连接诊断", self.open_diagnostics_dialog),
                 ("重命名分组", self.rename_node_group_dialog),
                 ("选择最快节点", self.select_best),
                 ("复制当前节点", self.copy_selected_node),
                 ("删除当前节点", self.delete_selected_node),
                 ("连通性测试", self.connectivity_test_thread),
-                ("测速所选分组", self.test_current_group_thread),
                 ("测速筛选结果", self.test_filtered_thread),
                 ("测速/连通性设置", self.open_speed_settings_dialog),
             ],
@@ -6000,6 +6029,13 @@ class App(ctk.CTk):
             self.log(f"全部订阅更新完成：合计 {len(self.nodes)}（其中本地保留 {local_n}）")
         self.after(0, _ui)
 
+    def clear_url_entry(self):
+        try:
+            self.entry.delete(0, "end")
+        except Exception:
+            pass
+        self.subscription_url = ""
+
     def load_nodes_thread(self):
         if getattr(self, "_loading_nodes", False):
             self.log("正在加载中，请稍候…")
@@ -7512,11 +7548,12 @@ class App(ctk.CTk):
                 "tag": "proxy",
                 "server": server,
                 "server_port": port,
-                "password": node.get("password") or "",
+                "password": node.get("password") or node.get("uuid") or "",
                 "tls": {
                     "enabled": True,
                     "server_name": node.get("sni") or server,
                     "insecure": bool(node.get("insecure")),
+                    "alpn": ["h3"],
                 },
             }
             if node.get("obfs"):
@@ -7905,7 +7942,14 @@ class App(ctk.CTk):
             final = "proxy"
 
         cfg = {
-            "log": {"level": "warn", "timestamp": True},
+            "log": {"level": "info", "timestamp": True},
+            "dns": {
+                "servers": [
+                    {"type": "udp", "server": "223.5.5.5", "detour": "direct"},
+                    {"type": "udp", "server": "1.1.1.1", "detour": "proxy"},
+                ],
+                "strategy": "prefer_ipv4",
+            },
             "inbounds": inbounds,
             "outbounds": [
                 outbound,
@@ -8203,6 +8247,10 @@ class App(ctk.CTk):
                 self.log("错误：找不到 sing-box 核心")
                 self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
                 return
+            try:
+                self.log("sing-box 版本：%s" % (get_core_binary_version(sb, "sing-box") or "未知"))
+            except Exception:
+                pass
             if getattr(self, "tun_enabled", False):
                 try:
                     ensure_wintun(self.core_dir, log_fn=self.log)
