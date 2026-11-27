@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.8"
+APP_VERSION = "0.26.9"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1197,11 +1197,28 @@ def build_outbound(node: dict) -> dict:
             path = (node.get("path") or "/").strip() or "/"
             if not path.startswith("/"):
                 path = "/" + path
-            ws = {"path": path}
-            # 新版 Xray：host 独立字段；同时保留 headers.Host 兼容旧配置
+            max_early = 0
+            try:
+                import re as _re
+                m_ed = _re.search(r'[?&]ed=(\d+)', path)
+                if m_ed:
+                    max_early = int(m_ed.group(1))
+                    path = path.split("?")[0] or "/"
+            except Exception:
+                max_early = 0
+            # 部分节点 path 仅为 /?ed=2048
+            if max_early <= 0:
+                try:
+                    max_early = int(node.get("maxEarlyData") or node.get("ed") or 0)
+                except Exception:
+                    max_early = 0
+            ws = {"path": path or "/"}
             if host_header:
                 ws["host"] = host_header
                 ws["headers"] = {"Host": host_header}
+            if max_early > 0:
+                ws["maxEarlyData"] = max_early
+                ws["earlyDataHeaderName"] = "Sec-WebSocket-Protocol"
             stream["wsSettings"] = ws
         elif network == "grpc":
             stream["grpcSettings"] = {
@@ -5811,8 +5828,9 @@ class App(ctk.CTk):
                 if v < 0:
                     return (1, 999999)
                 return (0, v)
-            for g in list(groups.keys()):
-                groups[g] = sorted(groups[g], key=_lat_key)
+            if resort:
+                for g in list(groups.keys()):
+                    groups[g] = sorted(groups[g], key=_lat_key)
             # 本地 → 在线 → 单节点
             try:
                 order = sorted(order, key=group_order_key)
@@ -5974,7 +5992,13 @@ class App(ctk.CTk):
                 target = nearest
         except Exception:
             target = None
-        if not target or target is node:
+        try:
+            if target is not None and node_key(target) == node_key(node):
+                target = None
+        except Exception:
+            if target is node:
+                target = None
+        if not target:
             try:
                 self.on_node_button_click(node, btn)
             except Exception:
@@ -5982,13 +6006,27 @@ class App(ctk.CTk):
             return
         try:
             nodes = list(self.nodes or [])
-            i = nodes.index(node)
-            j = nodes.index(target)
-            nodes.pop(i)
-            nodes.insert(j, node)
+            def _idx(n0):
+                k0 = node_key(n0)
+                for ii, nn in enumerate(nodes):
+                    try:
+                        if node_key(nn) == k0:
+                            return ii
+                    except Exception:
+                        pass
+                return -1
+            i = _idx(node)
+            j = _idx(target)
+            if i < 0 or j < 0:
+                self.log("拖拽失败：找不到节点位置")
+                return
+            item = nodes.pop(i)
+            if j > i:
+                j -= 1
+            nodes.insert(j, item)
             self.nodes = nodes
-            self.current_node = node
-            self._selected_label = node.get("_label")
+            self.current_node = item
+            self._selected_label = item.get("_label")
             self.refresh_node_list(keep_selection=True, resort=False)
             self.save_settings()
             self.log("已拖拽调整节点顺序")
@@ -8991,18 +9029,27 @@ class App(ctk.CTk):
                 continue
 
     def on_closing(self):
-        # 关闭到托盘（代理可继续跑）
-        if self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
-            self.save_settings()
-            try:
-                self.iconify()
-            except Exception:
+        # 已在托盘/最小化时再次关闭 = 真正退出（解决任务栏「关闭窗口」关不掉）
+        try:
+            st = str(self.state())
+        except Exception:
+            st = ""
+        force = bool(getattr(self, "_force_quit", False))
+        if (not force) and self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
+            if st in ("iconic", "withdrawn"):
+                # 第二次关闭：退出
+                pass
+            else:
+                self.save_settings()
                 try:
                     self.withdraw()
                 except Exception:
-                    pass
-            self.log("已最小化到系统托盘")
-            return
+                    try:
+                        self.iconify()
+                    except Exception:
+                        pass
+                self.log("已最小化到系统托盘（再点一次关闭或托盘「退出」可结束进程）")
+                return
         # 真正退出
         try:
             self.stop_proxy()
