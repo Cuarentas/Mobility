@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.4"
+APP_VERSION = "0.25.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2244,7 +2244,8 @@ class App(ctk.CTk):
             [
                 ("更新当前订阅", self.refresh_current_sub_thread),
                 ("添加当前链接到订阅", self.add_subscription),
-                ("删除当前订阅", self.remove_subscription),
+                ("删除所选分组", self.remove_subscription),
+                ("删除所有订阅", self.remove_all_subscriptions),
                 ("重命名当前订阅", self.rename_subscription),
                 ("更新全部订阅", self.refresh_all_subs_thread),
             ],
@@ -2866,12 +2867,16 @@ class App(ctk.CTk):
         try:
             if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
                 self._collapsed_groups = set()
-            self._collapsed_groups.add(group_name)
+            for n in self.nodes or []:
+                if isinstance(n, dict):
+                    gg = (n.get("_group") or n.get("group") or "").strip()
+                    if gg:
+                        self._collapsed_groups.add(gg)
         except Exception:
             pass
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
-        self.log("本地导入成功：%s 个节点（组：%s，已折叠）" % (len(nodes), group_name))
+        self.log("本地导入成功：%s 个节点（组：%s，全部分组已折叠）" % (len(nodes), group_name))
 
     def import_config_dialog(self):
         try:
@@ -5569,25 +5574,99 @@ class App(ctk.CTk):
         self.load_nodes_thread()
 
     def remove_subscription(self):
-        name = self.sub_select.get()
-        before = len(self.subscriptions)
-        self.subscriptions = [
-            s for s in self.subscriptions
-            if (s.get("name") or (s.get("url") or "")[:24]) != name
-        ]
-        if len(self.subscriptions) == before:
-            self.log("未找到要删除的订阅")
+        """删除节点列表中橙色高亮的分组（及其节点）；若为在线组则同步移除对应订阅项。"""
+        g = (getattr(self, "_active_test_group", None) or "").strip()
+        if not g:
+            self.log("请先点击要删除的分组（橙色高亮），再点「删除所选分组」")
             return
-        self.refresh_sub_select()
-        if self.subscriptions:
-            self.on_sub_select(self.sub_select.get())
-        else:
-            self.subscription_url = ""
-            self.entry.delete(0, "end")
-            self.nodes = []
-            self.refresh_node_list()
+        is_local = g.startswith("本地")
+        # 去掉前缀得到订阅显示名
+        bare = g
+        for pfx in ("在线：", "在线:", "本地：", "本地:"):
+            if bare.startswith(pfx):
+                bare = bare[len(pfx):].strip()
+                break
+        removed_n = 0
+        kept = []
+        for n in list(self.nodes or []):
+            if not isinstance(n, dict):
+                continue
+            ng = (n.get("_group") or n.get("group") or "").strip()
+            if ng == g:
+                removed_n += 1
+                continue
+            kept.append(n)
+        self.nodes = kept
+        # 在线组：从 subscriptions 里删对应项
+        if not is_local and bare:
+            before = len(self.subscriptions or [])
+            self.subscriptions = [
+                s for s in (self.subscriptions or [])
+                if (s.get("name") or (s.get("url") or "")[:24]) != bare
+            ]
+            if len(self.subscriptions) < before:
+                self.log("已从订阅列表移除：%s" % bare)
+        try:
+            if getattr(self, "_active_test_group", None) == g:
+                self._active_test_group = None
+        except Exception:
+            pass
+        if self.current_node and (self.current_node.get("_group") or self.current_node.get("group")) == g:
+            self.current_node = None
+            try:
+                self.current_label.configure(text="当前节点：无")
+            except Exception:
+                pass
+        try:
+            self.refresh_sub_select()
+        except Exception:
+            pass
+        try:
+            self.refresh_node_list(keep_selection=False)
+        except Exception:
+            pass
         self.save_settings()
-        self.log(f"已删除订阅：{name}")
+        self.log("已删除分组：%s（节点 %s 个，剩余 %s）" % (g, removed_n, len(self.nodes)))
+
+    def remove_all_subscriptions(self):
+        """删除全部订阅（含在线与本地分组及全部节点）。"""
+        try:
+            import tkinter.messagebox as messagebox
+            ok = messagebox.askyesno(
+                "删除所有订阅",
+                "将删除全部在线订阅与本地导入分组及所有节点，此操作不可恢复。确定？",
+                parent=self,
+            )
+        except Exception:
+            ok = True
+        if not ok:
+            return
+        n_sub = len(self.subscriptions or [])
+        n_nodes = len(self.nodes or [])
+        self.subscriptions = []
+        self.nodes = []
+        self.current_node = None
+        self._pending_node = None
+        self._active_test_group = None
+        self.subscription_url = ""
+        try:
+            self.entry.delete(0, "end")
+        except Exception:
+            pass
+        try:
+            self.current_label.configure(text="当前节点：无")
+        except Exception:
+            pass
+        try:
+            self.refresh_sub_select()
+        except Exception:
+            pass
+        try:
+            self.refresh_node_list(keep_selection=False)
+        except Exception:
+            pass
+        self.save_settings()
+        self.log("已清空全部订阅与节点：订阅 %s 个，节点 %s 个" % (n_sub, n_nodes))
 
     def rename_subscription(self):
         name = self.sub_select.get() if hasattr(self, "sub_select") else ""
@@ -5678,6 +5757,16 @@ class App(ctk.CTk):
                 self.log(f"  失败：{e}")
         self.nodes = all_nodes
         self.group_nodes_by_sub = True
+        try:
+            if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                self._collapsed_groups = set()
+            for n in self.nodes or []:
+                if isinstance(n, dict):
+                    gg = (n.get("_group") or n.get("group") or "").strip()
+                    if gg:
+                        self._collapsed_groups.add(gg)
+        except Exception:
+            pass
 
         def _ui():
             self.refresh_node_list(keep_selection=False)
@@ -5777,10 +5866,15 @@ class App(ctk.CTk):
                 try:
                     if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
                         self._collapsed_groups = set()
-                    self._collapsed_groups.add(sub_name)
+                    # 拉取后全部折叠（含新组）
+                    for n in self.nodes or []:
+                        if isinstance(n, dict):
+                            gg = (n.get("_group") or n.get("group") or "").strip()
+                            if gg:
+                                self._collapsed_groups.add(gg)
                 except Exception:
                     pass
-                self.log("订阅解析完成：本组 %s 个，合计 %s 个（多订阅共存，新组已折叠）" % (added, len(self.nodes)))
+                self.log("订阅解析完成：本组 %s 个，合计 %s 个（多订阅共存，全部分组已折叠）" % (added, len(self.nodes)))
             else:
                 self.subscription_url = ""
                 if "://" in text and "\n" not in text:
