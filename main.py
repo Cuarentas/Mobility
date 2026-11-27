@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.24.9"
+APP_VERSION = "0.25.1"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -2806,11 +2806,12 @@ class App(ctk.CTk):
         if not nodes:
             self.log("未能从文件解析出节点（请确认是 Clash/URI/JSON/Surge 等文本格式）")
             return
-        group_name = "本地:" + Path(path).stem[:24]
+        group_name = normalize_group_name(Path(path).stem[:24], local=True)
         for n in nodes:
             if isinstance(n, dict):
                 n["_group"] = group_name
                 n["group"] = group_name
+                n["from_local"] = True
         # 保留已有节点分组，新节点单独一组
         seen = set()
         merged = []
@@ -5570,7 +5571,7 @@ class App(ctk.CTk):
             if not isinstance(n, dict):
                 continue
             g = str(n.get("_group") or n.get("group") or "")
-            if g.startswith("本地:") or n.get("from_local"):
+            if g.startswith("本地:") or g.startswith("本地：") or n.get("from_local"):
                 keep_nodes.append(n)
         all_nodes = []
         seen = set()
@@ -5587,7 +5588,7 @@ class App(ctk.CTk):
                 resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 Mobility"})
                 resp.raise_for_status()
                 nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
-                gname = s.get("name") or (url[:24] if url else "订阅")
+                gname = normalize_group_name(s.get("name") or (url[:24] if url else "订阅"), local=False)
                 cnt = 0
                 for n in nodes or []:
                     if not isinstance(n, dict):
@@ -5626,7 +5627,7 @@ class App(ctk.CTk):
             self.after(0, lambda: self.load_btn.configure(state="normal"))
             return
 
-        self.nodes = []
+        prev_nodes = list(self.nodes or [])
         try:
             if text.startswith(("http://", "https://")):
                 self.subscription_url = text
@@ -5659,9 +5660,15 @@ class App(ctk.CTk):
                 new_nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
                 sub_name = "订阅"
                 try:
-                    # 当前选中的订阅名
                     if getattr(self, "sub_select", None) is not None:
                         sub_name = (self.sub_select.get() or "订阅").strip() or "订阅"
+                except Exception:
+                    pass
+                try:
+                    for s in self.subscriptions or []:
+                        if (s.get("url") or "").strip() == text:
+                            sub_name = (s.get("name") or sub_name).strip() or sub_name
+                            break
                 except Exception:
                     pass
                 sub_name = normalize_group_name(sub_name, local=False)
@@ -5669,10 +5676,22 @@ class App(ctk.CTk):
                     if isinstance(n, dict):
                         n["_group"] = sub_name
                         n["group"] = sub_name
-                # 与其他分组合并，不覆盖本地组
+                # 多订阅共存：只替换本订阅组，保留其它在线组与本地组
                 seen = set()
                 merged = []
-                for n in list(self.nodes or []) + list(new_nodes or []):
+                for n in list(prev_nodes or []):
+                    if not isinstance(n, dict):
+                        continue
+                    g = (n.get("_group") or n.get("group") or "").strip()
+                    if g == sub_name:
+                        continue
+                    key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(n)
+                added = 0
+                for n in list(new_nodes or []):
                     if not isinstance(n, dict):
                         continue
                     key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
@@ -5680,22 +5699,42 @@ class App(ctk.CTk):
                         continue
                     seen.add(key)
                     merged.append(n)
-                # 若用户是「加载」当前订阅，同名组先移除再写入，避免重复堆积
-                merged = [n for n in merged if (n.get("_group") or n.get("group")) != sub_name] + [
-                    n for n in (new_nodes or []) if isinstance(n, dict)
-                ]
+                    added += 1
                 self.nodes = merged
                 self.group_nodes_by_sub = True
-                self.log(f"订阅解析完成：本组 {len(new_nodes or [])} 个，合计 {len(self.nodes)} 个（按订阅分组保留）")
+                self.log("订阅解析完成：本组 %s 个，合计 %s 个（多订阅共存）" % (added, len(self.nodes)))
             else:
                 self.subscription_url = ""
                 if "://" in text and "\n" not in text:
                     node = parse_link(text)
                     if node:
-                        self.nodes = [node]
+                        # 单节点追加，不清空已有
+                        node["_group"] = node.get("_group") or "手动导入"
+                        prev = list(prev_nodes or [])
+                        prev.append(node)
+                        self.nodes = prev
+                    else:
+                        self.nodes = prev_nodes
                 else:
-                    self.nodes = parse_subscription_content(text)
-                self.log(f"解析完成，共 {len(self.nodes)} 个节点")
+                    parsed = parse_subscription_content(text) or parse_nodes_any(text) or []
+                    for n in parsed:
+                        if isinstance(n, dict) and not n.get("_group"):
+                            n["_group"] = "手动导入"
+                    seen = set()
+                    merged = list(prev_nodes or [])
+                    for n in merged:
+                        if isinstance(n, dict):
+                            seen.add("%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name")))
+                    for n in parsed:
+                        if not isinstance(n, dict):
+                            continue
+                        key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        merged.append(n)
+                    self.nodes = merged
+                self.log("解析完成，共 %s 个节点" % len(self.nodes or []))
         except Exception as e:
             self.log(f"加载失败：{e}")
             self.after(0, lambda: self.load_btn.configure(state="normal"))
@@ -5708,35 +5747,16 @@ class App(ctk.CTk):
             return
 
         count = len(self.nodes)
-        # 按当前订阅名写入分组
-        gname = None
-        try:
-            for s in self.subscriptions or []:
-                if (s.get("url") or "") == text:
-                    gname = s.get("name") or None
-                    break
-            if not gname:
-                try:
-                    gname = self.sub_select.get()
-                    if gname in ("", "（无订阅）"):
-                        gname = None
-                except Exception:
-                    gname = None
-            if not gname and text.startswith("http"):
-                from urllib.parse import urlparse
-                gname = (urlparse(text).netloc or "")[:24] or "订阅"
-            if not gname:
-                gname = "手动导入"
-            for n in self.nodes:
-                if isinstance(n, dict):
-                    n["_group"] = gname
-                    n["group"] = gname
-        except Exception:
-            pass
-        # 所有 UI 操作丢回主线程
+
         def _ui_ok():
             try:
                 self.log(f"解析到 {count} 个节点，正在刷新列表...")
+                # 拉取成功后清空中间网址框（订阅已在下拉中）
+                try:
+                    if text.startswith(("http://", "https://")):
+                        self.entry.delete(0, "end")
+                except Exception:
+                    pass
                 self.refresh_node_list(keep_selection=False)
                 try:
                     self.refresh_sub_select()
@@ -5749,6 +5769,7 @@ class App(ctk.CTk):
                 except Exception:
                     pass
         self.after(0, _ui_ok)
+
 
     def on_dns_change(self, value=None):
         self.dns_mode = self.dns_combo.get() or "系统默认"
@@ -5983,15 +6004,37 @@ class App(ctk.CTk):
         self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
         self.save_settings()
 
-    def get_selected_node(self):
-        if self.current_node and self.current_node in (self.nodes or []):
-            return self.current_node
-        if self.current_node:
-            # 可能重载后对象不同，按 label 找
-            lb = self.current_node.get("_label") or self.current_node.get("name")
+    def resolve_live_node(self, node):
+        """按唯一键从当前 self.nodes 取最新节点对象，避免列表刷新后引用失效。"""
+        if not isinstance(node, dict):
+            return None
+        try:
+            k = node_key(node)
+        except Exception:
+            k = None
+        if k:
             for n in self.nodes or []:
-                if n.get("_label") == lb or n.get("name") == lb:
-                    return n
+                if not isinstance(n, dict):
+                    continue
+                try:
+                    if node_key(n) == k:
+                        return n
+                except Exception:
+                    pass
+        # 回退：地址端口协议
+        addr, port, proto = node.get("address"), node.get("port"), node.get("protocol")
+        for n in self.nodes or []:
+            if not isinstance(n, dict):
+                continue
+            if n.get("address") == addr and n.get("port") == port and n.get("protocol") == proto:
+                return n
+        return node if node in (self.nodes or []) else None
+
+    def get_selected_node(self):
+        node = getattr(self, "current_node", None) or getattr(self, "_pending_node", None)
+        live = self.resolve_live_node(node) if node else None
+        if live:
+            return live
         if self.nodes:
             return self.nodes[0]
         return None
@@ -6642,6 +6685,31 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+    def _query_mihomo_traffic(self):
+        """Mihomo external-controller 累计流量 (up, down)。"""
+        try:
+            if not getattr(self, "mihomo_process", None) or self.mihomo_process.poll() is not None:
+                return None
+            import urllib.request
+            # connections 接口含 downloadTotal / uploadTotal
+            req = urllib.request.Request(
+                "http://127.0.0.1:9090/connections",
+                headers={"User-Agent": "Mobility"},
+            )
+            with urllib.request.urlopen(req, timeout=1.2) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore") or "{}")
+            if not isinstance(data, dict):
+                return None
+            up = int(data.get("uploadTotal") or 0)
+            down = int(data.get("downloadTotal") or 0)
+            if up < 0:
+                up = 0
+            if down < 0:
+                down = 0
+            return up, down
+        except Exception:
+            return None
+
     def _query_xray_traffic(self):
         """返回 (uplink_bytes, downlink_bytes) 或 None。"""
         try:
@@ -6677,9 +6745,13 @@ class App(ctk.CTk):
                         val = 0
                     if val < 0:
                         val = 0
-                    if "outbound>>>proxy>>>uplink" in name:
+                    if "outbound>>>proxy>>>uplink" in name or "outbound>>>proxy>>>traffic>>>uplink" in name:
                         up = max(up, val)
-                    elif "outbound>>>proxy>>>downlink" in name:
+                    elif "outbound>>>proxy>>>downlink" in name or "outbound>>>proxy>>>traffic>>>downlink" in name:
+                        down = max(down, val)
+                    elif ">>>uplink" in name and "outbound>>>" in name and "api" not in name:
+                        up = max(up, val)
+                    elif ">>>downlink" in name and "outbound>>>" in name and "api" not in name:
                         down = max(down, val)
                     elif "inbound>>>socks>>>uplink" in name or "inbound>>>http>>>uplink" in name:
                         up_i += val
@@ -6788,6 +6860,11 @@ class App(ctk.CTk):
     def _sample_stats_worker(self):
         try:
             tr = self._query_xray_traffic()
+            if not tr:
+                try:
+                    tr = self._query_mihomo_traffic()
+                except Exception:
+                    tr = None
             now = time.time()
             speed_up = getattr(self, "_speed_up", 0.0)
             speed_down = getattr(self, "_speed_down", 0.0)
@@ -7208,6 +7285,8 @@ class App(ctk.CTk):
         cfg = {
             "mixed-port": int(http_port),
             "allow-lan": bool(getattr(self, "allow_lan", False)),
+            "external-controller": "127.0.0.1:9090",
+            "secret": "",
             "mode": clash_mode,
             "log-level": "info",
             "ipv6": False,
