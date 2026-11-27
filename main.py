@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.9"
+APP_VERSION = "0.26.10"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1104,6 +1104,35 @@ def tcp_ping(host: str, port: int, timeout: float = TEST_TIMEOUT) -> int | None:
         return None
 
 
+def build_ws_settings(node: dict, sni: str = "") -> dict:
+    """WebSocket 配置：保留 path 中的 ?ed=，并兼容 maxEarlyData。"""
+    host_header = (node.get("host") or sni or node.get("sni") or "").strip()
+    path = (node.get("path") or "/").strip() or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    max_early = 0
+    try:
+        m_ed = re.search(r"[?&]ed=(\d+)", path)
+        if m_ed:
+            max_early = int(m_ed.group(1))
+    except Exception:
+        max_early = 0
+    if max_early <= 0:
+        try:
+            max_early = int(node.get("maxEarlyData") or node.get("ed") or 0)
+        except Exception:
+            max_early = 0
+    # 关键：path 保留原始 ?ed=（很多 CF 节点依赖此形式）
+    ws = {"path": path}
+    if host_header:
+        ws["host"] = host_header
+        ws["headers"] = {"Host": host_header}
+    if max_early > 0:
+        ws["maxEarlyData"] = max_early
+        ws["earlyDataHeaderName"] = "Sec-WebSocket-Protocol"
+    return ws
+
+
 def build_outbound(node: dict) -> dict:
     if not node or not isinstance(node, dict):
         return None
@@ -1122,10 +1151,7 @@ def build_outbound(node: dict) -> dict:
                 "serverName": node.get("sni") or node.get("host") or node["address"],
             }
         if node.get("network") == "ws":
-            stream["wsSettings"] = {
-                "path": node.get("path") or "/",
-                "headers": {"Host": node.get("host") or node["address"]},
-            }
+            stream["wsSettings"] = build_ws_settings(node, node.get("sni") or node.get("host") or node.get("address") or "")
         if node.get("network") == "grpc":
             stream["grpcSettings"] = {"serviceName": node.get("path") or ""}
 
@@ -1193,33 +1219,7 @@ def build_outbound(node: dict) -> dict:
             }
 
         if network == "ws":
-            host_header = (node.get("host") or sni or "").strip()
-            path = (node.get("path") or "/").strip() or "/"
-            if not path.startswith("/"):
-                path = "/" + path
-            max_early = 0
-            try:
-                import re as _re
-                m_ed = _re.search(r'[?&]ed=(\d+)', path)
-                if m_ed:
-                    max_early = int(m_ed.group(1))
-                    path = path.split("?")[0] or "/"
-            except Exception:
-                max_early = 0
-            # 部分节点 path 仅为 /?ed=2048
-            if max_early <= 0:
-                try:
-                    max_early = int(node.get("maxEarlyData") or node.get("ed") or 0)
-                except Exception:
-                    max_early = 0
-            ws = {"path": path or "/"}
-            if host_header:
-                ws["host"] = host_header
-                ws["headers"] = {"Host": host_header}
-            if max_early > 0:
-                ws["maxEarlyData"] = max_early
-                ws["earlyDataHeaderName"] = "Sec-WebSocket-Protocol"
-            stream["wsSettings"] = ws
+            stream["wsSettings"] = build_ws_settings(node, sni)
         elif network == "grpc":
             stream["grpcSettings"] = {
                 "serviceName": node.get("serviceName") or node.get("path") or "",
@@ -1287,10 +1287,7 @@ def build_outbound(node: dict) -> dict:
         if node.get("fp"):
             stream["tlsSettings"]["fingerprint"] = node["fp"]
         if node.get("network") == "ws":
-            stream["wsSettings"] = {
-                "path": node.get("path") or "/",
-                "headers": {"Host": node.get("host") or node.get("sni") or node["address"]},
-            }
+            stream["wsSettings"] = build_ws_settings(node, node.get("sni") or node.get("host") or node.get("address") or "")
 
         return {
             "tag": "proxy",
@@ -1850,7 +1847,7 @@ class App(ctk.CTk):
                 pass
         except Exception:
             try:
-                self.refresh_node_list(keep_selection=True, resort=False)
+                self.refresh_node_list(keep_selection=True, resort=True)
             except Exception:
                 pass
 
@@ -6633,6 +6630,7 @@ class App(ctk.CTk):
 
         elapsed = time.perf_counter() - t_start
         self.log(f"测速完成：成功 {ok}/{total}，耗时 {elapsed:.1f}s")
+        # 测速后按延迟排序（拖拽后的顺序仅在未重新测速时保留）
         if ok < total:
             self.log("提示：TCP 测速超时≠节点不可用；Hysteria2/TUIC 以 UDP 为主，请用对应核心实际连接验证")
 
@@ -6645,7 +6643,7 @@ class App(ctk.CTk):
 
         try:
             # 重建列表以按组内延迟排序
-            self.after(0, lambda: self.refresh_node_list(keep_selection=True, resort=False))
+            self.after(0, lambda: self.refresh_node_list(keep_selection=True, resort=True))
         except Exception:
             try:
                 self.after(0, self._update_node_latency_labels)
@@ -8452,7 +8450,7 @@ class App(ctk.CTk):
                         node.get("security"),
                         node.get("sni"),
                         node.get("host"),
-                        node.get("path"),
+                        (node.get("path") or ""),
                         node.get("fp"),
                         node.get("flow"),
                         "有" if node.get("pbk") else "无",
