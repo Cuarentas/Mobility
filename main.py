@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.6"
+APP_VERSION = "0.26.7"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -547,18 +547,21 @@ def parse_vless(link: str) -> dict | None:
             "address": address,
             "port": int(port),
             "uuid": uuid,
-            "encryption": get_param("encryption", "none"),
+            "encryption": get_param("encryption", "none") or "none",
             "flow": get_param("flow", ""),
-            "network": get_param("type", "tcp"),
-            "security": get_param("security", "none"),
+            "network": get_param("type", "tcp") or "tcp",
+            "security": get_param("security", "none") or "none",
             "sni": get_param("sni") or get_param("host") or "",
-            "fp": get_param("fp", ""),
+            "fp": get_param("fp", "") or "chrome",
             "pbk": get_param("pbk", ""),
             "sid": get_param("sid", ""),
             "spx": get_param("spx", ""),
             "path": get_param("path", ""),
             "host": get_param("host", ""),
-            "serviceName": get_param("serviceName", ""),
+            "serviceName": get_param("serviceName", "") or get_param("serviceName", ""),
+            "mode": get_param("mode", ""),
+            "alpn": get_param("alpn", ""),
+            "headerType": get_param("headerType", ""),
             "raw": link,
             "latency": None,
         }
@@ -1140,52 +1143,50 @@ def build_outbound(node: dict) -> dict:
         }
 
     if protocol == "vless":
-        uid = node.get("uuid") or node.get("id") or ""
+        uid = str(node.get("uuid") or node.get("id") or "").strip()
         user = {
             "id": uid,
-            "encryption": node.get("encryption") or "none",
+            "encryption": "none",
         }
         flow = (node.get("flow") or "").strip()
         if flow:
             user["flow"] = flow
 
-        network = (node.get("network") or node.get("type") or "tcp") or "tcp"
-        network = str(network).lower()
-        if network in ("h2", "http", "httpupgrade"):
-            pass
-        stream = {"network": network}
+        network = str(node.get("network") or node.get("type") or "tcp").lower().strip()
+        if network in ("httpupgrade", "http_upgrade"):
+            network = "httpupgrade"
+        if network in ("splithttp", "xhttp"):
+            network = "xhttp"
+        stream = {"network": network if network else "tcp"}
+
         security = (node.get("security") or "").lower().strip()
-        # 有 sni/fp/pbk 但未写 security 时按 TLS/Reality 推断
-        if not security or security in ("none", "0"):
+        if not security or security in ("none", "0", "false"):
             if node.get("pbk"):
                 security = "reality"
             elif node.get("sni") or node.get("fp") or str(node.get("tls") or "").lower() in ("tls", "true", "1"):
                 security = "tls"
             else:
                 security = "none"
+
+        sni = (node.get("sni") or node.get("host") or node.get("address") or "")
+        fp = (node.get("fp") or "chrome") or "chrome"
+
         if security == "tls":
             stream["security"] = "tls"
-            tls = {
-                "serverName": node.get("sni") or node.get("host") or node.get("address"),
-                "allowInsecure": False,
-            }
-            # 新版 Xray 已移除 allowInsecure；用指纹提高兼容性
-            tls.pop("allowInsecure", None)
-            fp = node.get("fp") or "chrome"
-            if fp:
-                tls["fingerprint"] = fp
+            tls = {"serverName": sni, "fingerprint": fp}
             alpn = node.get("alpn")
             if alpn:
                 if isinstance(alpn, str):
                     tls["alpn"] = [x.strip() for x in alpn.split(",") if x.strip()]
                 elif isinstance(alpn, list):
-                    tls["alpn"] = alpn
+                    tls["alpn"] = list(alpn)
             stream["tlsSettings"] = tls
         elif security == "reality":
             stream["security"] = "reality"
             stream["realitySettings"] = {
-                "serverName": node.get("sni") or node.get("host") or node.get("address"),
-                "fingerprint": node.get("fp") or "chrome",
+                "show": False,
+                "serverName": sni,
+                "fingerprint": fp,
                 "publicKey": node.get("pbk") or "",
                 "shortId": node.get("sid") or "",
                 "spiderX": node.get("spx") or "",
@@ -1194,13 +1195,33 @@ def build_outbound(node: dict) -> dict:
         if network == "ws":
             stream["wsSettings"] = {
                 "path": node.get("path") or "/",
-                "headers": {"Host": node.get("host") or node.get("sni") or node.get("address")},
+                "headers": {"Host": node.get("host") or sni or node.get("address") or ""},
             }
         elif network == "grpc":
             stream["grpcSettings"] = {
                 "serviceName": node.get("serviceName") or node.get("path") or "",
+                "multiMode": False,
             }
-        elif network in ("tcp",):
+        elif network == "xhttp":
+            stream["network"] = "xhttp"
+            stream["xhttpSettings"] = {
+                "path": node.get("path") or "/",
+                "host": node.get("host") or sni or "",
+                "mode": node.get("mode") or "auto",
+            }
+        elif network == "httpupgrade":
+            stream["network"] = "httpupgrade"
+            stream["httpupgradeSettings"] = {
+                "path": node.get("path") or "/",
+                "host": node.get("host") or sni or "",
+            }
+        elif network in ("h2", "http"):
+            stream["network"] = "h2"
+            stream["httpSettings"] = {
+                "path": node.get("path") or "/",
+                "host": [node.get("host") or sni or node.get("address") or ""],
+            }
+        elif network == "tcp":
             header_type = (node.get("headerType") or node.get("header") or "").lower()
             if header_type == "http":
                 stream["tcpSettings"] = {
@@ -1208,7 +1229,9 @@ def build_outbound(node: dict) -> dict:
                         "type": "http",
                         "request": {
                             "path": [node.get("path") or "/"],
-                            "headers": {"Host": [node.get("host") or node.get("sni") or node.get("address") or ""]},
+                            "headers": {
+                                "Host": [node.get("host") or sni or node.get("address") or ""]
+                            },
                         },
                     }
                 }
@@ -1222,7 +1245,7 @@ def build_outbound(node: dict) -> dict:
             "protocol": "vless",
             "settings": {
                 "vnext": [{
-                    "address": node.get("address"),
+                    "address": str(node.get("address") or "").strip(),
                     "port": port_i,
                     "users": [user],
                 }]
@@ -5019,39 +5042,106 @@ class App(ctk.CTk):
                 pass
             try:
                 self.attributes("-topmost", True)
-                self.after(120, lambda: self.attributes("-topmost", False))
+                self.after(150, lambda: self.attributes("-topmost", False))
             except Exception:
                 pass
-            # 强制整窗重绘：透明度 + 一次轻量节点高亮刷新（不重建列表）
             try:
-                self.attributes("-alpha", 0.96)
+                self.attributes("-alpha", 0.95)
             except Exception:
                 pass
-            def _repaint():
+            def _repaint(heavy=False):
                 try:
                     self.attributes("-alpha", 1.0)
                 except Exception:
                     pass
                 try:
                     self.update_idletasks()
+                    self.update()
                 except Exception:
                     pass
-                try:
-                    self._paint_group_headers()
-                except Exception:
-                    pass
-                try:
-                    self._paint_node_buttons()
-                except Exception:
-                    pass
-            self.after(40, _repaint)
-            self.after(200, _repaint)
+                if heavy:
+                    # 黑屏时重建一次列表（仅恢复窗口时）
+                    try:
+                        self.refresh_node_list(keep_selection=True, resort=False)
+                    except Exception:
+                        try:
+                            self._paint_group_headers()
+                            self._paint_node_buttons()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        self._paint_group_headers()
+                        self._paint_node_buttons()
+                    except Exception:
+                        pass
+            self.after(30, lambda: _repaint(False))
+            self.after(180, lambda: _repaint(True))
         self.after(0, _do)
+
+    def _ensure_speed_bar(self):
+        """任务栏旁常驻小网速条（不依赖鼠标悬停托盘）。"""
+        if getattr(self, "_speed_bar", None) is not None:
+            try:
+                if self._speed_bar.winfo_exists():
+                    return
+            except Exception:
+                pass
+        try:
+            bar = ctk.CTkToplevel(self)
+            bar.overrideredirect(True)
+            bar.attributes("-topmost", True)
+            try:
+                bar.attributes("-toolwindow", True)
+            except Exception:
+                pass
+            bar.geometry("200x28")
+            lbl = ctk.CTkLabel(bar, text="↑0 ↓0", font=("Consolas", 12),
+                               fg_color=("#0F172A", "#0F172A"), text_color="#E2E8F0",
+                               width=200, height=28)
+            lbl.pack(fill="both", expand=True)
+            self._speed_bar = bar
+            self._speed_bar_label = lbl
+            self._place_speed_bar()
+        except Exception:
+            self._speed_bar = None
+
+    def _place_speed_bar(self):
+        try:
+            bar = getattr(self, "_speed_bar", None)
+            if not bar or not bar.winfo_exists():
+                return
+            sw = bar.winfo_screenwidth()
+            sh = bar.winfo_screenheight()
+            # 右下角、任务栏上方
+            bar.geometry("200x28+%d+%d" % (sw - 220, sh - 72))
+        except Exception:
+            pass
+
+    def _hide_speed_bar(self):
+        try:
+            bar = getattr(self, "_speed_bar", None)
+            if bar and bar.winfo_exists():
+                bar.destroy()
+        except Exception:
+            pass
+        self._speed_bar = None
+        self._speed_bar_label = None
 
     def _toggle_tray_speed(self):
         self.tray_show_speed = not bool(getattr(self, "tray_show_speed", False))
         self.log("托盘网速显示：%s" % ("开启" if self.tray_show_speed else "关闭"))
-        if not self.tray_show_speed:
+        if self.tray_show_speed:
+            # 开启实时统计，否则没有数据
+            try:
+                self.live_stats_enabled = True
+                if hasattr(self, "live_stats_var"):
+                    self.live_stats_var.set(True)
+            except Exception:
+                pass
+            self._ensure_speed_bar()
+        else:
+            self._hide_speed_bar()
             try:
                 self.update_tray_icon()
             except Exception:
@@ -7571,6 +7661,19 @@ class App(ctk.CTk):
                             )
                         except Exception:
                             pass
+                        try:
+                            if getattr(self, "tray_show_speed", False):
+                                self._ensure_speed_bar()
+                                if getattr(self, "_speed_bar_label", None):
+                                    self._speed_bar_label.configure(
+                                        text="↑%s/s  ↓%s/s" % (
+                                            self._fmt_bytes(speed_up),
+                                            self._fmt_bytes(speed_down),
+                                        )
+                                    )
+                                    self._place_speed_bar()
+                        except Exception:
+                            pass
                     if hasattr(self, "stat_mem_label"):
                         self.stat_mem_label.configure(text=f"内存 {mem}")
                 except Exception:
@@ -8293,6 +8396,55 @@ class App(ctk.CTk):
         finally:
             self._restarting = False
 
+    def _post_start_probe(self):
+        """启动后经本地代理探测外网，并打印 VLESS 关键字段便于排障。"""
+        try:
+            node = self.get_selected_node() or {}
+            if (node.get("protocol") or "").lower() == "vless":
+                self.log(
+                    "VLESS 参数：net=%s sec=%s sni=%s fp=%s flow=%s pbk=%s"
+                    % (
+                        node.get("network"),
+                        node.get("security"),
+                        node.get("sni") or node.get("host"),
+                        node.get("fp"),
+                        node.get("flow"),
+                        "有" if node.get("pbk") else "无",
+                    )
+                )
+        except Exception:
+            pass
+        try:
+            _, http_port = self.get_ports()
+        except Exception:
+            http_port = 10809
+        def _work():
+            try:
+                import urllib.request
+                proxy = "http://127.0.0.1:%s" % int(http_port)
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+                )
+                opener.addheaders = [("User-Agent", "Mozilla/5.0 MobilityProbe")]
+                with opener.open("http://www.gstatic.com/generate_204", timeout=8) as resp:
+                    code = getattr(resp, "status", None) or resp.getcode()
+                self.after(0, lambda: self.log("代理连通探测：OK (%s)" % code))
+            except Exception as e:
+                err = str(e)[:160]
+                self.after(0, lambda: self.log("代理连通探测失败：%s（节点或 TLS/Reality 参数可能不匹配）" % err))
+                # 附带 xray-error 末行
+                try:
+                    ep = Path(getattr(self, "logs_dir", self.core_dir)) / "xray-error.log"
+                    if not ep.exists():
+                        ep = self.core_dir / "xray-error.log"
+                    if ep.exists():
+                        lines = ep.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[-6:]
+                        for ln in lines:
+                            self.after(0, lambda l=ln: self.log("  " + l[:220]))
+                except Exception:
+                    pass
+        Thread(target=_work, daemon=True).start()
+
     def start_proxy_thread(self):
         if self.is_running:
             self.log("代理已在运行中，请先停止；或回车确认新节点以自动切换")
@@ -8428,6 +8580,10 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.status_label.configure(text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")))
                 tun_s = " + TUN" if getattr(self, "tun_enabled", False) else ""
                 self.log(f"代理已启动（sing-box{tun_s}）")
+                try:
+                    self._post_start_probe()
+                except Exception:
+                    pass
                 self._run_started_at = time.time()
                 self.set_tray_state("connected")
                 self.save_settings()
@@ -8511,6 +8667,10 @@ class App(ctk.CTk):
                 ))
                 tun_s = " + TUN" if getattr(self, "tun_enabled", False) else ""
                 self.log("代理已启动（Mihomo%s）" % tun_s)
+                try:
+                    self._post_start_probe()
+                except Exception:
+                    pass
                 self._run_started_at = time.time()
                 self.set_tray_state("connected")
                 self.save_settings()
@@ -8681,6 +8841,10 @@ class App(ctk.CTk):
                     text="运行中", font=("Microsoft YaHei UI", 14, "bold"), text_color=("#16A34A", "#4ADE80")
                 ))
                 self.log("代理已启动" + ("（sing-box TUN）" if getattr(self, "tun_enabled", False) else ""))
+                try:
+                    self._post_start_probe()
+                except Exception:
+                    pass
                 try:
                     if not getattr(self, "tun_enabled", False):
                         self.after(800, self._probe_stats_api)
