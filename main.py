@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.4"
+APP_VERSION = "0.26.5"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1140,48 +1140,90 @@ def build_outbound(node: dict) -> dict:
         }
 
     if protocol == "vless":
+        uid = node.get("uuid") or node.get("id") or ""
         user = {
-            "id": node["uuid"],
-            "encryption": node.get("encryption", "none"),
+            "id": uid,
+            "encryption": node.get("encryption") or "none",
         }
-        if node.get("flow"):
-            user["flow"] = node["flow"]
+        flow = (node.get("flow") or "").strip()
+        if flow:
+            user["flow"] = flow
 
-        stream = {"network": node.get("network", "tcp")}
-        security = node.get("security", "none")
+        network = (node.get("network") or node.get("type") or "tcp") or "tcp"
+        network = str(network).lower()
+        if network in ("h2", "http", "httpupgrade"):
+            pass
+        stream = {"network": network}
+        security = (node.get("security") or "").lower().strip()
+        # 有 sni/fp/pbk 但未写 security 时按 TLS/Reality 推断
+        if not security or security in ("none", "0"):
+            if node.get("pbk"):
+                security = "reality"
+            elif node.get("sni") or node.get("fp") or str(node.get("tls") or "").lower() in ("tls", "true", "1"):
+                security = "tls"
+            else:
+                security = "none"
         if security == "tls":
             stream["security"] = "tls"
-            tls = {"serverName": node.get("sni") or node["address"]}
-            if node.get("fp"):
-                tls["fingerprint"] = node["fp"]
+            tls = {
+                "serverName": node.get("sni") or node.get("host") or node.get("address"),
+                "allowInsecure": False,
+            }
+            # 新版 Xray 已移除 allowInsecure；用指纹提高兼容性
+            tls.pop("allowInsecure", None)
+            fp = node.get("fp") or "chrome"
+            if fp:
+                tls["fingerprint"] = fp
+            alpn = node.get("alpn")
+            if alpn:
+                if isinstance(alpn, str):
+                    tls["alpn"] = [x.strip() for x in alpn.split(",") if x.strip()]
+                elif isinstance(alpn, list):
+                    tls["alpn"] = alpn
             stream["tlsSettings"] = tls
         elif security == "reality":
             stream["security"] = "reality"
             stream["realitySettings"] = {
-                "serverName": node.get("sni") or node["address"],
+                "serverName": node.get("sni") or node.get("host") or node.get("address"),
                 "fingerprint": node.get("fp") or "chrome",
                 "publicKey": node.get("pbk") or "",
                 "shortId": node.get("sid") or "",
                 "spiderX": node.get("spx") or "",
             }
 
-        if node.get("network") == "ws":
+        if network == "ws":
             stream["wsSettings"] = {
                 "path": node.get("path") or "/",
-                "headers": {"Host": node.get("host") or node.get("sni") or node["address"]},
+                "headers": {"Host": node.get("host") or node.get("sni") or node.get("address")},
             }
-        if node.get("network") == "grpc":
+        elif network == "grpc":
             stream["grpcSettings"] = {
                 "serviceName": node.get("serviceName") or node.get("path") or "",
             }
+        elif network in ("tcp",):
+            header_type = (node.get("headerType") or node.get("header") or "").lower()
+            if header_type == "http":
+                stream["tcpSettings"] = {
+                    "header": {
+                        "type": "http",
+                        "request": {
+                            "path": [node.get("path") or "/"],
+                            "headers": {"Host": [node.get("host") or node.get("sni") or node.get("address") or ""]},
+                        },
+                    }
+                }
 
+        try:
+            port_i = int(node.get("port") or 443)
+        except Exception:
+            port_i = 443
         return {
             "tag": "proxy",
             "protocol": "vless",
             "settings": {
                 "vnext": [{
-                    "address": node["address"],
-                    "port": node["port"],
+                    "address": node.get("address"),
+                    "port": port_i,
                     "users": [user],
                 }]
             },
@@ -1455,31 +1497,31 @@ class App(ctk.CTk):
         row2.pack(fill="x")
         left2 = ctk.CTkFrame(row2, fg_color="transparent")
         left2.pack(side="left")
-        self.test_all_btn = ctk.CTkButton(
-            left2, text="测速全部", width=88, height=30,
-            fg_color="#2563EB", command=self.test_all_thread,
-        )
-        self.test_all_btn.pack(side="left", padx=(4, 2))
-        self.test_group_btn = ctk.CTkButton(
-            left2, text="测速所选分组", width=110, height=30,
-            fg_color="#0D9488", command=self.test_current_group_thread,
-        )
-        self.test_group_btn.pack(side="left", padx=2)
-        right2 = ctk.CTkFrame(row2, fg_color="transparent")
-        right2.pack(side="right")
-        ctk.CTkLabel(right2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
-        self.workers_combo = ctk.CTkComboBox(right2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
+        ctk.CTkLabel(left2, text="并发", font=("Microsoft YaHei UI", 12)).pack(side="left", padx=(4, 2))
+        self.workers_combo = ctk.CTkComboBox(left2, width=72, height=30, values=TEST_WORKERS_OPTIONS, state="readonly")
         self.workers_combo.set(str(TEST_WORKERS_DEFAULT))
         self.workers_combo.pack(side="left", padx=2)
-        ctk.CTkLabel(right2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
+        ctk.CTkLabel(left2, text="模式", font=("Microsoft YaHei UI", 13)).pack(side="left", padx=(10, 2))
         self.mode_combo = ctk.CTkComboBox(
-            right2, width=120, height=30, values=PROXY_MODES, state="readonly",
+            left2, width=120, height=30, values=PROXY_MODES, state="readonly",
             command=self.on_mode_change, font=("Microsoft YaHei UI", 13),
         )
         self.mode_combo.set(PROXY_MODE_DEFAULT)
-        self.mode_combo.pack(side="left", padx=(2, 10))
+        self.mode_combo.pack(side="left", padx=(2, 4))
+        right2 = ctk.CTkFrame(row2, fg_color="transparent")
+        right2.pack(side="right")
+        self.test_all_btn = ctk.CTkButton(
+            right2, text="测速全部", width=88, height=30,
+            fg_color="#2563EB", command=self.test_all_thread,
+        )
+        self.test_all_btn.pack(side="left", padx=2)
+        self.test_group_btn = ctk.CTkButton(
+            right2, text="测速所选分组", width=110, height=30,
+            fg_color="#0D9488", command=self.test_current_group_thread,
+        )
+        self.test_group_btn.pack(side="left", padx=2)
         self.start_btn = ctk.CTkButton(right2, text="启动", width=72, height=32, command=self.start_proxy_thread)
-        self.start_btn.pack(side="left", padx=2)
+        self.start_btn.pack(side="left", padx=(8, 2))
         self.stop_btn = ctk.CTkButton(
             right2, text="停止", width=72, height=32,
             fg_color="#DC2626", hover_color="#B91C1C", command=self.stop_proxy
@@ -1696,7 +1738,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=180, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=220, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -4877,10 +4919,7 @@ class App(ctk.CTk):
         img = self.load_tray_image("disconnected")
         self.tray_icon = pystray.Icon("Mobility", img, "Mobility - 未连接", menu)
         Thread(target=self.tray_icon.run, daemon=True).start()
-        try:
-            self.bind("<Map>", self._on_window_map)
-        except Exception:
-            pass
+        # 不绑定 Map：CustomTkinter 在 Map+configure 下易黑屏/递归
         # 启动时清理上次异常退出残留的系统代理
         try:
             self.after(300, self.force_clear_stale_proxy)
@@ -4890,63 +4929,30 @@ class App(ctk.CTk):
     def tray_show_window(self, icon=None, item=None):
         def _do():
             try:
-                self.state("normal")
-            except Exception:
-                pass
-            try:
                 self.deiconify()
             except Exception:
                 pass
             try:
-                w = int(self.winfo_width() or 0)
-                h = int(self.winfo_height() or 0)
-                if w < 500 or h < 400:
-                    self.geometry("1100x720")
+                self.state("normal")
             except Exception:
-                try:
-                    self.geometry("1100x720")
-                except Exception:
-                    pass
+                pass
             try:
                 self.lift()
                 self.focus_force()
-                self.attributes("-topmost", True)
-                self.after(200, lambda: self.attributes("-topmost", False))
             except Exception:
                 pass
-            # 轻量重绘，避免最小化恢复后大面积黑屏（不重建节点列表）
+            # 用透明度闪一下强制 DWM 重绘，避免恢复后大块黑屏
             try:
-                self.after(50, self._soft_window_redraw)
+                self.attributes("-alpha", 0.97)
+                self.after(30, lambda: self.attributes("-alpha", 1.0))
+            except Exception:
+                pass
+            try:
+                self.attributes("-topmost", True)
+                self.after(150, lambda: self.attributes("-topmost", False))
             except Exception:
                 pass
         self.after(0, _do)
-
-    def _on_window_map(self, event=None):
-        # Map 会频繁触发；禁止在此 configure 控件，否则 CustomTkinter 易递归崩溃
-        try:
-            if str(self.state()) != "normal":
-                return
-            import time as _t
-            now = _t.time()
-            if now - float(getattr(self, "_last_map_redraw", 0) or 0) < 2.0:
-                return
-            self._last_map_redraw = now
-            self.after(80, self._soft_window_redraw)
-        except Exception:
-            pass
-
-    def _soft_window_redraw(self):
-        """从托盘/任务栏恢复时的轻量刷新：只 update，绝不 configure（防递归）。"""
-        if getattr(self, "_soft_redrawing", False):
-            return
-        self._soft_redrawing = True
-        try:
-            try:
-                self.update_idletasks()
-            except Exception:
-                pass
-        finally:
-            self._soft_redrawing = False
 
     def tray_start(self, icon=None, item=None):
         self.after(0, self.start_proxy_thread)
@@ -6594,14 +6600,16 @@ class App(ctk.CTk):
         # 全局模式：仅私有地址直连，其余走代理
         if mode == "全局模式":
             rules.append({"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]})
+            rules.append({"type": "field", "outboundTag": "proxy", "network": "tcp,udp"})
             return rules
 
-        # 规则模式：国内直连，国外代理
+        # 规则模式：国内直连，国外代理（末条明确走 proxy，避免默认出站歧义）
         rules.extend([
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:private"]},
             {"type": "field", "outboundTag": "direct", "ip": ["geoip:cn"]},
             {"type": "field", "outboundTag": "direct", "domain": ["geosite:cn"]},
+            {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
         ])
         return rules
 
