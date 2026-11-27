@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.3"
+APP_VERSION = "0.25.4"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1735,7 +1735,7 @@ class App(ctk.CTk):
                 pass
 
     def on_node_button_click(self, node, btn):
-        """左键预选节点；同步分组并收起其它组。"""
+        """左键预选节点：只改高亮，不整表刷新（避免卡顿）。"""
         if not isinstance(node, dict):
             return
         self._pending_node = node
@@ -1743,15 +1743,11 @@ class App(ctk.CTk):
         self._pending_key = node_key(node)
         g = (node.get("_group") or node.get("group") or "").strip()
         if g:
+            self._active_test_group = g
             try:
-                self._focus_group_only(g)
-                self.refresh_node_list(keep_selection=True, resort=False)
+                self._paint_group_headers()
             except Exception:
-                self._active_test_group = g
-                try:
-                    self._paint_group_headers()
-                except Exception:
-                    pass
+                pass
         self._paint_node_buttons()
 
     def confirm_pending_node(self, event=None):
@@ -1794,8 +1790,14 @@ class App(ctk.CTk):
             pass
         if g:
             try:
+                before = set(getattr(self, "_collapsed_groups", set()) or set())
                 self._focus_group_only(g)
-                self.refresh_node_list(keep_selection=True, resort=False)
+                after = set(getattr(self, "_collapsed_groups", set()) or set())
+                if before != after:
+                    self.refresh_node_list(keep_selection=True, resort=False)
+                else:
+                    self._paint_group_headers()
+                    self._paint_node_buttons()
             except Exception:
                 pass
         try:
@@ -2861,9 +2863,15 @@ class App(ctk.CTk):
             merged.append(n)
         self.nodes = merged
         self.group_nodes_by_sub = True
+        try:
+            if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                self._collapsed_groups = set()
+            self._collapsed_groups.add(group_name)
+        except Exception:
+            pass
         self.refresh_node_list(keep_selection=False)
         self.save_settings()
-        self.log("本地导入成功：%s 个节点（组：%s）" % (len(nodes), group_name))
+        self.log("本地导入成功：%s 个节点（组：%s，已折叠）" % (len(nodes), group_name))
 
     def import_config_dialog(self):
         try:
@@ -5765,7 +5773,14 @@ class App(ctk.CTk):
                     added += 1
                 self.nodes = merged
                 self.group_nodes_by_sub = True
-                self.log("订阅解析完成：本组 %s 个，合计 %s 个（多订阅共存）" % (added, len(self.nodes)))
+                # 新拉取的分组默认折叠，避免展开大量节点导致卡顿
+                try:
+                    if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                        self._collapsed_groups = set()
+                    self._collapsed_groups.add(sub_name)
+                except Exception:
+                    pass
+                self.log("订阅解析完成：本组 %s 个，合计 %s 个（多订阅共存，新组已折叠）" % (added, len(self.nodes)))
             else:
                 self.subscription_url = ""
                 if "://" in text and "\n" not in text:
