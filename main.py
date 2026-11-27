@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.8"
+APP_VERSION = "0.25.9"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1697,25 +1697,40 @@ class App(ctk.CTk):
                 pass
 
     def _paint_node_buttons(self):
-        """只高亮：一个预选（蓝）+ 一个已确认（橙）；按节点唯一键匹配，不按显示文本。"""
+        """只更新「上一次高亮 + 当前预选/确认」几个按钮，避免扫全表卡顿。"""
         pend_key = None
         pn = getattr(self, "_pending_node", None)
         if isinstance(pn, dict):
-            pend_key = node_key(pn)
+            try:
+                pend_key = node_key(pn)
+            except Exception:
+                pend_key = None
         cur_key = None
         cn = getattr(self, "current_node", None)
         if isinstance(cn, dict):
-            cur_key = node_key(cn)
-        # 优先用 row_meta（带 node 引用）
+            try:
+                cur_key = node_key(cn)
+            except Exception:
+                cur_key = None
+        prev_keys = getattr(self, "_last_paint_keys", None) or set()
+        need = set()
+        if pend_key:
+            need.add(pend_key)
+        if cur_key:
+            need.add(cur_key)
+        need |= set(prev_keys)
         metas = getattr(self, "_node_row_meta", None) or []
-        painted = set()
         for meta in metas:
             b = meta.get("btn")
             n = meta.get("node")
             if not b or not isinstance(n, dict):
                 continue
-            k = node_key(n)
-            painted.add(id(b))
+            try:
+                k = node_key(n)
+            except Exception:
+                continue
+            if k not in need:
+                continue
             try:
                 if pend_key and k == pend_key:
                     b.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="white")
@@ -1725,14 +1740,7 @@ class App(ctk.CTk):
                     b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
             except Exception:
                 pass
-        # 兼容无 meta 的按钮：全部置灰
-        for b in getattr(self, "_node_buttons", []) or []:
-            if id(b) in painted:
-                continue
-            try:
-                b.configure(fg_color=("gray85", "gray25"), text_color=("gray10", "gray90"))
-            except Exception:
-                pass
+        self._last_paint_keys = set(x for x in (pend_key, cur_key) if x)
 
     def on_node_button_click(self, node, btn):
         """左键预选节点：只改高亮，不整表刷新（避免卡顿）。"""
@@ -4754,8 +4762,7 @@ class App(ctk.CTk):
                 pass
             # 轻量重绘，避免最小化恢复后大面积黑屏（不重建节点列表）
             try:
-                self.after(30, self._soft_window_redraw)
-                self.after(200, self._soft_window_redraw)
+                self.after(50, self._soft_window_redraw)
             except Exception:
                 pass
         self.after(0, _do)
@@ -4785,10 +4792,6 @@ class App(ctk.CTk):
             pass
         try:
             self._paint_group_headers()
-        except Exception:
-            pass
-        try:
-            self._paint_node_buttons()
         except Exception:
             pass
 
@@ -5818,14 +5821,29 @@ class App(ctk.CTk):
         self.after(0, _ui)
 
     def load_nodes_thread(self):
+        if getattr(self, "_loading_nodes", False):
+            self.log("正在加载中，请稍候…")
+            return
         Thread(target=self.load_nodes, daemon=True).start()
 
     def load_nodes(self):
+        self._loading_nodes = True
+        def _reset_load_ui(clear_entry=False):
+            try:
+                self.load_btn.configure(state="normal")
+            except Exception:
+                pass
+            if clear_entry:
+                try:
+                    self.entry.delete(0, "end")
+                except Exception:
+                    pass
+            self._loading_nodes = False
         self.after(0, lambda: self.load_btn.configure(state="disabled"))
         text = self.entry.get().strip()
         if not text:
             self.log("错误：请输入订阅链接或节点链接")
-            self.after(0, lambda: self.load_btn.configure(state="normal"))
+            self.after(0, lambda: _reset_load_ui(False))
             return
 
         prev_nodes = list(self.nodes or [])
@@ -5846,16 +5864,16 @@ class App(ctk.CTk):
                     try:
                         resp = requests.get(
                             text,
-                            timeout=20,
-                            headers={"User-Agent": "Mozilla/5.0 Mobility/0.4"}
+                            timeout=12,
+                            headers={"User-Agent": "Mozilla/5.0 Mobility/0.4"},
                         )
                         resp.raise_for_status()
                         break
                     except Exception as e:
                         last_err = e
                         if attempt == 0:
-                            self.log("订阅拉取失败，1 秒后重试…")
-                            time.sleep(1)
+                            self.log("订阅拉取失败，0.3 秒后重试…")
+                            time.sleep(0.3)
                         else:
                             raise last_err
                 new_nodes = parse_nodes_any(resp.text) or parse_subscription_content(resp.text)
@@ -5949,22 +5967,26 @@ class App(ctk.CTk):
                     self.nodes = merged
                 self.log("解析完成，共 %s 个节点" % len(self.nodes or []))
         except Exception as e:
-            self.log(f"加载失败：{e}")
-            self.after(0, lambda: self.load_btn.configure(state="normal"))
+            err = str(e)
+            self.log("加载失败：%s" % err)
+            # 失败快速复位：恢复按钮并清空 URL 栏（避免残留乱码/失效链接）
+            self.after(0, lambda: _reset_load_ui(clear_entry=True))
             return
 
         if not self.nodes:
             self.log("未解析到有效节点")
-            self.refresh_node_list()
-            self.after(0, lambda: self.load_btn.configure(state="normal"))
+            try:
+                self.refresh_node_list()
+            except Exception:
+                pass
+            self.after(0, lambda: _reset_load_ui(clear_entry=True))
             return
 
         count = len(self.nodes)
 
         def _ui_ok():
             try:
-                self.log(f"解析到 {count} 个节点，正在刷新列表...")
-                # 拉取成功后清空中间网址框（订阅已在下拉中）
+                self.log("解析到 %s 个节点，正在刷新列表..." % count)
                 try:
                     if text.startswith(("http://", "https://")):
                         self.entry.delete(0, "end")
@@ -5981,6 +6003,7 @@ class App(ctk.CTk):
                     self.load_btn.configure(state="normal")
                 except Exception:
                     pass
+                self._loading_nodes = False
         self.after(0, _ui_ok)
 
 
