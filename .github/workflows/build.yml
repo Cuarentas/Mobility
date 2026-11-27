@@ -297,7 +297,15 @@ jobs:
           }
           if ($current -ne $readme) {
             [System.IO.File]::WriteAllText((Resolve-Path .).Path + "\README.md", $readme, [System.Text.UTF8Encoding]::new($false))
-            Write-Host "README.md 已更新"
+            # 强制同步静态版本号徽章（避免首页仍显示旧版）
+            $readme2 = [System.IO.File]::ReadAllText((Resolve-Path "README.md").Path)
+            $verTag = "${{ env.VERSION }}"
+            $verNum = $verTag.TrimStart('v')
+            $readme2 = [regex]::Replace($readme2, 'badge/release-v[0-9]+\.[0-9]+\.[0-9]+', ("badge/release-v{0}" -f $verNum))
+            $readme2 = [regex]::Replace($readme2, 'release-v[0-9]+\.[0-9]+\.[0-9]+-orange', ("release-v{0}-orange" -f $verNum))
+            $readme2 = [regex]::Replace($readme2, 'APP_VERSION = "[^"]+"', ('APP_VERSION = "{0}"' -f $verNum))
+            [System.IO.File]::WriteAllText((Resolve-Path "README.md").Path, $readme2, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "README.md 已更新并同步版本 $verTag"
             echo "readme_changed=true" >> $env:GITHUB_OUTPUT
           } else {
             Write-Host "README.md 无需修改"
