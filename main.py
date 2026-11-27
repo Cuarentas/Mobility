@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.25.9"
+APP_VERSION = "0.26.0"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1049,18 +1049,37 @@ def parse_nodes_any(text: str) -> list:
 
 
 def tcp_ping(host: str, port: int, timeout: float = TEST_TIMEOUT) -> int | None:
+    """TCP 连通性测速。Hy2/TUIC 以 UDP 为主，TCP 超时不代表节点一定不可用。"""
     try:
+        host = str(host or "").strip().strip("[]")
+        port = int(port)
+        if not host or port <= 0:
+            return None
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         if not infos:
             return None
-        family, socktype, proto, _, sockaddr = infos[0]
-        s = socket.socket(family, socktype, proto)
-        s.settimeout(timeout)
-        t0 = time.perf_counter()
-        s.connect(sockaddr)
-        ms = int((time.perf_counter() - t0) * 1000)
-        s.close()
-        return ms
+        best = None
+        for family, socktype, proto, _, sockaddr in infos[:4]:
+            s = None
+            try:
+                s = socket.socket(family, socktype, proto)
+                s.settimeout(timeout)
+                t0 = time.perf_counter()
+                s.connect(sockaddr)
+                ms = int((time.perf_counter() - t0) * 1000)
+                if best is None or ms < best:
+                    best = ms
+                if ms <= 30:
+                    break
+            except Exception:
+                continue
+            finally:
+                try:
+                    if s:
+                        s.close()
+                except Exception:
+                    pass
+        return best
     except Exception:
         return None
 
@@ -1218,11 +1237,17 @@ def node_label(node: dict) -> str:
         lat_s = "超时"
     else:
         lat_s = f"{lat}ms"
-    name = str(node.get("name") or "node")
-    if len(name) > 24:
-        name = name[:24] + "…"
-    proto = node.get("protocol") or "?"
-    return f"[{proto}] {name} ({lat_s})"
+    name = str(node.get("name") or "node").strip()
+    proto = (node.get("protocol") or "?").lower()
+    # 名称里已带 [vless]/[Hy2] 等前缀时不再重复
+    low = name.lower()
+    if low.startswith("[") and "]" in name[:16]:
+        display = name
+    else:
+        display = f"[{proto}] {name}"
+    if len(display) > 36:
+        display = display[:36] + "…"
+    return f"{display} ({lat_s})"
 
 
 class App(ctk.CTk):
@@ -1636,7 +1661,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=360, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=440, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -5250,6 +5275,44 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
+    def _scroll_to_node(self, node: dict):
+        """列表滚动到指定节点按钮附近。"""
+        if not isinstance(node, dict):
+            return
+        try:
+            k = node_key(node)
+        except Exception:
+            return
+        target = None
+        for meta in getattr(self, "_node_row_meta", None) or []:
+            n = meta.get("node")
+            b = meta.get("btn")
+            if not b or not isinstance(n, dict):
+                continue
+            try:
+                if node_key(n) == k:
+                    target = b
+                    break
+            except Exception:
+                continue
+        if not target:
+            return
+        try:
+            canvas = getattr(self.node_list, "_parent_canvas", None)
+            if canvas is None:
+                return
+            canvas.update_idletasks()
+            # 相对 scrollable frame 的 y
+            y = target.winfo_y()
+            h = max(1, int(self.node_list.winfo_height() or 1))
+            frac = max(0.0, min(1.0, (y - 20) / float(h)))
+            canvas.yview_moveto(frac)
+        except Exception:
+            try:
+                target.focus_set()
+            except Exception:
+                pass
+
     def _focus_group_only(self, keep_name: str):
         """只展开 keep_name，其余分组全部收起。"""
         keep_name = (keep_name or "").strip()
@@ -6160,6 +6223,8 @@ class App(ctk.CTk):
 
         elapsed = time.perf_counter() - t_start
         self.log(f"测速完成：成功 {ok}/{total}，耗时 {elapsed:.1f}s")
+        if ok < total:
+            self.log("提示：TCP 测速超时≠节点不可用；Hysteria2/TUIC 以 UDP 为主，请用对应核心实际连接验证")
 
         ranked = sorted(
             [n for n in self.nodes if isinstance(n.get("latency"), int) and n["latency"] >= 0],
@@ -6228,6 +6293,15 @@ class App(ctk.CTk):
         self._pending_node = best
         self._pending_label = self._selected_label
         self._pending_key = node_key(best)
+        g = (best.get("_group") or best.get("group") or "").strip()
+        if g:
+            try:
+                self._focus_group_only(g)
+            except Exception:
+                self._active_test_group = g
+                if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                    self._collapsed_groups = set()
+                self._collapsed_groups.discard(g)
         self.refresh_node_list(keep_selection=True, resort=False)
         try:
             self._paint_node_buttons()
@@ -6237,7 +6311,12 @@ class App(ctk.CTk):
             self.current_label.configure(text=self._short_node_text(best, f"{best.get('latency')}ms"))
         except Exception:
             pass
-        self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms)")
+        try:
+            self.after(80, lambda n=best: self._scroll_to_node(n))
+        except Exception:
+            pass
+        gtxt = f"，分组：{g}" if g else ""
+        self.log(f"已选择最低延迟：{best['name']} ({best['latency']}ms){gtxt}")
         self.save_settings()
 
     def resolve_live_node(self, node):
