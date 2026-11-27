@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.5"
+APP_VERSION = "0.26.6"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1354,6 +1354,7 @@ class App(ctk.CTk):
         self.proxy_core = "Xray"
         self.core_map = dict(DEFAULT_CORE_MAP)
         self.live_stats_enabled = False  # 实时网速/内存，默认关闭
+        self.tray_show_speed = False  # 托盘标题显示上传下载
         self.font_size = 13
         self.hotkey_toggle = "ctrl+shift+m"
         self.hotkey_proxy = "ctrl+shift+p"
@@ -1483,14 +1484,23 @@ class App(ctk.CTk):
         self.sub_menu_btn.pack(side="right", padx=2)
         self.load_btn = ctk.CTkButton(row1, text="加载", width=60, height=32, command=self.load_nodes_thread)
         self.load_btn.pack(side="right", padx=2)
+        self.url_box = ctk.CTkFrame(row1, height=32, corner_radius=6,
+                                    fg_color=("#F1F5F9", "#1E293B"), border_width=1,
+                                    border_color=("#CBD5E1", "#334155"))
+        self.url_box.pack(side="left", fill="x", expand=True, padx=(4, 6))
+        self.url_box.pack_propagate(False)
+        self.entry = ctk.CTkEntry(
+            self.url_box, height=28, border_width=0,
+            fg_color="transparent", placeholder_text="订阅 URL 或节点链接",
+        )
+        self.entry.pack(side="left", fill="x", expand=True, padx=(8, 0), pady=2)
         self.clear_url_btn = ctk.CTkButton(
-            row1, text="×", width=32, height=32,
-            fg_color=("#94A3B8", "#475569"), hover_color=("#64748B", "#334155"),
+            self.url_box, text="×", width=26, height=26, corner_radius=4,
+            fg_color="transparent", hover_color=("#E2E8F0", "#334155"),
+            text_color=("#64748B", "#94A3B8"),
             command=self.clear_url_entry,
         )
-        self.clear_url_btn.pack(side="right", padx=(0, 2))
-        self.entry = ctk.CTkEntry(row1, height=32, placeholder_text="订阅 URL 或节点链接")
-        self.entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        self.clear_url_btn.pack(side="right", padx=(0, 4), pady=2)
 
         # 第二行：左侧测速 + 右侧并发/模式/启动/停止
         row2 = ctk.CTkFrame(bar_inner, fg_color="transparent")
@@ -1720,7 +1730,7 @@ class App(ctk.CTk):
 
         # ===== 底部日志（首页） =====
         log_frame = ctk.CTkFrame(body, fg_color="transparent")
-        log_frame.pack(fill="both", expand=False, pady=(4, 0))
+        log_frame.pack(fill="both", expand=True, pady=(4, 0))
         log_head = ctk.CTkFrame(log_frame, fg_color="transparent")
         log_head.pack(fill="x")
         ctk.CTkLabel(log_head, text="运行日志", font=("Microsoft YaHei UI", 12, "bold")).pack(side="left")
@@ -1738,7 +1748,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=220, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=280, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -1843,6 +1853,41 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._last_paint_keys = set(x for x in (pend_key, cur_key) if x)
+
+    def show_node_info_dialog(self, node):
+        """右键查看节点详情。"""
+        if not isinstance(node, dict):
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("节点信息")
+        win.geometry("480x420")
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+        box = ctk.CTkTextbox(win, font=("Consolas", 12))
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+        keys = [
+            ("名称", "name"), ("协议", "protocol"), ("地址", "address"), ("端口", "port"),
+            ("UUID/密码", "uuid"), ("密码", "password"), ("加密", "encryption"),
+            ("传输", "network"), ("安全", "security"), ("SNI", "sni"), ("Host", "host"),
+            ("路径", "path"), ("指纹", "fp"), ("flow", "flow"), ("pbk", "pbk"), ("sid", "sid"),
+            ("分组", "_group"), ("延迟", "latency"), ("原始链接", "raw"),
+        ]
+        lines = []
+        for label, k in keys:
+            v = node.get(k)
+            if v is None or v == "":
+                if k == "uuid":
+                    v = node.get("password") or node.get("id")
+                if v is None or v == "":
+                    continue
+            lines.append("%s: %s" % (label, v))
+        if not lines:
+            lines = [str(node)]
+        box.insert("1.0", chr(10).join(lines))
+        box.configure(state="disabled")
+        ctk.CTkButton(win, text="关闭", width=80, command=win.destroy).pack(pady=(0, 12))
 
     def on_node_button_click(self, node, btn):
         """左键预选节点：只改高亮，不整表刷新（避免卡顿）。"""
@@ -2225,7 +2270,7 @@ class App(ctk.CTk):
         win.title(title)
         win.resizable(False, False)
         try:
-            win.attributes("-topmost", True)
+            win.attributes("-topmost", False)
         except Exception:
             pass
         try:
@@ -2351,6 +2396,36 @@ class App(ctk.CTk):
 
         win.after(220, enable_outside)
         win.bind("<Escape>", lambda e: dismiss())
+        # 其它软件置前时自动收起（不置顶菜单）
+        def _focus_watch():
+            try:
+                if not win.winfo_exists():
+                    return
+                # 若主窗口与菜单都无焦点，视为切到其它程序
+                try:
+                    f = self.focus_get()
+                except Exception:
+                    f = None
+                try:
+                    mf = win.focus_get()
+                except Exception:
+                    mf = None
+                if f is None and mf is None:
+                    # 再确认：前台不是本进程
+                    try:
+                        import ctypes
+                        hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        pid = ctypes.c_ulong()
+                        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                        if pid.value != ctypes.windll.kernel32.GetCurrentProcessId():
+                            dismiss()
+                            return
+                    except Exception:
+                        pass
+                win.after(350, _focus_watch)
+            except Exception:
+                pass
+        win.after(400, _focus_watch)
         try:
             win.protocol("WM_DELETE_WINDOW", dismiss)
         except Exception:
@@ -2681,7 +2756,7 @@ class App(ctk.CTk):
             else:
                 u, n = item, item
             lines.append(f"{u}|{n}" if n and n != u else str(u))
-        urls_box.insert("1.0", "\n".join(lines))
+        urls_box.insert("1.0", chr(10).join(lines))
 
         def save():
             try:
@@ -3533,7 +3608,7 @@ class App(ctk.CTk):
         win.geometry("400x460")
         win.transient(self)
         try:
-            win.attributes("-topmost", True)
+            win.attributes("-topmost", False)
         except Exception:
             pass
         try:
@@ -4913,6 +4988,7 @@ class App(ctk.CTk):
             pystray.MenuItem("切换：PAC模式", lambda: self.after(0, lambda: self._tray_set_mode("PAC模式"))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("显示当前状态", lambda: self.after(0, self._tray_show_status)),
+            pystray.MenuItem("托盘显示网速", lambda: self.after(0, self._toggle_tray_speed)),
             pystray.MenuItem("清除系统代理", lambda: self.after(0, self._hotkey_clear_proxy)),
             pystray.MenuItem("退出", self.tray_quit),
         )
@@ -4941,18 +5017,56 @@ class App(ctk.CTk):
                 self.focus_force()
             except Exception:
                 pass
-            # 用透明度闪一下强制 DWM 重绘，避免恢复后大块黑屏
-            try:
-                self.attributes("-alpha", 0.97)
-                self.after(30, lambda: self.attributes("-alpha", 1.0))
-            except Exception:
-                pass
             try:
                 self.attributes("-topmost", True)
-                self.after(150, lambda: self.attributes("-topmost", False))
+                self.after(120, lambda: self.attributes("-topmost", False))
             except Exception:
                 pass
+            # 强制整窗重绘：透明度 + 一次轻量节点高亮刷新（不重建列表）
+            try:
+                self.attributes("-alpha", 0.96)
+            except Exception:
+                pass
+            def _repaint():
+                try:
+                    self.attributes("-alpha", 1.0)
+                except Exception:
+                    pass
+                try:
+                    self.update_idletasks()
+                except Exception:
+                    pass
+                try:
+                    self._paint_group_headers()
+                except Exception:
+                    pass
+                try:
+                    self._paint_node_buttons()
+                except Exception:
+                    pass
+            self.after(40, _repaint)
+            self.after(200, _repaint)
         self.after(0, _do)
+
+    def _toggle_tray_speed(self):
+        self.tray_show_speed = not bool(getattr(self, "tray_show_speed", False))
+        self.log("托盘网速显示：%s" % ("开启" if self.tray_show_speed else "关闭"))
+        if not self.tray_show_speed:
+            try:
+                self.update_tray_icon()
+            except Exception:
+                pass
+
+    def _update_tray_speed_title(self, up_s, down_s):
+        if not getattr(self, "tray_show_speed", False):
+            return
+        if not getattr(self, "tray_icon", None):
+            return
+        try:
+            st = "运行" if getattr(self, "is_running", False) else "停止"
+            self.tray_icon.title = "Mobility %s | ↑%s ↓%s" % (st, up_s, down_s)
+        except Exception:
+            pass
 
     def tray_start(self, icon=None, item=None):
         self.after(0, self.start_proxy_thread)
@@ -5688,6 +5802,7 @@ class App(ctk.CTk):
                 btn.bind("<ButtonPress-1>", lambda e, node=n, b=btn: self._node_drag_start(e, node, b))
                 btn.bind("<B1-Motion>", lambda e, node=n, b=btn: self._node_drag_motion(e, node, b))
                 btn.bind("<ButtonRelease-1>", lambda e, node=n, b=btn: self._node_drag_end(e, node, b))
+                btn.bind("<Button-3>", lambda e, node=n: self.show_node_info_dialog(node))
                 self._node_buttons.append(btn)
                 self._node_row_meta.append({"node": n, "btn": btn, "row": row})
                 shown += 1
@@ -7449,6 +7564,13 @@ class App(ctk.CTk):
                             text=f"↓ {self._fmt_bytes(speed_down)}/s ({down_mbps:.2f} Mbps)"
                         )
                         self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(total)}")
+                        try:
+                            self._update_tray_speed_title(
+                                f"{self._fmt_bytes(speed_up)}/s",
+                                f"{self._fmt_bytes(speed_down)}/s",
+                            )
+                        except Exception:
+                            pass
                     if hasattr(self, "stat_mem_label"):
                         self.stat_mem_label.configure(text=f"内存 {mem}")
                 except Exception:
@@ -7517,6 +7639,10 @@ class App(ctk.CTk):
                 if hasattr(self, "stat_up_label"):
                     self.stat_up_label.configure(text="↑ 0 B/s")
                     self.stat_down_label.configure(text="↓ 0 B/s")
+                    try:
+                        self._update_tray_speed_title("0 B/s", "0 B/s")
+                    except Exception:
+                        pass
                     total = (getattr(self, "_bytes_up", 0) or 0) + (getattr(self, "_bytes_down", 0) or 0)
                     self.stat_total_label.configure(text=f"流量 {self._fmt_bytes(total)}")
                 if hasattr(self, "stat_mem_label"):
@@ -8696,7 +8822,13 @@ class App(ctk.CTk):
         # 关闭到托盘（代理可继续跑）
         if self.close_to_tray and TRAY_AVAILABLE and self.tray_icon is not None:
             self.save_settings()
-            self.withdraw()
+            try:
+                self.iconify()
+            except Exception:
+                try:
+                    self.withdraw()
+                except Exception:
+                    pass
             self.log("已最小化到系统托盘")
             return
         # 真正退出
