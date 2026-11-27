@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.10"
+APP_VERSION = "0.26.11"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -1105,29 +1105,41 @@ def tcp_ping(host: str, port: int, timeout: float = TEST_TIMEOUT) -> int | None:
 
 
 def build_ws_settings(node: dict, sni: str = "") -> dict:
-    """WebSocket 配置：保留 path 中的 ?ed=，并兼容 maxEarlyData。"""
+    """WebSocket 配置。
+
+    对 Cloudflare 类节点（path 含 ?ed=）：
+    - 保留完整 path（含 query），交由 Xray 自行解析 early data
+    - 只写独立 host 字段（Xray 26 推荐），避免 headers.Host 与 host 冲突
+    - 不再重复写 maxEarlyData，防止 path 被裁成 /
+    """
     host_header = (node.get("host") or sni or node.get("sni") or "").strip()
     path = (node.get("path") or "/").strip() or "/"
+    try:
+        path = urllib.parse.unquote(path)
+    except Exception:
+        pass
     if not path.startswith("/"):
         path = "/" + path
+    has_ed_in_path = bool(re.search(r"[?&]ed=\d+", path))
     max_early = 0
-    try:
-        m_ed = re.search(r"[?&]ed=(\d+)", path)
-        if m_ed:
-            max_early = int(m_ed.group(1))
-    except Exception:
-        max_early = 0
-    if max_early <= 0:
+    if not has_ed_in_path:
         try:
-            max_early = int(node.get("maxEarlyData") or node.get("ed") or 0)
+            m_ed = re.search(r"[?&]ed=(\d+)", path)
+            if m_ed:
+                max_early = int(m_ed.group(1))
         except Exception:
-            max_early = 0
-    # 关键：path 保留原始 ?ed=（很多 CF 节点依赖此形式）
+            pass
+        if max_early <= 0:
+            try:
+                max_early = int(node.get("maxEarlyData") or node.get("ed") or 0)
+            except Exception:
+                max_early = 0
     ws = {"path": path}
     if host_header:
+        # Xray 新版优先独立 host；同时带 headers 以兼容旧核心
         ws["host"] = host_header
         ws["headers"] = {"Host": host_header}
-    if max_early > 0:
+    if max_early > 0 and not has_ed_in_path:
         ws["maxEarlyData"] = max_early
         ws["earlyDataHeaderName"] = "Sec-WebSocket-Protocol"
     return ws
@@ -1206,6 +1218,9 @@ def build_outbound(node: dict) -> dict:
                     tls["alpn"] = [x.strip() for x in alpn.split(",") if x.strip()]
                 elif isinstance(alpn, list):
                     tls["alpn"] = list(alpn)
+            elif network in ("ws", "httpupgrade", "xhttp"):
+                # WS 场景默认 http/1.1，避免部分 CDN 对 h2 握手异常
+                tls["alpn"] = ["http/1.1"]
             stream["tlsSettings"] = tls
         elif security == "reality":
             stream["security"] = "reality"
@@ -8744,6 +8759,24 @@ class App(ctk.CTk):
         try:
             config_path = self.create_config(node)
             self.log("配置文件已生成")
+            try:
+                import json as _j
+                _cfg = _j.loads((self.core_dir / "config.json").read_text(encoding="utf-8"))
+                for ob in _cfg.get("outbounds") or []:
+                    if ob.get("tag") == "proxy":
+                        ss = ob.get("streamSettings") or {}
+                        self.log(
+                            "出站 stream: net=%s sec=%s ws=%s"
+                            % (
+                                ss.get("network"),
+                                ss.get("security"),
+                                _j.dumps(ss.get("wsSettings") or {}, ensure_ascii=False),
+                            )
+                        )
+                        break
+            except Exception as _e:
+                self.log("出站调试信息读取失败：%s" % _e)
+
         except Exception as e:
             self.log(f"生成配置失败：{e}")
             self.after(0, lambda: self.start_btn and self.start_btn.configure(state="normal") if self.start_btn else None)
