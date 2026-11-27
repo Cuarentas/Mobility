@@ -71,7 +71,7 @@ LOG_LEVELS = ["警告", "信息", "调试"]
 LOG_LEVEL_MAP = {"警告": "warning", "信息": "info", "调试": "debug"}
 LOG_LEVEL_REV = {"warning": "警告", "info": "信息", "debug": "调试"}
 
-APP_VERSION = "0.26.2"
+APP_VERSION = "0.26.3"
 GITHUB_REPO = "Cuarentas/Mobility"
 
 
@@ -999,16 +999,33 @@ def parse_surge_like(text: str) -> list:
 
 
 def normalize_group_name(name: str, *, local: bool = False) -> str:
-    """统一分组显示名：在线：/本地：前缀。"""
+    """统一分组显示名：本地： / 在线： / 单节点："""
     g = (name or "").strip() or ("本地导入" if local else "订阅")
+    if g.startswith("单节点:") or g.startswith("单节点："):
+        return "单节点：" + g.split(":", 1)[-1].split("：", 1)[-1].strip()
     if g.startswith("本地:") or g.startswith("本地："):
         return "本地：" + g.split(":", 1)[-1].split("：", 1)[-1].strip()
     if g.startswith("在线:") or g.startswith("在线："):
         return "在线：" + g.split(":", 1)[-1].split("：", 1)[-1].strip()
+    if g.startswith("单节点"):
+        base = g[3:].lstrip(":：").strip()
+        return "单节点：" + (base or "导入")
     if local or g.startswith("本地"):
         base = g[2:].lstrip(":：").strip() if g.startswith("本地") else g
         return "本地：" + (base or "导入")
     return "在线：" + g
+
+
+def group_order_key(g: str):
+    """分组排序：本地 → 在线 → 单节点。"""
+    g = (g or "").strip()
+    if g.startswith("本地"):
+        return (0, g)
+    if g.startswith("单节点"):
+        return (2, g)
+    if g.startswith("在线"):
+        return (1, g)
+    return (1, g)
 
 
 def parse_nodes_any(text: str) -> list:
@@ -1661,7 +1678,7 @@ class App(ctk.CTk):
         self.log_filter_entry.bind("<KeyRelease>", lambda e: self.apply_log_filter())
         ctk.CTkButton(log_tools, text="复制", width=48, height=26, command=self.copy_log).pack(side="left", padx=2)
         ctk.CTkButton(log_tools, text="清空", width=48, height=26, fg_color="#DC2626", command=self.clear_log).pack(side="left", padx=2)
-        self.log_box = ctk.CTkTextbox(log_frame, height=440, font=("Consolas", 11))
+        self.log_box = ctk.CTkTextbox(log_frame, height=180, font=("Consolas", 11))
         self.log_box.pack(fill="x", pady=4)
         self._log_lines = []
         self._log_autoscroll = True
@@ -4340,9 +4357,9 @@ class App(ctk.CTk):
             self.log("剪贴板中未识别到有效节点或订阅链接")
             return
         try:
-            group_name = normalize_group_name("手动导入", local=False)
+            group_name = normalize_group_name("单节点：剪贴板(二维码)导入", local=False)
         except Exception:
-            group_name = "在线：手动导入"
+            group_name = "单节点：剪贴板(二维码)导入"
         for n in nodes:
             if isinstance(n, dict):
                 n["_group"] = group_name
@@ -4574,25 +4591,40 @@ class App(ctk.CTk):
                     except Exception:
                         pass
         if added_nodes:
-            self.nodes = list(self.nodes or []) + added_nodes
-            # 去重
+            try:
+                gname = normalize_group_name("单节点：剪贴板(二维码)导入", local=False)
+            except Exception:
+                gname = "单节点：剪贴板(二维码)导入"
+            for n in added_nodes:
+                if isinstance(n, dict):
+                    n["_group"] = gname
+                    n["group"] = gname
             seen = set()
             merged = []
-            for n in self.nodes:
-                key = "%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"))
+            for n in list(self.nodes or []) + list(added_nodes):
+                if not isinstance(n, dict):
+                    continue
+                key = "%s|%s|%s|%s" % (n.get("protocol"), n.get("address"), n.get("port"), n.get("name"))
                 if key in seen:
                     continue
                 seen.add(key)
                 merged.append(n)
             self.nodes = merged
+            self.group_nodes_by_sub = True
+            try:
+                if not hasattr(self, "_collapsed_groups") or not isinstance(self._collapsed_groups, set):
+                    self._collapsed_groups = set()
+                self._collapsed_groups.add(gname)
+            except Exception:
+                pass
         def _ui():
-            self.refresh_node_list(keep_selection=False)
+            self.refresh_node_list(keep_selection=True)
             try:
                 self.refresh_sub_select()
             except Exception:
                 pass
             self.save_settings()
-            self.log("扫码导入完成，当前共 %d 个节点" % len(self.nodes))
+            self.log("扫码导入完成，当前共 %d 个节点（已合并保留其它组）" % len(self.nodes))
         self.after(0, _ui)
 
     def show_node_qr(self):
@@ -5505,6 +5537,11 @@ class App(ctk.CTk):
                 is_local = raw_g.startswith("本地") or bool(n.get("from_local"))
                 if raw_g in ("未分组", "默认"):
                     g = raw_g
+                elif raw_g.startswith("单节点"):
+                    try:
+                        g = normalize_group_name(raw_g, local=False)
+                    except Exception:
+                        g = raw_g
                 else:
                     try:
                         g = normalize_group_name(raw_g, local=is_local)
@@ -5531,6 +5568,11 @@ class App(ctk.CTk):
                 return (0, v)
             for g in list(groups.keys()):
                 groups[g] = sorted(groups[g], key=_lat_key)
+            # 本地 → 在线 → 单节点
+            try:
+                order = sorted(order, key=group_order_key)
+            except Exception:
+                pass
 
             # 超过一组就显示分组标题；设置里可关
             show_headers = len(order) > 1
@@ -6078,7 +6120,8 @@ class App(ctk.CTk):
                     node = parse_link(text)
                     if node:
                         # 单节点追加，不清空已有
-                        node["_group"] = node.get("_group") or "手动导入"
+                        node["_group"] = node.get("_group") or "单节点：剪贴板(二维码)导入"
+                        node["group"] = node["_group"]
                         prev = list(prev_nodes or [])
                         prev.append(node)
                         self.nodes = prev
@@ -6088,7 +6131,8 @@ class App(ctk.CTk):
                     parsed = parse_subscription_content(text) or parse_nodes_any(text) or []
                     for n in parsed:
                         if isinstance(n, dict) and not n.get("_group"):
-                            n["_group"] = "手动导入"
+                            n["_group"] = "单节点：剪贴板(二维码)导入"
+                            n["group"] = n["_group"]
                     seen = set()
                     merged = list(prev_nodes or [])
                     for n in merged:
